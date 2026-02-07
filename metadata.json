@@ -1,0 +1,8 @@
+{
+  "name": "Kiosk UI Frontend",
+  "description": "A production-grade frontend UI for a hotel check-in kiosk, designed for integration with Antigravity backend agent.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}

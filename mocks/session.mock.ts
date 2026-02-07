@@ -1,0 +1,13 @@
+export const sessionMock = {
+  sessionId: "sess_123456789",
+  user: {
+    name: "Alex Mercer",
+    loyaltyTier: "Gold",
+    lastVisit: "2023-11-15"
+  },
+  reservation: {
+    checkIn: "2024-05-20",
+    nights: 3,
+    guests: 2
+  }
+};

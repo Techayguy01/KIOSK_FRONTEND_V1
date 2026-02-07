@@ -18,4 +18,4 @@ View your app in AI Studio: https://ai.studio/apps/drive/1e0OveH1omPnB5IPrg5DW8Z
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
 3. Run the app:
    `npm run dev`
-"# KIOSK_FRONTEND_V1" 
+# KIOSK_FRONTEND_V1
