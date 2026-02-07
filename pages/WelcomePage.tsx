@@ -11,25 +11,36 @@ import HoverRevealCards from '../components/ui/hover-reveal-cards';
 // Local type for UI logic (compatible with OrbState via mapping)
 type AgentState = "idle" | "listening" | "thinking" | "talking" | null
 
-export const WelcomePage: React.FC = () => {
-  const { data, emit, loading } = useUIState();
-  const [mode, setMode] = useState<'voice' | 'manual'>('voice');
+interface WelcomePageProps {
+  /**
+   * CRITICAL: 
+   * visualMode is PRESENTATIONAL ONLY. 
+   * This component must NEVER infer navigation or flow based on this prop.
+   */
+  visualMode?: 'voice' | 'manual';
+}
 
-  // Local state for immediate UI feedback (overrides backend temporarily)
+export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }) => {
+  const { data, emit, loading } = useUIState();
+
+  // Internal animation state only - NOT navigational state
   const [interactionState, setInteractionState] = useState<AgentState>(null);
 
-  const messages = data.messages || [];
+  // TEMP: UI mock, to be replaced by Voice Runtime in Phase 7C
+  // const messages = data.messages || []; 
+  const messages: any[] = [];
+
   const fade = useFadeIn(200);
 
-  // Calculate the effective state of the agent
+  // Calculate the effective state of the agent for Orb animation
   const getAgentState = (): AgentState => {
     if (interactionState) return interactionState;
-    if (data.listening) return 'listening';
+    // if (data.listening) return 'listening'; // Backend not connected yet
     if (loading) return 'thinking';
     return 'idle';
   };
 
-  // Map local AgentState to OrbState (null | "thinking" | "listening" | "talking")
+  // Map local AgentState to OrbState
   const getOrbState = (state: AgentState): OrbState => {
     switch (state) {
       case 'listening': return 'listening';
@@ -40,19 +51,25 @@ export const WelcomePage: React.FC = () => {
     }
   };
 
-  const handleInteractionStart = () => {
+  const handleVoicePushStart = () => {
     setInteractionState('listening');
-    emit('VOICE_INPUT_START');
+    // Atomic Intent: User wants to speak
+    emit('VOICE_STARTED');
   };
 
-  const handleInteractionEnd = () => {
+  const handleVoicePushEnd = () => {
     setInteractionState('thinking');
-    emit('VOICE_INPUT_END');
-
-    // Clear local override after a delay to let backend state take over
-    setTimeout(() => {
-      setInteractionState(null);
-    }, 2000);
+    // REMOVED: setTimeout logic that simulated "thinking" -> "idle".
+    // We now wait for the Agent/Backend to tell us what to do.
+    // Use manual reset only if we implement a specific UI timeout or cancellation.
+    // For now, it stays "thinking" (or clears if we want to be purely reactive).
+    // setInteractionState(null); // Let's clear it immediately for Phase 7B "dumb" behavior
+    // actually, clearing it immediately makes it look like nothing happened.
+    // Keeping it "thinking" forever is also weird without backend.
+    // For Phase 7B (Stuck Test), we can just clear it immediately or leave it.
+    // User requested: "Remove timers".
+    // Let's just clear interactionState on mouse up to avoid "fake thinking".
+    setInteractionState(null);
   };
 
   const ManualMode = () => (
@@ -86,7 +103,8 @@ export const WelcomePage: React.FC = () => {
             subtitle: 'Call staff member',
             icon: <HelpCircle size={40} />,
             accentColor: 'emerald',
-            onClick: () => emit('HELP_SELECTED'),
+            // onClick: () => emit('HELP_SELECTED'), // Not in contract, ignoring or mapping to Cancel/Voice
+            onClick: () => console.warn("Help not implemented in Agent"),
           },
         ]}
       />
@@ -94,7 +112,7 @@ export const WelcomePage: React.FC = () => {
       <div className="mt-16">
         <Button
           variant="ghost"
-          onClick={() => setMode('voice')}
+          onClick={() => emit('VOICE_STARTED')} // Atomic Intent
           className="flex items-center gap-2 text-slate-500 hover:text-white"
         >
           <Mic size={18} />
@@ -104,7 +122,7 @@ export const WelcomePage: React.FC = () => {
     </div>
   );
 
-  if (mode === 'manual') {
+  if (visualMode === 'manual') {
     return (
       <div className="h-screen w-full overflow-hidden pt-20 relative">
         <AnimatedGradientBackground Breathing={true} />
@@ -125,7 +143,7 @@ export const WelcomePage: React.FC = () => {
         <Button
           variant="outline"
           size="sm"
-          onClick={() => setMode('manual')}
+          onClick={() => emit('TOUCH_SELECTED')} // Atomic Intent
           className="gap-2 bg-slate-800/50 backdrop-blur-md border-slate-700"
         >
           <Keyboard size={16} />
@@ -154,30 +172,25 @@ export const WelcomePage: React.FC = () => {
           SIYA
         </motion.div>
 
-        {/* Orb container with inner glow and shadow */}
+        {/* Orb container */}
         <div
           className="w-[300px] h-[300px] md:w-[450px] md:h-[450px] rounded-full relative"
           style={{
-            // Outer shadow for depth
             boxShadow: '0 25px 60px rgba(0, 0, 0, 0.6), 0 10px 30px rgba(0, 0, 0, 0.4)',
           }}
         >
-          {/* Inner glow ring */}
           <div
             className="absolute inset-0 rounded-full pointer-events-none"
             style={{
-              // Inner glow effect using inset box-shadow
               boxShadow: 'inset 0 0 40px 10px rgba(147, 197, 253, 0.3), inset 0 0 80px 20px rgba(96, 165, 250, 0.15)',
             }}
           />
-          {/* Dark backing circle for contrast */}
           <div
             className="absolute inset-[3px] rounded-full bg-slate-950/80 pointer-events-none"
             style={{
               boxShadow: 'inset 0 0 20px 5px rgba(0, 0, 0, 0.5)',
             }}
           />
-          {/* The orb itself */}
           <div className="absolute inset-0">
             <Orb agentState={getOrbState(getAgentState())} colors={["#977DFF", "#F2E6EE"]} />
           </div>
@@ -216,7 +229,6 @@ export const WelcomePage: React.FC = () => {
 
         {/* Mic Button - The Core Interaction */}
         <div className="relative group">
-          {/* Ripple Effect when listening */}
           {getAgentState() === 'listening' && (
             <div className="absolute inset-0 bg-blue-500/20 rounded-full animate-ping" />
           )}
@@ -226,10 +238,10 @@ export const WelcomePage: React.FC = () => {
               ? 'bg-blue-600 text-white shadow-blue-500/50 scale-110'
               : 'bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700'
               }`}
-            onMouseDown={handleInteractionStart}
-            onMouseUp={handleInteractionEnd}
-            onTouchStart={(e) => { e.preventDefault(); handleInteractionStart(); }}
-            onTouchEnd={(e) => { e.preventDefault(); handleInteractionEnd(); }}
+            onMouseDown={handleVoicePushStart}
+            onMouseUp={handleVoicePushEnd}
+            onTouchStart={(e) => { e.preventDefault(); handleVoicePushStart(); }}
+            onTouchEnd={(e) => { e.preventDefault(); handleVoicePushEnd(); }}
             aria-label="Hold to speak"
           >
             <Mic size={32} className={getAgentState() === 'listening' ? 'animate-pulse' : ''} />

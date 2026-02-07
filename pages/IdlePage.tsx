@@ -8,9 +8,9 @@ export const IdlePage: React.FC = () => {
   const fade = useFadeIn(100);
 
   return (
-    <div 
+    <div
       className="relative h-screen w-full overflow-hidden bg-slate-900 cursor-pointer"
-      onClick={() => emit('START_SESSION')}
+      onClick={() => emit('PROXIMITY_DETECTED')}
     >
       {/* Background Layer */}
       <div className="absolute inset-0 z-0">
@@ -21,7 +21,7 @@ export const IdlePage: React.FC = () => {
       <div className="relative z-10 w-full h-full flex flex-col items-center justify-center pointer-events-none">
         {/* We use pointer-events-none to let clicks pass through to container, but text is selectable if we wanted. 
             Here the container click is primary interaction. */}
-            
+
         <div className={`text-center transform transition-all duration-1000 ${fade}`}>
           <h1 className="text-8xl font-thin tracking-tighter text-white mb-6">
             NEXUS
@@ -30,7 +30,7 @@ export const IdlePage: React.FC = () => {
           <p className="text-xl text-slate-400 tracking-[0.2em] uppercase mb-12">
             Future Hospitality
           </p>
-          
+
           <div className="animate-pulse">
             <div className="px-8 py-3 rounded-full border border-slate-700 bg-slate-800/30 text-slate-300 text-sm tracking-widest backdrop-blur-sm">
               TOUCH ANYWHERE TO START
