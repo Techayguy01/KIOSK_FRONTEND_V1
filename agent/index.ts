@@ -70,6 +70,58 @@ export const VOICE_COMMAND_MAP: Record<UiState, Partial<Record<string, Intent>>>
     ERROR: {},
 };
 
+// Phase 4: Error Taxonomy & Recovery Rules (Design Only)
+// Taxonomy:
+// - USER_ERROR: Invalid input, timeouts, unreadable ID.
+// - SYSTEM_ERROR: Network failure, backend outage.
+// - HARDWARE_ERROR: Scanner jam, dispenser empty, printer failure.
+//
+// Entry Rules:
+// - Allowed from OPERATIONAL states only (SCAN_ID, ROOM_SELECT, PAYMENT, KEY_DISPENSING).
+// - NOT allowed from PASSIVE states (IDLE, WELCOME).
+//
+// Exit Rules:
+// - TOUCH_SELECTED -> WELCOME (Semantic: ACKNOWLEDGE_ERROR -> Re-engage)
+// - CANCEL_REQUESTED -> WELCOME (Reset)
+// - BACK_REQUESTED -> WELCOME (Dismiss)
+
+// Phase 5: Timeout & Silence Semantics (Design Only)
+// Taxonomy:
+// - TIMEOUT (Generic): User walked away or is unresponsive.
+//
+// Mapping Strategy:
+// - contracts/intents.ts restriction prevents adding "TIMEOUT" intent.
+// - DECISION: Timeout events must generate a `CANCEL_REQUESTED` intent.
+// - CRITICAL DISTINCTION: User-initiated CANCEL and System-initiated TIMEOUT share the 
+//   same recovery path (WELCOME) but differ in ORIGIN. Future logging must preserve this.
+//
+// Semantics per State:
+// - WELCOME, IDLE: No-Op (Passive).
+// - MANUAL_MENU, SCAN_ID, ROOM_SELECT, PAYMENT: Soft Reset -> WELCOME.
+// - AI_CHAT: Soft Reset -> WELCOME (Silence = Disengagement, not Error).
+// - ERROR: Soft Reset -> WELCOME.
+// - COMPLETE: Exempt (Has independent internal lifecycle/timer).
+// - KEY_DISPENSING: Ignored (Hardware critical).
+
+// Phase 6: State Persistence & Session Semantics (Design Only)
+// Session Model:
+// - "STATELESS KIOSK MODEL": All user interaction state is ephemeral and DISCARDED on restart.
+//
+// Lifecycle:
+// - Start: Interaction from IDLE.
+// - End: TIMEOUT, CANCEL, or COMPLETE.
+//
+// Persistence Rules:
+// - Persistent State: NONE.
+// - Rationale: Privacy & Security. We literally cannot afford to persist PII (ID scans, Credit Cards)
+//   across a hard crash. The safest default is a hard wipe.
+//
+// Restart Behavior:
+// - ALL STATES -> WELCOME.
+// - Rationale: `ERROR` is a runtime semantic; RESTART is a system boundary.
+//   Meaning: If we crash, we don't restore to "Error Screen" (which implies a runtime context).
+//   We restore to "Welcome Screen" (System Ready).
+
 // Strict State Transition Table
 // Phase 2: Includes Back/Cancel Semantics & Booking Flow
 const TRANSITION_TABLE: Record<UiState, Partial<Record<Intent, UiState>>> = {
@@ -113,16 +165,23 @@ const TRANSITION_TABLE: Record<UiState, Partial<Record<Intent, UiState>>> = {
     },
     ERROR: {
         CANCEL_REQUESTED: "WELCOME",
-        TOUCH_SELECTED: "WELCOME", // Dismiss
+        TOUCH_SELECTED: "WELCOME", // Semantic: Acknowledge Error
+        BACK_REQUESTED: "WELCOME", // Dismiss
     }
 };
 
-export const processIntent = (intent: Intent, currentState: UiState): AgentResponse => {
+// Pure Function Implementation
+// - `injectLog` is optional to keep the function pure during testing or quiet updates.
+export const processIntent = (intent: Intent, currentState: UiState, injectLog?: (msg: string) => void): AgentResponse => {
     const allowedTransitions = TRANSITION_TABLE[currentState];
 
     if (allowedTransitions && allowedTransitions[intent]) {
         const nextState = allowedTransitions[intent]!;
-        console.log(`[Agent] Transition Allowed: ${currentState} + ${intent} -> ${nextState}`);
+        if (injectLog) {
+            injectLog(`[Agent] Transition Allowed: ${currentState} + ${intent} -> ${nextState}`);
+        } else {
+            console.log(`[Agent] Transition Allowed: ${currentState} + ${intent} -> ${nextState}`);
+        }
         return { ui_state: nextState };
     }
 
