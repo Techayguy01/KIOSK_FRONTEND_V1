@@ -1,0 +1,19 @@
+{
+  "status": "commited",
+  "type": "frontend",
+  "scope": "codebase",
+  "localEndpoint": "http://localhost:3000",
+  "executionArgs": {
+    "projectName": "Mock_kiosk",
+    "projectPath": "c:\\Users\\Asus\\OneDrive\\Documents\\Mock_kiosk",
+    "testIds": [
+      "TC001"
+    ],
+    "additionalInstruction": "",
+    "envs": {
+      "API_KEY": "sk-user-VX8j6Yy5tSZ3jbKjXTDgRw_CHaJrTw_Hw6t95jvOelsqixEjlgBY0YHeXscb9qJyS-KSoJDBrEt-4j9xVDe7vLzCCgUvMqONLr-91p-gFIkqfult-11dK_M7BSJsGRUApfY"
+    }
+  },
+  "serverPort": 64442,
+  "proxy": "http://5f93da77-b475-4cf6-8bf5-13fbd7bf59f4:vgppZxdOkZJMOQwaRIKjNx2wG3a2ue3l@tun.testsprite.com:8080"
+}

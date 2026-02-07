@@ -1,0 +1,395 @@
+[
+  {
+    "id": "TC001",
+    "title": "Welcome Page loads with animated gradient background and voice orb",
+    "description": "Verify that the Welcome Page renders correctly with animated gradient background and interactive animated voice orb visible.",
+    "category": "functional",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to the Welcome Page"
+      },
+      {
+        "type": "assertion",
+        "description": "Check the animated gradient background is visible and animating"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify the interactive animated voice orb is present and displays animation"
+      }
+    ]
+  },
+  {
+    "id": "TC002",
+    "title": "Toggle interaction modes between Voice and Manual",
+    "description": "Verify that the user can toggle between Voice Mode and Manual Mode, and the UI updates accordingly.",
+    "category": "functional",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to the Welcome Page"
+      },
+      {
+        "type": "action",
+        "description": "Toggle interaction mode from default to Manual Mode"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify Manual Mode UI elements (touch-friendly buttons) become visible"
+      },
+      {
+        "type": "action",
+        "description": "Toggle interaction mode back to Voice Mode"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify Voice Mode UI elements (voice orb) are visible and Manual Mode elements are hidden"
+      }
+    ]
+  },
+  {
+    "id": "TC003",
+    "title": "Navigate from Welcome Page to Check-In flow using Manual Mode",
+    "description": "Validate that selecting 'Check-In' option from the Welcome Page in Manual Mode proceeds to guest identification step.",
+    "category": "functional",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Switch to Manual Mode on Welcome Page"
+      },
+      {
+        "type": "action",
+        "description": "Click on 'Check-In' button"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify transition to guest identification screen"
+      }
+    ]
+  },
+  {
+    "id": "TC004",
+    "title": "Navigate from Welcome Page to Book Room flow using Voice Mode",
+    "description": "Verify that selecting 'Book Room' option via Voice Mode triggers correct UI state transition and displays available rooms.",
+    "category": "functional",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Switch to Voice Mode on Welcome Page"
+      },
+      {
+        "type": "action",
+        "description": "Use voice command to select 'Book Room' option"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify Room Selection Page is displayed with room options"
+      }
+    ]
+  },
+  {
+    "id": "TC005",
+    "title": "Room Selection Page displays rooms with correct data",
+    "description": "Verify the Room Selection Page shows all available rooms with images, prices, and amenities as provided by backend mock services.",
+    "category": "functional",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate to Room Selection Page via booking workflow"
+      },
+      {
+        "type": "assertion",
+        "description": "Check each room card displays image"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify price for each room is accurate and matches backend data"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify amenities are correctly listed for each room"
+      }
+    ]
+  },
+  {
+    "id": "TC006",
+    "title": "Select room and proceed to payment in Booking workflow",
+    "description": "Validate that selecting a room triggers transition to payment section with correct cost and tax breakdown.",
+    "category": "functional",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Select a room from Room Selection Page"
+      },
+      {
+        "type": "assertion",
+        "description": "Ensure payment screen is displayed"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify displayed billing includes room cost and applicable taxes"
+      }
+    ]
+  },
+  {
+    "id": "TC007",
+    "title": "Simulate card payment and verify payment acceptance",
+    "description": "Test that the payment simulation accepts input and successfully processes payment without errors.",
+    "category": "functional",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Input card details in payment simulation"
+      },
+      {
+        "type": "action",
+        "description": "Submit payment"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify payment success confirmation is displayed"
+      }
+    ]
+  },
+  {
+    "id": "TC008",
+    "title": "Perform ID scanning simulation with visual progress feedback",
+    "description": "Ensure that ID scanning simulation displays progress bar and completion feedback correctly during Check-In workflow.",
+    "category": "functional",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Start ID scanning simulation during Check-In"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify visual progress bar appears and updates visually"
+      },
+      {
+        "type": "assertion",
+        "description": "Confirm completion feedback is shown when scanning finishes"
+      }
+    ]
+  },
+  {
+    "id": "TC009",
+    "title": "Verify room key dispensing simulation after successful payment",
+    "description": "Check that the simulated hardware correctly dispenses a room key after payment completion in both Check-In and Booking flows.",
+    "category": "functional",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Complete payment simulation successfully"
+      },
+      {
+        "type": "action",
+        "description": "Trigger room key dispensing simulation"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify room key dispensing visual and status confirmation is displayed"
+      }
+    ]
+  },
+  {
+    "id": "TC010",
+    "title": "Check backend state machine drives frontend UI correctly",
+    "description": "Validate that all UI state transitions strictly follow backend state machine events without frontend logic overrides.",
+    "category": "functional",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Interact with UI to trigger various state transitions"
+      },
+      {
+        "type": "assertion",
+        "description": "Confirm UI updates only occur based on backend emitted states and intents"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify no premature or unsanctioned frontend logic overrides UI state"
+      }
+    ]
+  },
+  {
+    "id": "TC011",
+    "title": "Complete end-to-end Check-In workflow successfully",
+    "description": "Verify the complete Check-In guest flow from Welcome Page through ID scanning, reservation verification, payment, and room key dispensing completes without errors.",
+    "category": "functional",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Select 'Check-In' on Welcome Page"
+      },
+      {
+        "type": "action",
+        "description": "Complete guest identification and simulated ID scanning"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify reservation is correctly verified"
+      },
+      {
+        "type": "action",
+        "description": "Complete payment simulation if required"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify room key dispensing simulation occurs"
+      }
+    ]
+  },
+  {
+    "id": "TC012",
+    "title": "Complete end-to-end Room Booking workflow successfully",
+    "description": "Verify the full room booking flow from Welcome Page selection, room browsing, payment processing, and final room key issuance completes correctly.",
+    "category": "functional",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Select 'Book Room' on Welcome Page"
+      },
+      {
+        "type": "action",
+        "description": "Browse and select desired room"
+      },
+      {
+        "type": "action",
+        "description": "Complete payment simulation"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify delivery of room key via simulation"
+      }
+    ]
+  },
+  {
+    "id": "TC013",
+    "title": "Error handling for ID scanning simulation timeout",
+    "description": "Verify the system handles simulated ID scanning timeouts gracefully and shows error feedback to the guest.",
+    "category": "error handling",
+    "priority": "Medium",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Initiate ID scanning simulation and trigger timeout condition"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify an appropriate error message or banner is displayed"
+      },
+      {
+        "type": "assertion",
+        "description": "Ensure user can retry the ID scanning process"
+      }
+    ]
+  },
+  {
+    "id": "TC014",
+    "title": "Error handling for payment failure",
+    "description": "Simulate payment failure and verify system displays clear error message and allows user to retry or cancel payment.",
+    "category": "error handling",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Enter invalid or failing payment details in payment simulation"
+      },
+      {
+        "type": "action",
+        "description": "Submit payment"
+      },
+      {
+        "type": "assertion",
+        "description": "Check error message indicating payment failure is shown"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify options to retry payment or cancel are available"
+      }
+    ]
+  },
+  {
+    "id": "TC015",
+    "title": "Verify Manual Mode action buttons are accessible and responsive",
+    "description": "Check that all Manual Mode buttons (Check-In, Book Room, Help) on Welcome Page are present, visible, and respond to user taps correctly.",
+    "category": "ui",
+    "priority": "Medium",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Switch to Manual Mode on Welcome Page"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify visibility of Check-In, Book Room, and Help buttons"
+      },
+      {
+        "type": "action",
+        "description": "Tap each manual action button"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify UI transitions to corresponding screens"
+      }
+    ]
+  },
+  {
+    "id": "TC016",
+    "title": "Validate presence and correct functioning of Back button across pages",
+    "description": "Validate that the Back button is present on all relevant pages and returns user to previous UI state as expected.",
+    "category": "functional",
+    "priority": "Medium",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Navigate from Welcome Page to Room Selection Page"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify Back button is visible"
+      },
+      {
+        "type": "action",
+        "description": "Press Back button"
+      },
+      {
+        "type": "assertion",
+        "description": "Confirm return to Welcome Page"
+      }
+    ]
+  },
+  {
+    "id": "TC017",
+    "title": "Ensure global state updates correctly on user actions emitting intents",
+    "description": "Verify that all user interaction intents (from UI inputs) are emitted properly to backend and that global state updates reflect these intents accurately.",
+    "category": "functional",
+    "priority": "High",
+    "steps": [
+      {
+        "type": "action",
+        "description": "Perform user actions such as selecting rooms, toggling modes, confirming payments"
+      },
+      {
+        "type": "assertion",
+        "description": "Check that intents emitted from frontend correspond exactly to user actions"
+      },
+      {
+        "type": "assertion",
+        "description": "Verify global UI state updates strictly follow backend responses"
+      }
+    ]
+  }
+]

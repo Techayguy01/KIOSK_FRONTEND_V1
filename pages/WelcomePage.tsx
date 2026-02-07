@@ -5,7 +5,8 @@ import { Keyboard, Mic, CalendarCheck, BedDouble, HelpCircle } from 'lucide-reac
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '../components/ui/button';
 import { Orb, OrbState } from '../components/ui/orb';
-import { BeamsBackground } from '../components/ui/beams-background';
+import AnimatedGradientBackground from '../components/ui/animated-gradient-background';
+import HoverRevealCards from '../components/ui/hover-reveal-cards';
 
 // Local type for UI logic (compatible with OrbState via mapping)
 type AgentState = "idle" | "listening" | "thinking" | "talking" | null
@@ -61,40 +62,34 @@ export const WelcomePage: React.FC = () => {
         <p className="text-slate-400 text-lg">How would you like to proceed?</p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full">
-        <button
-          onClick={() => emit('CHECK_IN_SELECTED')}
-          className="group relative p-8 bg-slate-800/50 hover:bg-slate-800 border border-slate-700 rounded-2xl transition-all duration-300 hover:scale-[1.02] hover:shadow-xl hover:shadow-blue-900/20 flex flex-col items-center gap-4"
-        >
-          <div className="p-4 bg-blue-500/10 rounded-full group-hover:bg-blue-500/20 text-blue-400 transition-colors">
-            <CalendarCheck size={40} />
-          </div>
-          <span className="text-xl font-medium text-slate-200">Check In</span>
-          <span className="text-sm text-slate-500">I have a reservation</span>
-        </button>
-
-        <button
-          onClick={() => emit('BOOK_ROOM_SELECTED')}
-          className="group relative p-8 bg-slate-800/50 hover:bg-slate-800 border border-slate-700 rounded-2xl transition-all duration-300 hover:scale-[1.02] hover:shadow-xl hover:shadow-purple-900/20 flex flex-col items-center gap-4"
-        >
-          <div className="p-4 bg-purple-500/10 rounded-full group-hover:bg-purple-500/20 text-purple-400 transition-colors">
-            <BedDouble size={40} />
-          </div>
-          <span className="text-xl font-medium text-slate-200">Book Room</span>
-          <span className="text-sm text-slate-500">Walk-in reservation</span>
-        </button>
-
-        <button
-          onClick={() => emit('HELP_SELECTED')}
-          className="group relative p-8 bg-slate-800/50 hover:bg-slate-800 border border-slate-700 rounded-2xl transition-all duration-300 hover:scale-[1.02] hover:shadow-xl hover:shadow-emerald-900/20 flex flex-col items-center gap-4"
-        >
-          <div className="p-4 bg-emerald-500/10 rounded-full group-hover:bg-emerald-500/20 text-emerald-400 transition-colors">
-            <HelpCircle size={40} />
-          </div>
-          <span className="text-xl font-medium text-slate-200">Help</span>
-          <span className="text-sm text-slate-500">Call staff member</span>
-        </button>
-      </div>
+      <HoverRevealCards
+        items={[
+          {
+            id: 'check-in',
+            title: 'Check In',
+            subtitle: 'I have a reservation',
+            icon: <CalendarCheck size={40} />,
+            accentColor: 'blue',
+            onClick: () => emit('CHECK_IN_SELECTED'),
+          },
+          {
+            id: 'book-room',
+            title: 'Book Room',
+            subtitle: 'Walk-in reservation',
+            icon: <BedDouble size={40} />,
+            accentColor: 'purple',
+            onClick: () => emit('BOOK_ROOM_SELECTED'),
+          },
+          {
+            id: 'help',
+            title: 'Help',
+            subtitle: 'Call staff member',
+            icon: <HelpCircle size={40} />,
+            accentColor: 'emerald',
+            onClick: () => emit('HELP_SELECTED'),
+          },
+        ]}
+      />
 
       <div className="mt-16">
         <Button
@@ -111,15 +106,19 @@ export const WelcomePage: React.FC = () => {
 
   if (mode === 'manual') {
     return (
-      <BeamsBackground className="h-screen w-full overflow-hidden pt-20">
-        <ManualMode />
-      </BeamsBackground>
+      <div className="h-screen w-full overflow-hidden pt-20 relative">
+        <AnimatedGradientBackground Breathing={true} />
+        <div className="relative z-10 w-full h-full">
+          <ManualMode />
+        </div>
+      </div>
     );
   }
 
   // VOICE MODE LAYOUT
   return (
-    <BeamsBackground className="h-screen w-full flex flex-col relative overflow-hidden">
+    <div className="h-screen w-full flex flex-col relative overflow-hidden">
+      <AnimatedGradientBackground Breathing={true} />
 
       {/* 1. TOP BAR */}
       <div className="flex-none h-24 w-full px-8 flex items-center justify-end z-20">
@@ -136,6 +135,25 @@ export const WelcomePage: React.FC = () => {
 
       {/* 2. MIDDLE - ORB VISUALIZATION */}
       <div className="flex-1 flex flex-col items-center justify-center relative z-10 min-h-0 w-full">
+        {/* SIYA text above the orb */}
+        <motion.div
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.8, ease: "easeOut" }}
+          className="text-5xl md:text-6xl font-black tracking-wider mb-6"
+          style={{
+            fontFamily: "'Montserrat', sans-serif",
+            fontWeight: 900,
+            background: 'linear-gradient(135deg, #977DFF 0%, #c4b5fd 50%, #977DFF 100%)',
+            WebkitBackgroundClip: 'text',
+            WebkitTextFillColor: 'transparent',
+            backgroundClip: 'text',
+            textShadow: '0 0 60px rgba(151, 125, 255, 0.4)',
+          }}
+        >
+          SIYA
+        </motion.div>
+
         {/* Orb container with inner glow and shadow */}
         <div
           className="w-[300px] h-[300px] md:w-[450px] md:h-[450px] rounded-full relative"
@@ -220,6 +238,6 @@ export const WelcomePage: React.FC = () => {
 
         <p className="text-xs text-slate-500 uppercase tracking-widest font-medium">Hold to Speak</p>
       </div>
-    </BeamsBackground>
+    </div>
   );
 };

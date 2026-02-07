@@ -1,0 +1,61 @@
+{
+    "tech_stack": [
+        "TypeScript",
+        "Next.js",
+        "Tailwind CSS",
+        "Framer Motion",
+        "Lucide React"
+    ],
+    "features": [
+        {
+            "name": "Welcome Page",
+            "description": "Main landing page with interactive voice orb and manual mode options.",
+            "files": [
+                "pages/WelcomePage.tsx",
+                "components/ui/orb.tsx",
+                "components/ui/beams-background.tsx",
+                "components/ui/animated-gradient-background.tsx"
+            ]
+        },
+        {
+            "name": "Room Selection",
+            "description": "Page for browsing and selecting available rooms.",
+            "files": [
+                "pages/RoomSelectPage.tsx",
+                "components/RoomCard.tsx"
+            ]
+        },
+        {
+            "name": "Common UI Components",
+            "description": "Reusable UI components used across the application.",
+            "files": [
+                "components/ui/button.tsx",
+                "components/ProgressBar.tsx",
+                "components/BackButton.tsx",
+                "components/ErrorBanner.tsx",
+                "components/MicrophoneButton.tsx"
+            ]
+        },
+        {
+            "name": "State Management & Hooks",
+            "description": "Global state management and custom hooks for animation and idle detection.",
+            "files": [
+                "state/uiContext.tsx",
+                "state/uiState.machine.ts",
+                "hooks/useAnimation.ts",
+                "hooks/useIdleTimeout.ts"
+            ]
+        },
+        {
+            "name": "Services",
+            "description": "Backend services and mock data handling.",
+            "files": [
+                "services/mockBackend.ts",
+                "services/room.service.ts",
+                "services/voice.service.ts",
+                "services/payment.service.ts",
+                "services/session.service.ts"
+            ]
+        }
+    ]
+}

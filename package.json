@@ -9,17 +9,18 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "react": "18.2.0",
-    "react-dom": "18.2.0",
-    "lucide-react": "0.300.0",
-    "canvas-confetti": "^1.9.2",
-    "three": "0.160.0",
-    "@react-three/fiber": "8.15.16",
     "@react-three/drei": "9.99.0",
+    "@react-three/fiber": "8.15.16",
+    "canvas-confetti": "^1.9.2",
     "class-variance-authority": "0.7.0",
     "clsx": "2.1.0",
+    "framer-motion": "^11.0.3",
+    "lucide-react": "0.300.0",
+    "motion": "^12.33.0",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
     "tailwind-merge": "2.2.1",
-    "framer-motion": "11.0.3"
+    "three": "0.160.0"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

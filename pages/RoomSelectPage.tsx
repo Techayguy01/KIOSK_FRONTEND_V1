@@ -19,10 +19,10 @@ export const RoomSelectPage: React.FC = () => {
 
   return (
     <div className="h-screen w-full flex flex-col p-8 bg-slate-900 relative">
-      <ProgressBar 
-        currentStep={progress.currentStep} 
-        totalSteps={progress.totalSteps} 
-        labels={progress.steps} 
+      <ProgressBar
+        currentStep={progress.currentStep}
+        totalSteps={progress.totalSteps}
+        labels={progress.steps}
       />
 
       <div className="flex-1 flex flex-col max-w-6xl mx-auto w-full relative">
@@ -46,11 +46,10 @@ export const RoomSelectPage: React.FC = () => {
           <button
             disabled={!selectedRoomId || loading}
             onClick={handleContinue}
-            className={`flex items-center gap-2 px-12 py-4 rounded-full font-semibold text-lg transition-all duration-300 shadow-xl ${
-              selectedRoomId && !loading
+            className={`flex items-center gap-2 px-12 py-4 rounded-full font-semibold text-lg transition-all duration-300 shadow-xl ${selectedRoomId && !loading
                 ? 'bg-blue-600 text-white hover:bg-blue-500 transform hover:-translate-y-1'
                 : 'bg-slate-800 text-slate-500 cursor-not-allowed'
-            }`}
+              }`}
           >
             {loading && <Loader2 className="animate-spin" size={20} />}
             <span>{loading ? 'Confirming...' : 'Confirm Selection'}</span>
