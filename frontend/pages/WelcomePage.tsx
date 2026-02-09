@@ -252,30 +252,9 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
       {/* 3. BOTTOM - TRANSCRIPT & CONTROLS */}
       <div className="flex-none w-full pb-12 px-6 flex flex-col items-center gap-8 z-20">
 
-        {/* Chat Transcript Area */}
-        <div className="w-full max-w-lg min-h-[80px] flex flex-col justify-end items-center text-center space-y-2 pointer-events-none">
-          <AnimatePresence mode="popLayout">
-            {liveTranscript ? (
-              <motion.div
-                key="live-transcript"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0 }}
-                className="text-lg md:text-xl font-light leading-relaxed text-slate-100"
-              >
-                {liveTranscript}
-              </motion.div>
-            ) : (
-              <motion.p
-                key="placeholder"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                className="text-slate-500 text-lg"
-              >
-                {isSessionActive ? "Listening..." : '"Hello, I\'d like to check in..."'}
-              </motion.p>
-            )}
-          </AnimatePresence>
+        {/* Chat Transcript Area - REMOVED (Handled by Global CaptionsOverlay) */}
+        <div className="w-full max-w-lg min-h-[80px] pointer-events-none">
+          {/* Placeholder to keep layout spacing if needed, or remove entirely */}
         </div>
 
         {/* Mic Button - The Core Interaction */}

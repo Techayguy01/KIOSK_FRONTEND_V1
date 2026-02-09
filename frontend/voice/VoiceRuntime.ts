@@ -23,6 +23,7 @@ import { TTSController } from "./TTSController";
  */
 
 export type VoiceMode = "idle" | "listening" | "speaking";
+export type VoiceTurnState = "IDLE" | "USER_SPEAKING" | "PROCESSING" | "SYSTEM_RESPONDING";
 
 // Configuration
 const CONFIG = {

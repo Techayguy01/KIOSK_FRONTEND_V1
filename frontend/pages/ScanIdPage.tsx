@@ -24,21 +24,21 @@ export const ScanIdPage: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col items-center justify-center h-full p-8 text-center animate-in fade-in zoom-in duration-500">
+    <div className="flex flex-col items-center justify-center h-full p-8 text-center animate-in fade-in zoom-in duration-500 bg-slate-900 text-white">
 
       {/* Header */}
       <div className="mb-8">
-        <h1 className="text-4xl font-bold text-slate-800 mb-2">Identity Verification</h1>
-        <p className="text-slate-500 text-lg">Please hold your ID card or Passport up to the camera.</p>
+        <h1 className="text-4xl font-bold text-white mb-2">Identity Verification</h1>
+        <p className="text-slate-400 text-lg">Please hold your ID card or Passport up to the camera.</p>
       </div>
 
       {/* The Scanner */}
       <div className="w-full max-w-xl mb-8">
         {status === 'APPROVED' ? (
-          <div className="bg-green-100 border-2 border-green-500 p-12 rounded-2xl text-green-700 flex flex-col items-center animate-in zoom-in">
-            <ShieldCheck size={64} className="mb-4" />
+          <div className="bg-emerald-900/30 border-2 border-emerald-500/50 p-12 rounded-2xl text-emerald-100 flex flex-col items-center animate-in zoom-in">
+            <ShieldCheck size={64} className="mb-4 text-emerald-400" />
             <h2 className="text-2xl font-bold">Verification Successful</h2>
-            <p>Welcome back, Alex.</p>
+            <p className="text-emerald-200/80">Welcome back, Alex.</p>
           </div>
         ) : (
           <WebcamScanner onCapture={handleCapture} />
@@ -47,7 +47,7 @@ export const ScanIdPage: React.FC = () => {
 
       {/* Status Text */}
       {status === 'ANALYZING' && (
-        <p className="text-blue-600 font-mono animate-pulse">
+        <p className="text-blue-400 font-mono animate-pulse">
           Extracting Data... verifying hologram...
         </p>
       )}
@@ -55,7 +55,7 @@ export const ScanIdPage: React.FC = () => {
       {/* Fallback for Demo (Director Safety Net) */}
       <button
         onClick={() => emit('SCAN_COMPLETED')}
-        className="mt-8 text-xs text-slate-400 hover:text-slate-600 underline"
+        className="mt-8 text-xs text-slate-600 hover:text-slate-400 underline transition-colors"
       >
         (Demo: Skip Camera)
       </button>
