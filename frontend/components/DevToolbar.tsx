@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useUIState } from '../state/uiContext';
 import { UIState } from '@contracts/backend.contract';
-import { Settings, X, Zap } from 'lucide-react';
+import { Wrench, X, Zap } from 'lucide-react';
 
 export const DevToolbar: React.FC = () => {
     const { emit, state } = useUIState();
@@ -26,7 +26,7 @@ export const DevToolbar: React.FC = () => {
                 className="fixed bottom-4 left-4 z-[100] p-3 bg-slate-900/80 text-slate-400 rounded-full hover:bg-blue-600 hover:text-white transition-all shadow-lg border border-slate-700 backdrop-blur-sm"
                 title="Open Developer Tools"
             >
-                <Settings size={20} />
+                <Wrench size={20} />
             </button>
         );
     }

@@ -1,3 +1,4 @@
+// UI Update: 2026-02-09T16:35
 import React, { useState, useEffect } from 'react';
 import { UIContext } from '../state/uiContext';
 // Agent Authority
@@ -16,7 +17,7 @@ import { CompletePage } from '../pages/CompletePage';
 import { ErrorBanner } from '../components/ErrorBanner';
 import { BackButton } from '../components/BackButton';
 import { CaptionsOverlay } from '../components/CaptionsOverlay';
-import { DevToolbar } from '../components/DevToolbar';
+import { GlobalOrbOverlay } from '../components/GlobalOrbOverlay';
 
 const App: React.FC = () => {
   // Local UI State (Renderer only)
@@ -120,15 +121,15 @@ const App: React.FC = () => {
 
         <CaptionsOverlay />
 
+        {/* Global Voice Orb - persists across pages */}
+        <GlobalOrbOverlay />
+
         {renderPage()}
 
         {/* Debug Info (To prove state comes from Agent) */}
         <div className="fixed bottom-2 right-2 z-50 bg-black/50 text-white text-xs p-1 rounded opacity-30 hover:opacity-100 pointer-events-none">
           Authority: AgentAdapter | State: {state}
         </div>
-
-        {/* Development Toolbar */}
-        <DevToolbar />
       </div>
     </UIContext.Provider>
   );
