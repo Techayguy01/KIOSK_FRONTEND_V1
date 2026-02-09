@@ -33,8 +33,10 @@ class VoiceRelayClient {
     private errorCallback: ErrorCallback | null = null;  // Phase 10
     private isConnected: boolean = false;
 
-    // Accumulate transcript within a turn
+    // Phase 9.9: Aggressive Finalization state
+    private interimTimer: ReturnType<typeof setTimeout> | null = null;
     private accumulatedTranscript: string = "";
+    private lastInterimTranscript: string = "";
     private lastConfidence: number = 0;
 
     // Phase 10: Retry state
@@ -136,7 +138,6 @@ class VoiceRelayClient {
         }
         // === END DIAGNOSTIC ===
 
-        // Phase 9.8: Safety Valve for "Zombie Listening"
         const msgType = data.type;
 
         switch (msgType) {
@@ -146,48 +147,90 @@ class VoiceRelayClient {
                 const transcript = alternative?.transcript || "";
                 const confidence = alternative?.confidence ?? 0;
                 const isFinal = data.is_final === true;
-                const speechFinal = data.speech_final === true;
+
+                // Note: We ignore speech_final. If text is final, we go.
 
                 if (transcript) {
-                    console.log(`[VoiceRelay] Transcript (isFinal=${isFinal}, speechFinal=${speechFinal}): "${transcript}"`);
-
-                    // 1. Emit Interim Results
+                    // 1. Emit Interim Results (Visuals)
                     if (this.interimCallback) {
                         this.interimCallback(transcript, isFinal);
                     }
 
-                    // 2. Handle Final Text
+                    // 2. AGGRESSIVE FINALIZATION 🚀
                     if (isFinal) {
+                        this.clearInterimTimer();
                         this.accumulatedTranscript = transcript.trim();
                         this.lastConfidence = confidence;
 
-                        // Reset for next utterance
-                        this.accumulatedTranscript = "";
-                        this.lastConfidence = 0;
+                        // FIRE IMMEDIATELY. Do not wait.
+                        this.triggerEndOfTurn();
+                    }
+                    // 3. Handle Partial Text (Interim Commit Fallback)
+                    else {
+                        this.lastInterimTranscript = transcript.trim();
+                        this.lastConfidence = confidence;
+                        this.startInterimTimer();
                     }
                 }
                 break;
 
-            case "Metadata":
-                console.log("[VoiceRelay] Metadata received");
-                break;
-
             case "SpeechStarted":
-                console.log("[VoiceRelay] Speech started (barge-in trigger)");
+                this.clearInterimTimer();
                 this.accumulatedTranscript = "";
-                // Phase 9.4: Emit for instant barge-in
-                if (this.speechStartedCallback) {
-                    this.speechStartedCallback();
-                }
+                this.lastInterimTranscript = "";
+                if (this.speechStartedCallback) this.speechStartedCallback();
                 break;
 
             case "UtteranceEnd":
-                console.log("[VoiceRelay] UtteranceEnd");
+                // Backup only. Usually isFinal handles it first.
+                this.triggerEndOfTurn();
+                break;
+
+            case "Metadata":
+                // Ignore metadata messages
                 break;
 
             default:
-                // Ignore unknown message types silently
+                // console.log("[VoiceRelay] Unknown message type:", msgType);
                 break;
+        }
+    }
+
+    private triggerEndOfTurn() {
+        this.clearInterimTimer();
+
+        // Prefer finalized text, fall back to interim
+        const finalValidText = this.accumulatedTranscript || this.lastInterimTranscript;
+
+        // CRITICAL: Check if we actually have text to send
+        if (finalValidText && finalValidText.trim().length > 0) {
+            console.log(`[VoiceRelay] EndOfTurn Triggered: "${finalValidText}"`);
+
+            if (this.endOfTurnCallback) {
+                this.endOfTurnCallback(finalValidText.trim(), this.lastConfidence);
+            }
+
+            // RESET IMMEDIATELY to prevent double-sends
+            this.accumulatedTranscript = "";
+            this.lastInterimTranscript = "";
+            this.lastConfidence = 0;
+        }
+    }
+
+    private startInterimTimer() {
+        this.clearInterimTimer();
+        // If we get stuck on a partial for 2.0s, force it through.
+        this.interimTimer = setTimeout(() => {
+            console.warn(`[VoiceRelay] Interim Commit: Forcing finalize on "${this.lastInterimTranscript}"`);
+            this.accumulatedTranscript = this.lastInterimTranscript;
+            this.triggerEndOfTurn();
+        }, 2000);
+    }
+
+    private clearInterimTimer() {
+        if (this.interimTimer) {
+            clearTimeout(this.interimTimer);
+            this.interimTimer = null;
         }
     }
 
