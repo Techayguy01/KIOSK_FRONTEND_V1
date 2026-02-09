@@ -15,6 +15,7 @@ import { CompletePage } from '../pages/CompletePage';
 // Components
 import { ErrorBanner } from '../components/ErrorBanner';
 import { BackButton } from '../components/BackButton';
+import { CaptionsOverlay } from '../components/CaptionsOverlay';
 
 const App: React.FC = () => {
   // Local UI State (Renderer only)
@@ -34,7 +35,17 @@ const App: React.FC = () => {
       setLoading(false);
     });
 
-    return () => unsubscribe();
+    // Phase 12: Global Listener for Transcripts
+    const unsubTranscript = AgentAdapter.onTranscript((text, isFinal) => {
+      // Dispatch a custom window event so CaptionsOverlay can pick it up
+      const event = new CustomEvent('VOICE_TRANSCRIPT', { detail: { text, isFinal } });
+      window.dispatchEvent(event);
+    });
+
+    return () => {
+      unsubscribe();
+      unsubTranscript();
+    }
   }, []);
 
   // 2. INTENT EMITTER (Forwarder to Agent)
@@ -100,7 +111,7 @@ const App: React.FC = () => {
   };
 
   return (
-    <UIContext.Provider value={{ state, data, emit, loading }}>
+    <UIContext.Provider value={{ state, data, emit, loading, transcript: '' }}>
       <div className="antialiased w-full h-full relative">
 
         {/* Global Navigation Controls (Visibility controlled implicitly by page rendering, backing is Agent driven) */}
@@ -113,6 +124,8 @@ const App: React.FC = () => {
             onDismiss={() => setError(null)}
           />
         )}
+
+        <CaptionsOverlay />
 
         {renderPage()}
 

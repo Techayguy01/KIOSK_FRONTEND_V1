@@ -1,9 +1,11 @@
 import { Intent } from "../contracts/intents";
-import { processIntent, UiState, VOICE_COMMAND_MAP, STATE_INPUT_MODES } from "./index";
+import { UiState, VOICE_COMMAND_MAP, STATE_INPUT_MODES, STATE_SPEECH_MAP } from "./index";
 import { VoiceRuntime } from "../voice/VoiceRuntime";
 import { VoiceEvent } from "../voice/voice.types";
 import { SpeechOutputController } from "../voice/SpeechOutputController";
 import { TTSController } from "../voice/TTSController";
+import { StateMachine } from "../state/uiState.machine";
+import { UIState } from "../contracts/backend.contract";
 
 /**
  * AgentAdapter (Singleton) - Phase 9.4: TTS UX, Barge-In & Audio Authority
@@ -47,10 +49,10 @@ type VoiceTelemetryEvent =
 
 class AgentAdapterService {
     private state: UiState = "IDLE";
-    private listeners: ((state: UiState) => void)[] = [];
+    private listeners: ((state: UiState, data?: any) => void)[] = [];
 
     // Intent de-duplication guard (Phase 8.4)
-    private lastIntent: Intent | null = null;
+    private lastIntent: string | null = null; // Phase 8.6: De-duplication
     private lastIntentTime: number = 0;
     private readonly DEDUP_WINDOW_MS = 800;
 
@@ -172,6 +174,7 @@ class AgentAdapterService {
 
         switch (event.type) {
             case "VOICE_SESSION_STARTED":
+                this.hasProcessedTranscript = false; // Reset flag
                 // Phase 8.6: Check voice authority matrix
                 if (!this.hasVoiceAuthority()) {
                     this.emitTelemetry("VOICE_COMMAND_BLOCKED", {
@@ -196,6 +199,8 @@ class AgentAdapterService {
                 break;
 
             case "VOICE_TRANSCRIPT_READY":
+                this.hasProcessedTranscript = true;
+
                 // Phase 8.6: Authority check before processing
                 if (!this.hasVoiceAuthority()) {
                     this.emitTelemetry("VOICE_TRANSCRIPT_REJECTED", {
@@ -205,6 +210,9 @@ class AgentAdapterService {
                     VoiceRuntime.setTurnState("IDLE");
                     return;
                 }
+
+                // Phase 12: Emit Final Transcript
+                this.emitTranscript(event.transcript, true);
 
                 // Phase 8.6: Rate limiting check
                 if (this.isRateLimited()) {
@@ -240,6 +248,13 @@ class AgentAdapterService {
             case "VOICE_SESSION_ENDED":
                 console.log("[AgentAdapter] Voice Session Ended.");
                 VoiceRuntime.setTurnState("IDLE");
+
+                // Silence Recovery
+                if (!this.hasProcessedTranscript) {
+                    console.log("[Agent] 🔇 Silence Detected. Attempting Re-engagement.");
+                    this.handleSilence();
+                }
+                this.hasProcessedTranscript = false;
                 break;
 
             // Phase 10: Production Hardening - Recovery Events
@@ -262,6 +277,8 @@ class AgentAdapterService {
 
             case "VOICE_TRANSCRIPT_PARTIAL":
                 // Just for live display, no action needed
+                // Phase 12: Emit Partial Transcript
+                this.emitTranscript(event.transcript, false);
                 break;
         }
     }
@@ -362,23 +379,6 @@ class AgentAdapterService {
         }
     }
 
-    // Phase 9.8: Helper for FSM Valid Transitions
-    private getValidTransitionsForState(state: UiState): string[] {
-        const validTransitions: Record<UiState, string[]> = {
-            IDLE: ["WELCOME"],
-            WELCOME: ["CHECK_IN", "HELP", "SCAN_ID"],
-            AI_CHAT: ["CHECK_IN", "HELP", "WELCOME", "SCAN_ID", "PAYMENT"],
-            MANUAL_MENU: ["CHECK_IN", "HELP", "WELCOME"],
-            SCAN_ID: ["HELP"],
-            ROOM_SELECT: ["PAYMENT", "HELP"],
-            PAYMENT: ["HELP"],
-            KEY_DISPENSING: [],
-            COMPLETE: ["WELCOME"],
-            ERROR: ["WELCOME", "HELP"],
-        };
-        return validTransitions[state] || [];
-    }
-
     /**
      * Phase 9.5: The Bouncer 🛡️
      * Checks if the LLM's proposed intent is legal in the current state.
@@ -389,9 +389,10 @@ class AgentAdapterService {
             return true;
         }
 
-        // Use the centralized transition map
-        const allowed = this.getValidTransitionsForState(this.state);
-        return allowed.includes(proposedIntent);
+        // Ask the State Machine
+        // If transition returns same state, it's invalid (or self-loop, which we treat as invalid for now unless explicit)
+        const nextState = StateMachine.transition(this.state as UIState, proposedIntent);
+        return nextState !== this.state;
     }
 
     /**
@@ -426,8 +427,10 @@ class AgentAdapterService {
             "HELP": "BACK_REQUESTED",
             "WELCOME": "PROXIMITY_DETECTED",
             "REPEAT": "VOICE_STARTED",
+            "EXPLAIN_CAPABILITIES": "EXPLAIN_CAPABILITIES",
+            "GENERAL_QUERY": "GENERAL_QUERY"
         };
-        return intentMap[llmIntent] || null;
+        return intentMap[llmIntent as string] || null;
     }
 
     /**
@@ -441,10 +444,18 @@ class AgentAdapterService {
      * Subscribe to state changes.
      * Returns an unsubscribe function.
      */
-    public subscribe(listener: (state: UiState) => void): () => void {
+    public subscribe(listener: (state: UiState, data?: any) => void): () => void {
         this.listeners.push(listener);
+
         // Emit current state immediately to new subscriber
-        listener(this.state);
+        const metadata = StateMachine.getMetadata(this.state as UIState);
+        const fullData = {
+            metadata: {
+                ...metadata,
+                listening: this.hasVoiceAuthority() // Approximate check
+            }
+        };
+        listener(this.state, fullData);
 
         return () => {
             this.listeners = this.listeners.filter(l => l !== listener);
@@ -460,32 +471,18 @@ class AgentAdapterService {
         console.log(`[AgentAdapter] 👆 Handle Intent (Touch Authority): ${intent}`, payload || '');
 
         // 1. TOUCH AUTHORITY CHECK 🛡️
-        // If this is a Navigation Intent, we must kill Voice/TTS immediately.
-        const NAVIGATION_INTENTS = [
-            "CHECK_IN_SELECTED",
-            "BOOK_ROOM_SELECTED",
-            "TOUCH_SELECTED",
-            "BACK_REQUESTED",
-            "HELP_SELECTED",
-            "PROXIMITY_DETECTED",
-            "SCAN_ID_SELECTED",
-            "SCAN_COMPLETED",
-            "ROOM_SELECTED",
-            "PAYMENT_SELECTED",
-            "CONFIRM_PAYMENT",
-            "RESET"
+        const INTERRUPT_INTENTS = [
+            "CHECK_IN_SELECTED", "BOOK_ROOM_SELECTED",
+            "HELP_SELECTED", "SCAN_COMPLETED",
+            "ROOM_SELECTED", "CONFIRM_PAYMENT",
+            "BACK_REQUESTED", "RESET", "TOUCH_SELECTED",
+            "CANCEL_REQUESTED", "PROXIMITY_DETECTED",
+            "SCAN_ID_SELECTED", "PAYMENT_SELECTED"
         ];
 
-        // Check if it's a Nav intent OR if it's in our valid transitions list
-        const isNavigation = NAVIGATION_INTENTS.includes(intent);
-
-        if (isNavigation) {
+        if (INTERRUPT_INTENTS.includes(intent)) {
             console.log("[AgentAdapter] 👆 Touch Interrupt detected. Killing Audio.");
-
-            // A. Kill the Mouth
             TTSController.hardStop();
-
-            // B. Kill the Ears
             VoiceRuntime.stopListening();
 
             // C. Special Handling for Generic Touch
@@ -498,52 +495,127 @@ class AgentAdapterService {
             }
         }
 
-        // 2. Dispatch to FSM
-        this.dispatch(intent as Intent, payload);
+        // 2. CALCULATE TRANSITION (Centralized State Machine)
+        let nextState: UiState = this.state;
+
+        if (intent === 'BACK_REQUESTED' || intent === 'CANCEL_REQUESTED') {
+            nextState = StateMachine.getPreviousState(this.state as UIState) as UiState;
+        } else if (intent === 'RESET') {
+            nextState = 'IDLE';
+        } else {
+            nextState = StateMachine.transition(this.state as UIState, intent) as UiState;
+        }
+
+        // 3. EXECUTE
+        if (nextState !== this.state) {
+            this.transitionTo(nextState);
+        } else {
+            console.log(`[AgentAdapter] No Transition: ${this.state} + ${intent} -> ${nextState}`);
+        }
+    }
+
+    // === Phase 11.8: Enterprise Hardening ===
+    private hasProcessedTranscript = false;
+
+    private handleSilence() {
+        // Don't nag if we are Idle or in Manual Mode
+        if (this.state === 'IDLE' || this.state === 'MANUAL_MENU') return;
+
+        // Gentle Nudge
+        const nudges = [
+            "I'm still listening.",
+            "Did you need more time?",
+            "You can say 'Check In' or 'Help'."
+        ];
+        const randomNudge = nudges[Math.floor(Math.random() * nudges.length)];
+
+        // Speak, but don't force listening immediately to avoid loops
+        TTSController.speak(randomNudge);
     }
 
     /**
-     * Dispatch an Intent to the Agent Brain.
-     * This is the ONLY way to change state.
-     * Phase 9.4.1: Polite Turn-Taking - mic opens AFTER TTS ends, not immediately.
+     * Internal transition helper to handle side-effects
+     */
+    private transitionTo(nextState: UiState) {
+        console.log(`[Mediator] Requesting: ${this.state} -> ${nextState}`);
+
+        // ENTERPRISE RULE #1: Recursive Transitions are Valid
+        // If the AI wants to stay on the same page to chat, LET IT.
+        if (nextState === this.state) {
+            console.log(`[Mediator] 🗣️ Conversational Turn (Staying on ${this.state})`);
+            // We don't update this.state, but we ALLOW the flow to continue 
+            // so the TTS can play the AI's response.
+
+            // Speak Agent response even if state didn't change (if mapped, or if LLM provided speech)
+            // Note: LLM speech is handled in processWithLLMBrain usually before calling dispatch/transition?
+            // Actually, transitionTo is called when DISPATCH happens.
+            // If LLM says "GENERAL_QUERY", we map to "GENERAL_QUERY" intent.
+            // StateMachine says "WELCOME" -> "WELCOME".
+            // So we end up here.
+            // We should ensure any speech associated with the intent (if defined in STATE_SPEECH_MAP) is spoken,
+            // OR rely on the LLM's direct speech which was called in processWithLLMBrain.
+            // But processWithLLMBrain only speaks if intent is IDLE or UNKNOWN?
+            // Wait, processWithLLMBrain says: "if (decision.speech) this.speak(decision.speech);"
+            // THEN "this.dispatch(fsmIntent)".
+            // So speech is ALREADY handled by the time we get here.
+            // So we just return.
+            return;
+        }
+
+        const previousState = this.state;
+        this.state = nextState;
+
+        console.log(`[AgentAdapter] State Transition: ${previousState} -> ${this.state}`);
+
+        // Phase 9.4.1: On state change, stop any active TTS and listening
+        VoiceRuntime.stopSpeaking();
+        VoiceRuntime.stopListening();
+
+        // Notify Listeners
+        this.notifyListeners();
+
+        // Speak Agent response (lookup from legacy map)
+        const speech = STATE_SPEECH_MAP[nextState];
+        if (speech) {
+            console.log(`[AgentAdapter] Speaking: "${speech}"`);
+            VoiceRuntime.speak(speech);
+        } else {
+            // If no speech, check if we should listen
+            // Start listening if applicable
+            if (this.hasVoiceAuthority()) {
+                setTimeout(() => {
+                    if (this.hasVoiceAuthority()) {
+                        VoiceRuntime.startListening();
+                    }
+                }, 100);
+            }
+        }
+    }
+
+    /**
+     * Dispatch an Intent to the Agent Brain (Legacy / Voice Path).
+     * Now routes through handleIntent logic logic but without Touch Authority Kill?
+     * Actually, Voice dispatch should probably NOT use handleIntent because handleIntent kills voice.
      */
     public dispatch(intent: Intent, payload?: any) {
-        console.log(`[AgentAdapter] Dispatching Intent: ${intent}`, payload ? payload : "");
+        // Voice dispatch uses StateMachine too.
+        // We can reuse the calculation logic from handleIntent, but skip the "Kill Audio" part.
 
-        // 1. Ask Brain for next state
-        const response = processIntent(intent, this.state, (msg) => console.log(msg));
+        // 2. CALCULATE TRANSITION (Centralized State Machine)
+        let nextState: UiState = this.state;
 
-        // 2. Check if state actually changed
-        if (response.ui_state !== this.state) {
-            const previousState = this.state;
-            this.state = response.ui_state;
-
-            console.log(`[AgentAdapter] State Transition: ${previousState} -> ${this.state}`);
-
-            // Phase 9.4.1: On state change, stop any active TTS and listening
-            // This prevents the race condition
-            VoiceRuntime.stopSpeaking();
-            VoiceRuntime.stopListening();
-
-            // 3. Notify Listeners (UI updates)
-            this.notifyListeners();
-
-            // 4. Phase 9.4.1: Speak Agent response
-            // Mic will auto-start via handleTTSEnded() when speech finishes
-            if (response.speech) {
-                console.log(`[AgentAdapter] Speaking: "${response.speech.substring(0, 50)}..."`); VoiceRuntime.speak(response.speech);
-            } else {
-                // No speech for this state - start listening immediately if allowed
-                if (this.hasVoiceAuthority()) {
-                    setTimeout(() => {
-                        if (this.hasVoiceAuthority()) {
-                            VoiceRuntime.startListening();
-                        }
-                    }, 100);
-                }
-            }
+        if (intent === 'BACK_REQUESTED' || intent === 'CANCEL_REQUESTED') {
+            nextState = StateMachine.getPreviousState(this.state as UIState) as UiState;
+        } else if (intent === 'RESET') {
+            nextState = 'IDLE';
         } else {
-            console.log(`[AgentAdapter] No Transition (Stuck): ${this.state}`);
+            nextState = StateMachine.transition(this.state as UIState, intent) as UiState;
+        }
+
+        if (nextState !== this.state) {
+            // We can check if we should speak here.
+            // But for now, just transition.
+            this.transitionTo(nextState);
         }
     }
 
@@ -577,7 +649,14 @@ class AgentAdapterService {
     }
 
     private notifyListeners() {
-        this.listeners.forEach(listener => listener(this.state));
+        const metadata = StateMachine.getMetadata(this.state as UIState);
+        const fullData = {
+            metadata: {
+                ...metadata,
+                listening: this.hasVoiceAuthority()
+            }
+        };
+        this.listeners.forEach(listener => listener(this.state, fullData));
     }
 
     // debug / testing utility to force reset if needed
@@ -587,6 +666,19 @@ class AgentAdapterService {
         this.lastIntentTime = 0;
         this.intentTimestamps = [];
         this.notifyListeners();
+    }
+    // === Phase 12: Real-Time Captions ===
+    private transcriptListeners: ((text: string, isFinal: boolean) => void)[] = [];
+
+    public onTranscript(listener: (text: string, isFinal: boolean) => void): () => void {
+        this.transcriptListeners.push(listener);
+        return () => {
+            this.transcriptListeners = this.transcriptListeners.filter(l => l !== listener);
+        };
+    }
+
+    private emitTranscript(text: string, isFinal: boolean) {
+        this.transcriptListeners.forEach(l => l(text, isFinal));
     }
 }
 

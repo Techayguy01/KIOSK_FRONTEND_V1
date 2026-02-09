@@ -5,6 +5,7 @@ import { UIContextType } from './uiState.types';
 const initialContext: UIContextType = {
   state: 'IDLE',
   data: {},
+  transcript: '',
   emit: () => { throw new Error("Not Implemented: UIContext Provider missing"); },
   loading: false,
 };

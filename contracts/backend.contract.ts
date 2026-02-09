@@ -3,7 +3,8 @@
 export type UIState =
   | 'IDLE'
   | 'WELCOME'
-  | 'VOICE_LISTENING'
+  | 'AI_CHAT'
+  | 'MANUAL_MENU'
   | 'SCAN_ID'
   | 'ROOM_SELECT'
   | 'PAYMENT'
