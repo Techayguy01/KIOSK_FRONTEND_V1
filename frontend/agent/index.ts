@@ -1,4 +1,4 @@
-import { Intent } from "../contracts/intents";
+import { Intent } from "@contracts/intents";
 
 // Minimal State Definition to satisfy the agent's need to know state
 export type UiState =

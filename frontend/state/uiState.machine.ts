@@ -1,4 +1,4 @@
-import { UIState } from '../contracts/backend.contract';
+import { UIState } from '@contracts/backend.contract';
 
 type TransitionMap = Record<string, UIState>;
 type StateConfig = Record<UIState, { on: TransitionMap; canGoBack: boolean }>;

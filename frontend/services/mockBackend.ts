@@ -1,5 +1,5 @@
-import { UIState, ChatMessage } from '../contracts/backend.contract';
-import { UIEventType } from '../contracts/events.contract';
+import { UIState, ChatMessage } from '@contracts/backend.contract';
+import { UIEventType } from '@contracts/events.contract';
 import { sessionMock } from '../mocks/session.mock';
 import { roomsMock } from '../mocks/rooms.mock';
 import { voiceMock } from '../mocks/voice.mock';

@@ -1,5 +1,5 @@
 import { processIntent, UiState } from "./index";
-import { Intent } from "../contracts/intents";
+import { Intent } from "@contracts/intents";
 import { strict as assert } from "assert";
 
 // Mock logger to keep tests clean

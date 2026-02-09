@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useUIState } from '../state/uiContext';
-import { UIState } from '../contracts/backend.contract';
+import { UIState } from '@contracts/backend.contract';
 import { Settings, X, Zap } from 'lucide-react';
 
 export const DevToolbar: React.FC = () => {
@@ -49,8 +49,8 @@ export const DevToolbar: React.FC = () => {
                         key={s}
                         onClick={() => emit('FORCE_STATE' as any, { targetState: s })}
                         className={`px-2 py-2 text-[10px] rounded-md font-mono transition-all border ${state === s
-                                ? 'bg-blue-600/20 border-blue-500 text-blue-300'
-                                : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700 hover:text-slate-200'
+                            ? 'bg-blue-600/20 border-blue-500 text-blue-300'
+                            : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700 hover:text-slate-200'
                             }`}
                     >
                         {s}

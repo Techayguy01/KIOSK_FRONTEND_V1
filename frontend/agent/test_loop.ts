@@ -1,5 +1,5 @@
 import { processIntent, UiState } from "./index";
-import { Intent } from "../contracts/intents";
+import { Intent } from "@contracts/intents";
 
 console.log("🧪 Starting Agent Loop Verification...");
 

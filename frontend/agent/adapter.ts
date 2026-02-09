@@ -1,11 +1,11 @@
-import { Intent } from "../contracts/intents";
+import { Intent } from "@contracts/intents";
 import { UiState, VOICE_COMMAND_MAP, STATE_INPUT_MODES, STATE_SPEECH_MAP } from "./index";
 import { VoiceRuntime } from "../voice/VoiceRuntime";
 import { VoiceEvent } from "../voice/voice.types";
 import { SpeechOutputController } from "../voice/SpeechOutputController";
 import { TTSController } from "../voice/TTSController";
 import { StateMachine } from "../state/uiState.machine";
-import { UIState } from "../contracts/backend.contract";
+import { UIState } from "@contracts/backend.contract";
 
 /**
  * AgentAdapter (Singleton) - Phase 9.4: TTS UX, Barge-In & Audio Authority
@@ -47,6 +47,8 @@ type VoiceTelemetryEvent =
     | "VOICE_RATE_LIMITED"
     | "VOICE_SESSION_ERROR";
 
+type Sentiment = 'POSITIVE' | 'NEUTRAL' | 'FRUSTRATED' | 'URGENT';
+
 class AgentAdapterService {
     private state: UiState = "IDLE";
     private listeners: ((state: UiState, data?: any) => void)[] = [];
@@ -61,6 +63,10 @@ class AgentAdapterService {
     private readonly RATE_LIMIT_COOLDOWN_MS = 2000;  // Max 1 intent per 2s
     private readonly RATE_LIMIT_BURST_MAX = 3;       // Max 3 intents per 10s
     private readonly RATE_LIMIT_BURST_WINDOW_MS = 10000;
+
+    // Phase 13: Emotion Engine 🧠
+    private frustrationScore = 0;
+    private frustrationThreshold = 2; // Escalate after 2 bad turns
 
     // Phase 9.4: Confidence thresholds for LLM safety gating
     private readonly CONFIDENCE_THRESHOLD_HIGH = 0.85;
@@ -78,6 +84,44 @@ class AgentAdapterService {
                 this.handleTTSEnded();
             }
         });
+    }
+
+    // 1. THE SENTIMENT ENGINE 🧠
+    // Quick, local analysis to catch anger instantly
+    private analyzeSentiment(text: string): Sentiment {
+        const lower = text.toLowerCase();
+
+        // A. Immediate Escalation Keywords
+        const urgentWords = ['manager', 'human', 'supervisor', 'emergency', 'shutup', 'shut up'];
+        if (urgentWords.some(w => lower.includes(w))) return 'URGENT';
+
+        // B. Frustration Keywords
+        const badWords = [
+            'stupid', 'hate', 'broken', 'doesn\'t work', 'confused',
+            'ridiculous', 'slow', 'shit', 'damn', 'useless', 'wrong'
+        ];
+        if (badWords.some(w => lower.includes(w))) return 'FRUSTRATED';
+
+        // C. Positive/Neutral
+        const goodWords = ['thanks', 'good', 'great', 'cool', 'perfect'];
+        if (goodWords.some(w => lower.includes(w))) return 'POSITIVE';
+
+        return 'NEUTRAL';
+    }
+
+    // 3. ESCALATION ROUTINE 🚨
+    private async escalateToHuman(message: string) {
+        console.warn("[Agent] 🚨 AUTO-ESCALATION TRIGGERED");
+
+        // 1. Speak the reassurance (using this.speak for Captions)
+        this.speak(message);
+
+        // 2. Force the State Machine to Help
+        // We use a small delay so the TTS can start
+        setTimeout(() => {
+            this.handleIntent('HELP_SELECTED');
+            this.frustrationScore = 0; // Reset
+        }, 3000);
     }
 
     /**
@@ -225,6 +269,33 @@ class AgentAdapterService {
                 }
 
                 const transcript = event.transcript.toLowerCase().trim();
+
+                // Phase 13: Emotional Intelligence Processing
+                const emotion = this.analyzeSentiment(transcript);
+                console.log(`[Agent] Sentiment: ${emotion} | Score: ${this.frustrationScore}`);
+
+                // B. Handle Escalation
+                if (emotion === 'URGENT') {
+                    this.escalateToHuman("I am connecting you to a supervisor immediately.");
+                    return;
+                }
+
+                if (emotion === 'FRUSTRATED') {
+                    this.frustrationScore++;
+
+                    // If they are repeatedly angry, give up and call help
+                    if (this.frustrationScore >= this.frustrationThreshold) {
+                        this.escalateToHuman("I sense you are having trouble. Let me get a human to help.");
+                        return;
+                    }
+
+                    // Soft Apology for first offense
+                    this.speak("I apologize. Let's try that again.");
+                    // Continue to normal LLM processing...
+                } else {
+                    // Reset score on good interactions
+                    if (emotion === 'POSITIVE') this.frustrationScore = 0;
+                }
 
                 // Phase 9.7: Use LLM Brain instead of Regex
                 console.log(`[AgentAdapter] Handing off to Brain: "${transcript}"`);
