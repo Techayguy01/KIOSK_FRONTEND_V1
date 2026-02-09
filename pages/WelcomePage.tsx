@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useUIState } from '../state/uiContext';
 import { useFadeIn } from '../hooks/useAnimation';
-import { Keyboard, Mic, CalendarCheck, BedDouble, HelpCircle } from 'lucide-react';
+import { Keyboard, Mic, CalendarCheck, BedDouble, HelpCircle, StopCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '../components/ui/button';
 import { Orb, OrbState } from '../components/ui/orb';
 import AnimatedGradientBackground from '../components/ui/animated-gradient-background';
 import HoverRevealCards from '../components/ui/hover-reveal-cards';
+import { VoiceRuntime, VoiceTurnState } from '../voice/VoiceRuntime'; // Phase 8.4 Turn Control
 
 // Local type for UI logic (compatible with OrbState via mapping)
 type AgentState = "idle" | "listening" | "thinking" | "talking" | null
@@ -25,17 +26,72 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
 
   // Internal animation state only - NOT navigational state
   const [interactionState, setInteractionState] = useState<AgentState>(null);
+  const [isSessionActive, setIsSessionActive] = useState(false);
+  const [liveTranscript, setLiveTranscript] = useState<string>("");
 
-  // TEMP: UI mock, to be replaced by Voice Runtime in Phase 7C
-  // const messages = data.messages || []; 
-  const messages: any[] = [];
+  // Phase 8.4: Track voice turn state for UI control
+  const [turnState, setTurnState] = useState<VoiceTurnState>("IDLE");
 
   const fade = useFadeIn(200);
+
+  // Subscribe to VoiceRuntime for visual feedback only
+  useEffect(() => {
+    const unsubscribe = VoiceRuntime.subscribe((event) => {
+      switch (event.type) {
+        case "VOICE_SESSION_STARTED":
+          setIsSessionActive(true);
+          setInteractionState('listening');
+          setLiveTranscript("");
+          break;
+        case "VOICE_TRANSCRIPT_PARTIAL":
+          // Live display of interim transcript
+          setLiveTranscript(event.transcript);
+          break;
+        case "VOICE_TRANSCRIPT_READY":
+          setInteractionState('thinking');
+          setLiveTranscript(event.transcript);
+          break;
+        case "VOICE_SESSION_ENDED":
+          setIsSessionActive(false);
+          setInteractionState(null); // Return to idle/Agent authority
+          // Keep liveTranscript visible briefly, then clear
+          setTimeout(() => setLiveTranscript(""), 2000);
+          break;
+      }
+    });
+
+    // Phase 8.4: Subscribe to turn state changes
+    const unsubscribeTurn = VoiceRuntime.onTurnStateChange((state) => {
+      setTurnState(state);
+
+      // Map turn state to interaction state for Orb
+      switch (state) {
+        case "USER_SPEAKING":
+          setInteractionState('listening');
+          break;
+        case "PROCESSING":
+          setInteractionState('thinking');
+          break;
+        case "SYSTEM_RESPONDING":
+          setInteractionState('talking');
+          break;
+        case "IDLE":
+          setInteractionState(null);
+          break;
+      }
+    });
+
+    return () => {
+      unsubscribe();
+      unsubscribeTurn();
+    };
+  }, []);
+
+
 
   // Calculate the effective state of the agent for Orb animation
   const getAgentState = (): AgentState => {
     if (interactionState) return interactionState;
-    // if (data.listening) return 'listening'; // Backend not connected yet
     if (loading) return 'thinking';
     return 'idle';
   };
@@ -51,25 +107,21 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
     }
   };
 
-  const handleVoicePushStart = () => {
-    setInteractionState('listening');
-    // Atomic Intent: User wants to speak
-    emit('VOICE_STARTED');
-  };
+  // Phase 8.4: Check if mic button should be disabled
+  const isMicDisabled = turnState === "PROCESSING" || turnState === "SYSTEM_RESPONDING";
 
-  const handleVoicePushEnd = () => {
-    setInteractionState('thinking');
-    // REMOVED: setTimeout logic that simulated "thinking" -> "idle".
-    // We now wait for the Agent/Backend to tell us what to do.
-    // Use manual reset only if we implement a specific UI timeout or cancellation.
-    // For now, it stays "thinking" (or clears if we want to be purely reactive).
-    // setInteractionState(null); // Let's clear it immediately for Phase 7B "dumb" behavior
-    // actually, clearing it immediately makes it look like nothing happened.
-    // Keeping it "thinking" forever is also weird without backend.
-    // For Phase 7B (Stuck Test), we can just clear it immediately or leave it.
-    // User requested: "Remove timers".
-    // Let's just clear interactionState on mouse up to avoid "fake thinking".
-    setInteractionState(null);
+  const toggleVoiceSession = async () => {
+    // Phase 8.4: Respect turn control - mic only works when IDLE or USER_SPEAKING
+    if (isMicDisabled) {
+      console.log(`[WelcomePage] Mic tap ignored: turnState=${turnState}`);
+      return;
+    }
+
+    if (isSessionActive) {
+      VoiceRuntime.endSession();
+    } else {
+      await VoiceRuntime.startSession();
+    }
   };
 
   const ManualMode = () => (
@@ -112,7 +164,7 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
       <div className="mt-16">
         <Button
           variant="ghost"
-          onClick={() => emit('VOICE_STARTED')} // Atomic Intent
+          onClick={() => VoiceRuntime.startSession()} // Use Runtime directly
           className="flex items-center gap-2 text-slate-500 hover:text-white"
         >
           <Mic size={18} />
@@ -203,25 +255,24 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
         {/* Chat Transcript Area */}
         <div className="w-full max-w-lg min-h-[80px] flex flex-col justify-end items-center text-center space-y-2 pointer-events-none">
           <AnimatePresence mode="popLayout">
-            {messages.slice(-1).map((msg: any) => (
+            {liveTranscript ? (
               <motion.div
-                key={msg.id}
+                key="live-transcript"
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0 }}
-                className={`text-lg md:text-xl font-light leading-relaxed ${msg.role === 'user' ? 'text-slate-400 italic' : 'text-slate-100'
-                  }`}
+                className="text-lg md:text-xl font-light leading-relaxed text-slate-100"
               >
-                {msg.text}
+                {liveTranscript}
               </motion.div>
-            ))}
-            {messages.length === 0 && (
+            ) : (
               <motion.p
+                key="placeholder"
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 className="text-slate-500 text-lg"
               >
-                "Hello, I'd like to check in..."
+                {isSessionActive ? "Listening..." : '"Hello, I\'d like to check in..."'}
               </motion.p>
             )}
           </AnimatePresence>
@@ -238,17 +289,20 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
               ? 'bg-blue-600 text-white shadow-blue-500/50 scale-110'
               : 'bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700'
               }`}
-            onMouseDown={handleVoicePushStart}
-            onMouseUp={handleVoicePushEnd}
-            onTouchStart={(e) => { e.preventDefault(); handleVoicePushStart(); }}
-            onTouchEnd={(e) => { e.preventDefault(); handleVoicePushEnd(); }}
-            aria-label="Hold to speak"
+            onClick={toggleVoiceSession} // Tap-to-Toggle
+            aria-label={isSessionActive ? "Stop listening" : "Start listening"}
           >
-            <Mic size={32} className={getAgentState() === 'listening' ? 'animate-pulse' : ''} />
+            {isSessionActive ? (
+              <StopCircle size={32} className="animate-pulse text-red-400" />
+            ) : (
+              <Mic size={32} />
+            )}
           </button>
         </div>
 
-        <p className="text-xs text-slate-500 uppercase tracking-widest font-medium">Hold to Speak</p>
+        <p className="text-xs text-slate-500 uppercase tracking-widest font-medium">
+          {isSessionActive ? "Tap to Stop" : "Tap to Speak"}
+        </p>
       </div>
     </div>
   );

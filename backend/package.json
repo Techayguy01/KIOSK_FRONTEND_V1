@@ -1,0 +1,25 @@
+{
+    "name": "kiosk-voice-relay",
+    "version": "1.0.0",
+    "type": "module",
+    "scripts": {
+        "dev": "tsx watch server.ts",
+        "start": "tsx server.ts"
+    },
+    "dependencies": {
+        "@langchain/core": "^1.1.19",
+        "@langchain/groq": "^1.0.4",
+        "cors": "^2.8.6",
+        "dotenv": "^16.4.1",
+        "express": "^5.2.1",
+        "ws": "^8.16.0",
+        "zod": "^4.3.6"
+    },
+    "devDependencies": {
+        "@types/cors": "^2.8.19",
+        "@types/express": "^5.0.6",
+        "@types/ws": "^8.5.10",
+        "tsx": "^4.7.0",
+        "typescript": "^5.3.3"
+    }
+}

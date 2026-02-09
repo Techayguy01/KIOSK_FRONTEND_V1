@@ -13,8 +13,24 @@ export type UiState =
     | "COMPLETE"
     | "ERROR";
 
+// Phase 9.3: AgentResponse now includes optional speech
 export type AgentResponse = {
     ui_state: UiState;
+    speech?: string;  // Optional TTS output
+};
+
+// Phase 9.3: State-based speech responses (deterministic, no LLM)
+// Maps state transitions to spoken responses
+const STATE_SPEECH_MAP: Partial<Record<UiState, string>> = {
+    WELCOME: "Welcome to Grand Hotel. How may I assist you today?",
+    AI_CHAT: "I'm listening. You can say check in, book a room, or ask for help.",
+    MANUAL_MENU: "Please select an option from the menu.",
+    SCAN_ID: "Please scan your ID or passport.",
+    ROOM_SELECT: "Please select your preferred room.",
+    PAYMENT: "Please complete your payment.",
+    KEY_DISPENSING: "Please wait while I prepare your key.",
+    COMPLETE: "Thank you for choosing Grand Hotel. Enjoy your stay.",
+    ERROR: "I'm sorry, something went wrong. Please tap to try again.",
 };
 
 // Phase 3: Input Modes & Voice Mapping (Design Only)
@@ -182,10 +198,11 @@ export const processIntent = (intent: Intent, currentState: UiState, injectLog?:
         } else {
             console.log(`[Agent] Transition Allowed: ${currentState} + ${intent} -> ${nextState}`);
         }
-        return { ui_state: nextState };
+        // Phase 9.3: Include speech for this state transition
+        const speech = STATE_SPEECH_MAP[nextState];
+        return { ui_state: nextState, speech };
     }
 
     // Explicit rejection (No-Op)
-    // console.warn(`[Agent] Transition REJECTED: ${currentState} + ${intent} -> (staying in ${currentState})`);
     return { ui_state: currentState };
 };
