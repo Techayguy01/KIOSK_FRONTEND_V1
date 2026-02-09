@@ -212,7 +212,7 @@ class AgentAdapterService {
                 }
 
                 // Phase 12: Emit Final Transcript
-                this.emitTranscript(event.transcript, true);
+                this.emitTranscript(event.transcript, true, 'user');
 
                 // Phase 8.6: Rate limiting check
                 if (this.isRateLimited()) {
@@ -278,7 +278,7 @@ class AgentAdapterService {
             case "VOICE_TRANSCRIPT_PARTIAL":
                 // Just for live display, no action needed
                 // Phase 12: Emit Partial Transcript
-                this.emitTranscript(event.transcript, false);
+                this.emitTranscript(event.transcript, false, 'user');
                 break;
         }
     }
@@ -578,7 +578,7 @@ class AgentAdapterService {
         const speech = STATE_SPEECH_MAP[nextState];
         if (speech) {
             console.log(`[AgentAdapter] Speaking: "${speech}"`);
-            VoiceRuntime.speak(speech);
+            this.speak(speech);
         } else {
             // If no speech, check if we should listen
             // Start listening if applicable
@@ -619,10 +619,26 @@ class AgentAdapterService {
         }
     }
 
+    // === Phase 12: Real-Time Captions ===
+    private transcriptListeners: ((text: string, isFinal: boolean, source: 'user' | 'ai') => void)[] = [];
+
+    public onTranscript(listener: (text: string, isFinal: boolean, source: 'user' | 'ai') => void): () => void {
+        this.transcriptListeners.push(listener);
+        return () => {
+            this.transcriptListeners = this.transcriptListeners.filter(l => l !== listener);
+        };
+    }
+
+    private emitTranscript(text: string, isFinal: boolean, source: 'user' | 'ai') {
+        this.transcriptListeners.forEach(l => l(text, isFinal, source));
+    }
+
     /**
      * Phase 9.4: Speak text from Agent via VoiceRuntime.
+     * Wrapped to emit 'ai' transcript events.
      */
     public speak(text: string): void {
+        this.emitTranscript(text, true, 'ai');
         VoiceRuntime.speak(text);
     }
 
@@ -667,19 +683,7 @@ class AgentAdapterService {
         this.intentTimestamps = [];
         this.notifyListeners();
     }
-    // === Phase 12: Real-Time Captions ===
-    private transcriptListeners: ((text: string, isFinal: boolean) => void)[] = [];
 
-    public onTranscript(listener: (text: string, isFinal: boolean) => void): () => void {
-        this.transcriptListeners.push(listener);
-        return () => {
-            this.transcriptListeners = this.transcriptListeners.filter(l => l !== listener);
-        };
-    }
-
-    private emitTranscript(text: string, isFinal: boolean) {
-        this.transcriptListeners.forEach(l => l(text, isFinal));
-    }
 }
 
 export const AgentAdapter = new AgentAdapterService();

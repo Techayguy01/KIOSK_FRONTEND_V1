@@ -54,7 +54,17 @@ class MockBackendService {
 
       // Inject required data to prevent crashes
       const nextData = { ...this._data };
-      if (payload.targetState === 'ROOM_SELECT') nextData.rooms = require('../mocks/rooms.mock').roomsMock.available_rooms;
+      if (payload.targetState === 'ROOM_SELECT') {
+        nextData.rooms = require('../mocks/rooms.mock').roomsMock.available_rooms;
+      }
+      if (payload.targetState === 'PAYMENT') {
+        // Fake a room selection if one doesn't exist
+        if (!nextData.selectedRoom) {
+          const rooms = require('../mocks/rooms.mock').roomsMock.available_rooms;
+          nextData.selectedRoom = rooms[0];
+          nextData.bill = { nights: 2, total: "450.00", currencySymbol: "$" };
+        }
+      }
 
       // Metadata Override (Allow Back)
       nextData.metadata = { ...nextData.metadata, canGoBack: true };

@@ -16,6 +16,7 @@ import { CompletePage } from '../pages/CompletePage';
 import { ErrorBanner } from '../components/ErrorBanner';
 import { BackButton } from '../components/BackButton';
 import { CaptionsOverlay } from '../components/CaptionsOverlay';
+import { DevToolbar } from '../components/DevToolbar';
 
 const App: React.FC = () => {
   // Local UI State (Renderer only)
@@ -35,16 +36,8 @@ const App: React.FC = () => {
       setLoading(false);
     });
 
-    // Phase 12: Global Listener for Transcripts
-    const unsubTranscript = AgentAdapter.onTranscript((text, isFinal) => {
-      // Dispatch a custom window event so CaptionsOverlay can pick it up
-      const event = new CustomEvent('VOICE_TRANSCRIPT', { detail: { text, isFinal } });
-      window.dispatchEvent(event);
-    });
-
     return () => {
       unsubscribe();
-      unsubTranscript();
     }
   }, []);
 
@@ -133,6 +126,9 @@ const App: React.FC = () => {
         <div className="fixed bottom-2 right-2 z-50 bg-black/50 text-white text-xs p-1 rounded opacity-30 hover:opacity-100 pointer-events-none">
           Authority: AgentAdapter | State: {state}
         </div>
+
+        {/* Development Toolbar */}
+        <DevToolbar />
       </div>
     </UIContext.Provider>
   );
