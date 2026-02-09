@@ -362,6 +362,23 @@ class AgentAdapterService {
         }
     }
 
+    // Phase 9.8: Helper for FSM Valid Transitions
+    private getValidTransitionsForState(state: UiState): string[] {
+        const validTransitions: Record<UiState, string[]> = {
+            IDLE: ["WELCOME"],
+            WELCOME: ["CHECK_IN", "HELP", "SCAN_ID"],
+            AI_CHAT: ["CHECK_IN", "HELP", "WELCOME", "SCAN_ID", "PAYMENT"],
+            MANUAL_MENU: ["CHECK_IN", "HELP", "WELCOME"],
+            SCAN_ID: ["HELP"],
+            ROOM_SELECT: ["PAYMENT", "HELP"],
+            PAYMENT: ["HELP"],
+            KEY_DISPENSING: [],
+            COMPLETE: ["WELCOME"],
+            ERROR: ["WELCOME", "HELP"],
+        };
+        return validTransitions[state] || [];
+    }
+
     /**
      * Phase 9.5: The Bouncer 🛡️
      * Checks if the LLM's proposed intent is legal in the current state.
@@ -372,21 +389,8 @@ class AgentAdapterService {
             return true;
         }
 
-        // Define valid transitions per state
-        const validTransitions: Record<UiState, string[]> = {
-            IDLE: ["WELCOME"],
-            WELCOME: ["CHECK_IN", "HELP", "SCAN_ID"],
-            AI_CHAT: ["CHECK_IN", "HELP", "WELCOME", "SCAN_ID", "PAYMENT"],
-            MANUAL_MENU: ["CHECK_IN", "HELP", "WELCOME"],
-            SCAN_ID: ["HELP"],  // Can only ask for help during scan
-            ROOM_SELECT: ["PAYMENT", "HELP"],
-            PAYMENT: ["HELP"],  // No voice transitions during payment
-            KEY_DISPENSING: [],  // No transitions allowed
-            COMPLETE: ["WELCOME"],
-            ERROR: ["WELCOME", "HELP"],
-        };
-
-        const allowed = validTransitions[this.state] || [];
+        // Use the centralized transition map
+        const allowed = this.getValidTransitionsForState(this.state);
         return allowed.includes(proposedIntent);
     }
 
@@ -445,6 +449,57 @@ class AgentAdapterService {
         return () => {
             this.listeners = this.listeners.filter(l => l !== listener);
         };
+    }
+
+    /**
+     * Phase 11.5: Touch Authority Override
+     * Handle inputs from UI Buttons (Touch) or Internal Events.
+     * This acts as a "Super Dispatch" that ensures Touch interrupts Voice.
+     */
+    public handleIntent(intent: string, payload?: any) {
+        console.log(`[AgentAdapter] 👆 Handle Intent (Touch Authority): ${intent}`, payload || '');
+
+        // 1. TOUCH AUTHORITY CHECK 🛡️
+        // If this is a Navigation Intent, we must kill Voice/TTS immediately.
+        const NAVIGATION_INTENTS = [
+            "CHECK_IN_SELECTED",
+            "BOOK_ROOM_SELECTED",
+            "TOUCH_SELECTED",
+            "BACK_REQUESTED",
+            "HELP_SELECTED",
+            "PROXIMITY_DETECTED",
+            "SCAN_ID_SELECTED",
+            "SCAN_COMPLETED",
+            "ROOM_SELECTED",
+            "PAYMENT_SELECTED",
+            "CONFIRM_PAYMENT",
+            "RESET"
+        ];
+
+        // Check if it's a Nav intent OR if it's in our valid transitions list
+        const isNavigation = NAVIGATION_INTENTS.includes(intent);
+
+        if (isNavigation) {
+            console.log("[AgentAdapter] 👆 Touch Interrupt detected. Killing Audio.");
+
+            // A. Kill the Mouth
+            TTSController.hardStop();
+
+            // B. Kill the Ears
+            VoiceRuntime.stopListening();
+
+            // C. Special Handling for Generic Touch
+            if (intent === "TOUCH_SELECTED") {
+                // If they touched while we were "Listening" (AI_CHAT), just stop listening but stay.
+                if (this.state === "AI_CHAT") {
+                    console.log("[AgentAdapter] User touched screen to stop listening.");
+                    return;
+                }
+            }
+        }
+
+        // 2. Dispatch to FSM
+        this.dispatch(intent as Intent, payload);
     }
 
     /**
