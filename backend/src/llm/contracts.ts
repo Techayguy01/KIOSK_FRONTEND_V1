@@ -18,7 +18,10 @@ export const IntentSchema = z.enum([
     "PAYMENT",      // User wants to pay
     "HELP",         // User needs assistance
     "REPEAT",       // User asked to repeat the last thing
-    "UNKNOWN"       // LLM is confused / Out of domain
+    "UNKNOWN",      // LLM is confused / Out of domain
+    "BOOK_ROOM",    // Phase 16: Booking Intent
+    "RECOMMEND_ROOM", // Phase 16: Agentic Choice
+    "GENERAL_QUERY"   // Phase 16: Chat / Policy / Jokes
 ]);
 
 // Phase 9.4: Confidence Thresholds for Safety Gating

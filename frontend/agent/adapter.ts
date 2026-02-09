@@ -383,9 +383,25 @@ class AgentAdapterService {
         return stateCommands[transcript] || null;
     }
 
+    // HELPER: Map LLM "fuzzy" intents to Strict Machine Events
+    private mapIntentToEvent(llmIntent: string): string {
+        const upper = llmIntent.toUpperCase();
+
+        // Map common LLM outputs to our strict Event names
+        if (upper.includes('CHECK_IN') || upper.includes('RESERVATION')) return 'CHECK_IN_SELECTED';
+        if (upper.includes('BOOK') || upper.includes('NEW_RESERVATION')) return 'BOOK_ROOM_SELECTED';
+        if (upper.includes('HELP') || upper.includes('SUPPORT')) return 'HELP_SELECTED';
+        if (upper.includes('SCAN')) return 'SCAN_COMPLETED';
+
+        // Default: Pass through if it matches exactly, else treat as General Query
+        // (We can assume if it's not mapped, it might be a direct match like 'RESET' or 'GENERAL_QUERY')
+        return upper === 'GENERAL_QUERY' ? 'GENERAL_QUERY' :
+            (Object.keys(VOICE_COMMAND_MAP[this.state] || {}).includes(upper) ? upper : 'GENERAL_QUERY');
+    }
+
     /**
      * Phase 9.4 + 9.5: Process transcript with LLM Brain
-     * Calls /api/chat, applies confidence gating, and mediates transitions.
+     * Calls /api/chat, maps intent, and mediates transitions.
      */
     public async processWithLLMBrain(transcript: string, sessionId?: string): Promise<void> {
         if (!transcript || transcript.trim().length < 2) return;
@@ -409,61 +425,29 @@ class AgentAdapterService {
             const decision = await response.json();
             console.log(`[AgentAdapter] LLM Decision:`, decision);
 
-            // 2. Skip non-actionable intents
-            if (decision.intent === "IDLE" || decision.intent === "UNKNOWN") {
-                if (decision.speech) this.speak(decision.speech);
-                return;
+            // 2. Map Fuzzy Intent -> Strict Event
+            const rawIntent = decision.intent;
+            const strictEvent = this.mapIntentToEvent(rawIntent);
+
+            console.log(`[Agent] Mapping Intent: ${rawIntent} -> ${strictEvent}`);
+
+            // 3. Handle "Talking" (TTS)
+            if (decision.speech) {
+                this.speak(decision.speech);
             }
 
-            // 3. MEDIATION LAYER (The Bouncer) 🛡️
-            const isLegal = this.validateProposal(decision.intent);
-
-            if (!isLegal) {
-                // ILLEGAL MOVE -> Block & Redirect
-                console.warn(`[Mediator] Blocked illegal move: ${this.state} -> ${decision.intent}`);
-                this.speak("I can't do that right now. Please follow the screen options.");
-                return;
-            }
-
-            // 4. CONFIDENCE GATE 🛡️
-            if (decision.confidence >= this.CONFIDENCE_THRESHOLD_HIGH) {
-                // High Confidence -> Execute
-                console.log(`[AgentAdapter] Confidence HIGH (${decision.confidence}). Executing.`);
-
-                if (decision.speech) this.speak(decision.speech);
-
-                const fsmIntent = this.mapLLMIntentToFSM(decision.intent);
-                if (fsmIntent) {
-                    this.dispatch(fsmIntent, { transcript, llmIntent: decision.intent });
-                }
-            } else {
-                // Low Confidence -> Clarify but don't transition
-                console.warn(`[AgentAdapter] Confidence LOW (${decision.confidence}). Asking for confirmation.`);
-
-                const clarification = `Just to confirm, did you want to ${decision.intent.toLowerCase().replace('_', ' ')}?`;
-                this.speak(decision.speech || clarification);
+            // 4. Handle "Moving" (State Machine)
+            // Use dispatch() instead of handleIntent() to avoid killing the TTS we just started.
+            // dispatch() respects the State Machine and Voice Authority without hard-stopping audio.
+            if (strictEvent !== 'GENERAL_QUERY') {
+                // Convert string to Intent type if possible, or cast (User provided string return type)
+                this.dispatch(strictEvent as Intent, { transcript, llmIntent: rawIntent });
             }
 
         } catch (error) {
             console.error("[AgentAdapter] LLM Error:", error);
             this.speak("Please use the touch screen.");
         }
-    }
-
-    /**
-     * Phase 9.5: The Bouncer 🛡️
-     * Checks if the LLM's proposed intent is legal in the current state.
-     */
-    private validateProposal(proposedIntent: string): boolean {
-        // Always allow meta-intents
-        if (proposedIntent === "IDLE" || proposedIntent === "UNKNOWN" || proposedIntent === "REPEAT" || proposedIntent === "HELP") {
-            return true;
-        }
-
-        // Ask the State Machine
-        // If transition returns same state, it's invalid (or self-loop, which we treat as invalid for now unless explicit)
-        const nextState = StateMachine.transition(this.state as UIState, proposedIntent);
-        return nextState !== this.state;
     }
 
     /**
@@ -484,24 +468,6 @@ class AgentAdapterService {
     public clearSession(): void {
         this.sessionId = null;
         console.log("[AgentAdapter] Session cleared for privacy");
-    }
-
-    /**
-     * Map LLM intent strings to FSM Intent type.
-     * Returns null if not mappable.
-     */
-    private mapLLMIntentToFSM(llmIntent: string): Intent | null {
-        const intentMap: Record<string, Intent> = {
-            "CHECK_IN": "CHECK_IN_SELECTED",
-            "SCAN_ID": "TOUCH_SELECTED",
-            "PAYMENT": "TOUCH_SELECTED",
-            "HELP": "BACK_REQUESTED",
-            "WELCOME": "PROXIMITY_DETECTED",
-            "REPEAT": "VOICE_STARTED",
-            "EXPLAIN_CAPABILITIES": "EXPLAIN_CAPABILITIES",
-            "GENERAL_QUERY": "GENERAL_QUERY"
-        };
-        return intentMap[llmIntent as string] || null;
     }
 
     /**
