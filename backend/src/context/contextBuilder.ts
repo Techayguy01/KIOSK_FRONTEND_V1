@@ -31,6 +31,32 @@ export function buildSystemContext(input: ContextInput): string {
 
     const partOfDay = currentHour < 12 ? "Morning" : currentHour < 18 ? "Afternoon" : "Evening";
 
+    // 1.5 Define Screen Contexts (Phase 17: Semantic Context)
+    let screenContext = "User is navigating the kiosk.";
+    switch (input.currentState) {
+        case 'WELCOME':
+            screenContext = "User is at the Start Screen. Goal: Get them to Check In.";
+            break;
+        case 'SCAN_ID':
+            screenContext = "User is currently scanning their ID. If they ask 'Why?', explain it is for security.";
+            break;
+        case 'ROOM_SELECT':
+            screenContext = "User is looking at Room Options (Deluxe, Standard). If they ask 'Which one?', recommend Deluxe.";
+            break;
+        case 'PAYMENT':
+            screenContext = "User is at Payment. We accept Credit Cards and NFC.";
+            break;
+        case 'IDLE':
+            screenContext = "User is approaching the kiosk.";
+            break;
+        case 'MANUAL_MENU':
+            screenContext = "User is using the touch menu fallback.";
+            break;
+        case 'AI_CHAT':
+            screenContext = "User is in general chat mode.";
+            break;
+    }
+
     // 2. Build Context Object
     const context = {
         environment: {
@@ -41,6 +67,7 @@ export function buildSystemContext(input: ContextInput): string {
         },
         kioskState: {
             currentScreen: input.currentState,
+            screenDescription: screenContext,
             canSpeak: true, // Voice is active
         },
         policy: {
