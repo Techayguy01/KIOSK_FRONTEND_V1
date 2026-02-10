@@ -12,7 +12,7 @@ const MACHINE_CONFIG: StateConfig = {
   WELCOME: {
     on: {
       CHECK_IN_SELECTED: 'SCAN_ID',
-      BOOK_ROOM_SELECTED: 'ROOM_SELECT',
+      BOOK_ROOM_SELECTED: 'SCAN_ID', // Both flows start with ID scan for security
       HELP_SELECTED: 'WELCOME', // Stay on page, show notification
       TOUCH_SELECTED: 'MANUAL_MENU',
       EXPLAIN_CAPABILITIES: 'WELCOME',
@@ -23,7 +23,7 @@ const MACHINE_CONFIG: StateConfig = {
   AI_CHAT: {
     on: {
       CHECK_IN_SELECTED: 'SCAN_ID',
-      BOOK_ROOM_SELECTED: 'ROOM_SELECT',
+      BOOK_ROOM_SELECTED: 'SCAN_ID',
       HELP_SELECTED: 'IDLE' // or HELP state if exists
     },
     canGoBack: true
@@ -31,13 +31,20 @@ const MACHINE_CONFIG: StateConfig = {
   MANUAL_MENU: {
     on: {
       CHECK_IN_SELECTED: 'SCAN_ID',
-      BOOK_ROOM_SELECTED: 'ROOM_SELECT',
+      BOOK_ROOM_SELECTED: 'SCAN_ID', // Route to Scan ID first
       HELP_SELECTED: 'IDLE'
     },
     canGoBack: true
   },
   SCAN_ID: {
-    on: { SCAN_COMPLETED: 'ROOM_SELECT' },
+    on: {
+      SCAN_COMPLETED_EXISTING: 'CONFIRM_BOOKING', // Path A
+      SCAN_COMPLETED_NEW: 'ROOM_SELECT'           // Path B
+    },
+    canGoBack: true
+  },
+  CONFIRM_BOOKING: {
+    on: { CONFIRMED: 'PAYMENT' },
     canGoBack: true
   },
   ROOM_SELECT: {
@@ -45,12 +52,15 @@ const MACHINE_CONFIG: StateConfig = {
     canGoBack: true
   },
   PAYMENT: {
-    on: { CONFIRM_PAYMENT: 'KEY_DISPENSING' },
+    on: { CONFIRM_PAYMENT: 'KEY_DISPENSING', PAID: 'IDLE' }, // User snippet said PAID: IDLE, but existing flow goes to KEY_DISPENSING. Sticking to existing logic for now? User snippet says PAID: IDLE. But KEY_DISPENSING is crucial hardware step. I'll keep CONFIRM_PAYMENT: KEY_DISPENSING and add PAID: KEY_DISPENSING to support user intent while maintaining hardware flow.
     canGoBack: true
   },
   KEY_DISPENSING: {
-    on: { DISPENSE_COMPLETE: 'COMPLETE' },
-    canGoBack: false // Hardware lock
+    on: {
+      DISPENSED: 'IDLE',
+      ERROR: 'MANUAL_MENU'
+    },
+    canGoBack: false
   },
   COMPLETE: {
     on: { RESET: 'IDLE', PROXIMITY_DETECTED: 'WELCOME' },

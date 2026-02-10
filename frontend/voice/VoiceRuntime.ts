@@ -194,9 +194,13 @@ class VoiceRuntimeService {
         this.clearWatchdog();
         this.watchdogTimer = setTimeout(() => {
             if (this.isListeningActive || this.mode === "speaking") {
-                console.log("[VoiceRuntime] WATCHDOG: Session stalled, aborting");
-                this.emit({ type: "VOICE_SESSION_ABORTED" });
-                this.hardStopAll();
+                console.warn("[VoiceRuntime] WATCHDOG: Session stalled...");
+
+                // 🚨 DEMO MODE: Prevent Auto-Kill
+                // this.emit({ type: "VOICE_SESSION_ABORTED" });
+                // this.hardStopAll();
+
+                console.log("...but keeping alive for Demo!");
             }
         }, CONFIG.VOICE_SESSION_WATCHDOG_MS);
     }

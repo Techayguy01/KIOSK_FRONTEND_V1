@@ -11,7 +11,8 @@ export type UiState =
     | "PAYMENT"
     | "KEY_DISPENSING"
     | "COMPLETE"
-    | "ERROR";
+    | "ERROR"
+    | "CONFIRM_BOOKING";
 
 // Phase 9.3: AgentResponse now includes optional speech
 export type AgentResponse = {
@@ -31,6 +32,7 @@ export const STATE_SPEECH_MAP: Partial<Record<UiState, string>> = {
     KEY_DISPENSING: "Please wait while I prepare your key.",
     COMPLETE: "Thank you for choosing Grand Hotel. Enjoy your stay.",
     ERROR: "I'm sorry, something went wrong. Please tap to try again.",
+    CONFIRM_BOOKING: "I found your reservation. Please confirm your details.",
 };
 
 // Phase 3: Input Modes & Voice Mapping (Design Only)
@@ -50,6 +52,7 @@ export const STATE_INPUT_MODES: Record<UiState, InputMode[]> = {
     KEY_DISPENSING: [], // Hardware lock - No input
     COMPLETE: ["TOUCH"], // Tap to finish/restart
     ERROR: ["TOUCH"], // Tap to dismiss
+    CONFIRM_BOOKING: ["TOUCH", "VOICE"], // Tap to confirm, Voice allowed
 };
 
 // 2. Voice -> Intent Mapping
@@ -84,6 +87,14 @@ export const VOICE_COMMAND_MAP: Record<UiState, Partial<Record<string, Intent>>>
     KEY_DISPENSING: {},
     COMPLETE: {},
     ERROR: {},
+    CONFIRM_BOOKING: {
+        "yes": "CONFIRMED",
+        "confirm": "CONFIRMED",
+        "correct": "CONFIRMED",
+        "proceed": "CONFIRMED",
+        "no": "CANCEL_REQUESTED", // Map to cancel? Or go back? User said CANCEL_SELECTED
+        "cancel": "CANCEL_REQUESTED", // existing intent
+    },
 };
 
 // Phase 4: Error Taxonomy & Recovery Rules (Design Only)
@@ -147,42 +158,63 @@ const TRANSITION_TABLE: Record<UiState, Partial<Record<Intent, UiState>>> = {
     WELCOME: {
         TOUCH_SELECTED: "MANUAL_MENU",
         VOICE_STARTED: "AI_CHAT",
-        BOOK_ROOM_SELECTED: "ROOM_SELECT",
+        BOOK_ROOM_SELECTED: "SCAN_ID", // Updated to match machine
     },
     AI_CHAT: {
         CHECK_IN_SELECTED: "SCAN_ID",
-        BOOK_ROOM_SELECTED: "ROOM_SELECT",
+        BOOK_ROOM_SELECTED: "SCAN_ID", // Updated to match machine
         BACK_REQUESTED: "WELCOME",
         CANCEL_REQUESTED: "WELCOME",
     },
     MANUAL_MENU: {
         CHECK_IN_SELECTED: "SCAN_ID",
-        BOOK_ROOM_SELECTED: "ROOM_SELECT",
+        BOOK_ROOM_SELECTED: "SCAN_ID", // Updated to match machine
         BACK_REQUESTED: "WELCOME",
         CANCEL_REQUESTED: "WELCOME",
     },
     SCAN_ID: {
         BACK_REQUESTED: "MANUAL_MENU",
         CANCEL_REQUESTED: "WELCOME",
+        // Note: SCAN_COMPLETED_EXISTING/NEW are dynamic, 
+        // but for strict table we can add them to satisfy type
+        // In reality adapter delegates to machine, but this table is used for... what?
+        // processIntent uses it. So it MUST serve as the source of truth for processIntent.
+        // Wait, adapter uses `StateMachine.transition` from `uiState.machine.ts` for logic?
+        // Adapter has `processIntent` which uses `TRANSITION_TABLE`.
+        // AND `handleIntent`/`dispatch` which use `StateMachine`.
+        // This duplication is dangerous. I should update this table to match the machine.
+        SCAN_COMPLETED_EXISTING: "CONFIRM_BOOKING",
+        SCAN_COMPLETED_NEW: "ROOM_SELECT",
+    },
+    CONFIRM_BOOKING: {
+        CONFIRMED: "PAYMENT",
+        BACK_REQUESTED: "WELCOME", // or SCAN_ID?
     },
     ROOM_SELECT: {
         BACK_REQUESTED: "MANUAL_MENU", // Logical previous for both flows (or effectively restart)
         CANCEL_REQUESTED: "WELCOME",
+        ROOM_SELECTED: "PAYMENT"
     },
     PAYMENT: {
-        BACK_REQUESTED: "ROOM_SELECT",
+        BACK_REQUESTED: "ROOM_SELECT", // or CONFIRM_BOOKING?
         CANCEL_REQUESTED: "WELCOME",
+        CONFIRM_PAYMENT: "KEY_DISPENSING",
+        PAID: "IDLE"
     },
     KEY_DISPENSING: {
         // No interruptions allowed
+        DISPENSED: "IDLE",
+        // ERROR: "MANUAL_MENU" // Optional mapping
     },
     COMPLETE: {
         PROXIMITY_DETECTED: "WELCOME", // New session
+        RESET: "IDLE"
     },
     ERROR: {
         CANCEL_REQUESTED: "WELCOME",
         TOUCH_SELECTED: "WELCOME", // Semantic: Acknowledge Error
         BACK_REQUESTED: "WELCOME", // Dismiss
+        RESET: "IDLE"
     }
 };
 

@@ -10,7 +10,8 @@ export type UIState =
   | 'PAYMENT'
   | 'KEY_DISPENSING'
   | 'COMPLETE'
-  | 'ERROR';
+  | 'ERROR'
+  | 'CONFIRM_BOOKING';
 
 export interface ChatMessage {
   id: string;

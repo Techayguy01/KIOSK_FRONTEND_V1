@@ -12,6 +12,7 @@ import { ScanIdPage } from '../pages/ScanIdPage';
 import { RoomSelectPage } from '../pages/RoomSelectPage';
 import { PaymentPage } from '../pages/PaymentPage';
 import { CompletePage } from '../pages/CompletePage';
+import { BookingConfirmationPage } from '../pages/BookingConfirmationPage';
 
 // Components
 import { ErrorBanner } from '../components/ErrorBanner';
@@ -79,6 +80,7 @@ const App: React.FC = () => {
       case 'MANUAL_MENU': return <WelcomePage visualMode="manual" />;
 
       case 'SCAN_ID': return <ScanIdPage />;
+      case 'CONFIRM_BOOKING': return <BookingConfirmationPage onConfirm={() => emit('CONFIRMED')} />;
       case 'ROOM_SELECT': return <RoomSelectPage />;
       case 'PAYMENT': return <PaymentPage />;
 
