@@ -108,8 +108,8 @@ const MicButton: React.FC<MicButtonProps> = ({ size, isActive, isListening, onCl
                 )}
                 <button
                     className={`relative flex items-center justify-center ${sizeClass} rounded-full transition-all duration-200 active:scale-95 shadow-lg ${isListening
-                            ? 'bg-blue-600 text-white shadow-blue-500/50 scale-110'
-                            : 'bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700'
+                        ? 'bg-blue-600 text-white shadow-blue-500/50 scale-110'
+                        : 'bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700'
                         }`}
                     onClick={onClick}
                     aria-label={isActive ? "Stop listening" : "Start listening"}
@@ -129,8 +129,8 @@ const MicButton: React.FC<MicButtonProps> = ({ size, isActive, isListening, onCl
         <button
             onClick={onClick}
             className={`${sizeClass} rounded-full flex items-center justify-center transition-all duration-200 shadow-md ${isActive
-                    ? 'bg-red-600 text-white'
-                    : 'bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700'
+                ? 'bg-red-600 text-white'
+                : 'bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700'
                 }`}
             aria-label={isActive ? "Stop listening" : "Start listening"}
         >

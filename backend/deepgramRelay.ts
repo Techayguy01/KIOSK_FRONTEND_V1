@@ -39,8 +39,8 @@ export class DeepgramRelay {
         const sampleRate = this.options.sampleRate;
 
         // Nova-2 configuration with forwarded sample_rate
-        const url = `wss://api.deepgram.com/v1/listen?model=nova-2&encoding=linear16&sample_rate=${sampleRate}&interim_results=true&smart_format=true&endpointing=1000`;
-
+        // UPDATED: Added language=en-IN and Keywords for accuracy
+const url = `wss://api.deepgram.com/v1/listen?model=nova-2&language=en-IN&keywords=Check%20In&keywords=Book&keywords=Room&keywords=Reception&encoding=linear16&sample_rate=${sampleRate}&interim_results=true&smart_format=true&endpointing=1000`;
         console.log(`[DeepgramRelay] Connecting to Nova-2 at ${sampleRate}Hz (forwarded from client)...`);
 
         this.ws = new WebSocket(url, {
