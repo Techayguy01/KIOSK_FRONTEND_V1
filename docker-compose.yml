@@ -34,13 +34,35 @@ services:
     container_name: hotel_backend
     restart: always
     ports:
-      - "3000:3000"
+      - "3001:3001"
+      - "3002:3002"
     environment:
       # Connects to 'db' service inside Docker network
       - DATABASE_URL=postgresql://admin:rootpassword@db:5432/hotel_kiosk?schema=public
-      - PORT=3000
+      - PORT=3001
+      - HTTP_PORT=3002
+      - AI_ENGINE_URL=http://ai-engine:5000
+      - TTS_PUBLIC_DIR=/app/public/tts
     depends_on:
       - db
+      - ai-engine
+    volumes:
+      - tts_audio:/app/public/tts
+
+  # 5. AI Engine (VibeVoice)
+  ai-engine:
+    build: ./ai-engine
+    container_name: hotel_ai_engine
+    restart: always
+    ports:
+      - "5000:5000"
+    environment:
+      - HF_HOME=/root/.cache/huggingface
+      - VIBEVOICE_OUTPUT_DIR=/app/output/tts
+      - VIBEVOICE_MODEL_PATH=tarun7r/vibevoice-hindi-7b
+    volumes:
+      - tts_audio:/app/output/tts
+      - C:/Users/paras/.cache/huggingface:/root/.cache/huggingface
 
   # 4. THE FRONTEND (React)
   frontend:
@@ -54,3 +76,4 @@ services:
 
 volumes:
   postgres_data: # Persist data even if containers are deleted
+  tts_audio:

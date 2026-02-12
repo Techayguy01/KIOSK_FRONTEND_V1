@@ -31,8 +31,11 @@ class TTSControllerService {
     private state: TtsState = "IDLE";
     private currentUtterance: SpeechSynthesisUtterance | null = null;
     private selectedVoice: SpeechSynthesisVoice | null = null;
+    private currentAudio: HTMLAudioElement | null = null;
+    private currentRequestId = 0;
     private pendingQueue: TTSQueueItem[] = [];
     private isCancelling: boolean = false;
+    private readonly TTS_API_URL = import.meta.env.VITE_TTS_API_URL || "http://localhost:3002/api/tts";
 
     constructor() {
         console.log("[TTSController] Initialized (Phase 9.4 - Audio Authority)");
@@ -73,8 +76,13 @@ class TTSControllerService {
     public async speak(text: string): Promise<void> {
         if (!text || !text.trim()) return;
 
+        const requestId = ++this.currentRequestId;
+
         // Cancel any existing speech immediately
         this.hardStop();
+
+        const playedByBackend = await this.tryPlayWithBackend(text, requestId);
+        if (playedByBackend) return;
 
         return new Promise((resolve, reject) => {
             const synth = window.speechSynthesis;
@@ -129,6 +137,87 @@ class TTSControllerService {
         });
     }
 
+    private async tryPlayWithBackend(text: string, requestId: number): Promise<boolean> {
+        try {
+            const response = await fetch(this.TTS_API_URL, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ text }),
+            });
+
+            if (!response.ok) {
+                console.warn(`[TTSController] Backend TTS HTTP ${response.status}, using browser fallback`);
+                return false;
+            }
+            const data = await response.json() as { ok?: boolean; audioUrl?: string; reason?: string };
+
+            if (!data?.ok || !data.audioUrl || requestId !== this.currentRequestId) {
+                console.warn(`[TTSController] Backend TTS unavailable (${data?.reason || "unknown_reason"}), using browser fallback`);
+                return false;
+            }
+
+            console.log("[TTSController] Using backend VibeVoice audio");
+            await this.playAudio(data.audioUrl, text, requestId);
+            return true;
+        } catch {
+            console.warn("[TTSController] Backend TTS request failed, using browser fallback");
+            return false;
+        }
+    }
+
+    private resolveAudioUrl(audioUrl: string): string {
+        if (/^https?:\/\//i.test(audioUrl)) return audioUrl;
+        try {
+            const apiBase = new URL(this.TTS_API_URL);
+            return new URL(audioUrl, apiBase.origin).toString();
+        } catch {
+            return audioUrl;
+        }
+    }
+
+    private async playAudio(audioUrl: string, text: string, requestId: number): Promise<void> {
+        return new Promise((resolve, reject) => {
+            const resolvedAudioUrl = this.resolveAudioUrl(audioUrl);
+            const audio = new Audio(resolvedAudioUrl);
+            this.currentAudio = audio;
+            this.state = "SPEAKING";
+            this.isCancelling = false;
+            this.emit({ type: "TTS_STARTED", text });
+
+            const clear = () => {
+                audio.onended = null;
+                audio.onerror = null;
+                audio.onplaying = null;
+                if (this.currentAudio === audio) this.currentAudio = null;
+            };
+
+            audio.onended = () => {
+                clear();
+                if (requestId !== this.currentRequestId) {
+                    resolve();
+                    return;
+                }
+                this.state = "IDLE";
+                if (!this.isCancelling) {
+                    this.emit({ type: "TTS_ENDED" });
+                }
+                resolve();
+            };
+
+            audio.onerror = () => {
+                clear();
+                this.state = "IDLE";
+                reject(new Error("backend_audio_playback_failed"));
+            };
+
+            audio.play().catch((error) => {
+                clear();
+                this.state = "IDLE";
+                reject(error);
+            });
+        });
+    }
+
     /**
      * Instant barge-in: Stop TTS immediately (<50ms target).
      * Called when user starts speaking.
@@ -157,6 +246,11 @@ class TTSControllerService {
         // Cancel immediately
         if (synth.speaking || synth.pending) {
             synth.cancel();
+        }
+        if (this.currentAudio) {
+            this.currentAudio.pause();
+            this.currentAudio.currentTime = 0;
+            this.currentAudio = null;
         }
 
         // Clear queue

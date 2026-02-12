@@ -17,9 +17,12 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { createServer } from 'http';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { DeepgramRelay } from './deepgramRelay.js';
 import chatRouter from './src/routes/chat.js';
+import ttsRouter from './src/routes/tts.js';
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
 const HTTP_PORT = parseInt(process.env.HTTP_PORT || '3002', 10);
@@ -32,6 +35,12 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const ttsPublicDir = process.env.TTS_PUBLIC_DIR || path.join(__dirname, 'public', 'tts');
+
+app.use('/audio/tts', express.static(ttsPublicDir));
+
 // Health check
 app.get('/health', (req, res) => {
     res.json({ status: 'ok', service: 'kiosk-brain' });
@@ -39,6 +48,7 @@ app.get('/health', (req, res) => {
 
 // LLM Chat endpoint
 app.use('/api/chat', chatRouter);
+app.use('/api/tts', ttsRouter);
 
 const httpServer = createServer(app);
 httpServer.listen(HTTP_PORT, () => {

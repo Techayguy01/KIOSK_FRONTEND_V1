@@ -74,7 +74,9 @@ OUTPUT FORMAT (JSON ONLY):
 router.post('/', async (req: Request, res: Response) => {
    const start = Date.now();
    try {
-      const { transcript, currentState, sessionId } = req.body;
+      const transcript = (req.body?.transcript ?? req.body?.message ?? "").toString();
+      const currentState = (req.body?.currentState ?? req.body?.context?.screen ?? "IDLE").toString();
+      const sessionId = req.body?.sessionId;
       const sid = sessionId || "default";  // Fallback for testing
 
       console.log(`[Brain] Input: "${transcript}" | State: ${currentState} | Session: ${sid}`);

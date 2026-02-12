@@ -4,9 +4,10 @@
     "private": true,
     "description": "Hotel Kiosk - AI-Powered Self Check-In System",
     "scripts": {
-        "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:backend\"",
+        "dev": "concurrently \"npm run dev:frontend\" \"npm run dev:backend\" \"npm run dev:ai-engine\"",
         "dev:frontend": "npm run dev --prefix frontend",
         "dev:backend": "npm run dev --prefix backend",
+        "dev:ai-engine": ".\\ai-engine\\.venv311\\Scripts\\python.exe ai-engine/server.py",
         "build": "npm run build --prefix frontend",
         "install:all": "npm install && npm install --prefix frontend && npm install --prefix backend"
     },

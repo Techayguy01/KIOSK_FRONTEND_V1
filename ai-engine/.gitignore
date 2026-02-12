@@ -1,0 +1,67 @@
+# =====================
+# Python Virtual Env
+# =====================
+venv/
+env/
+.env
+
+# =====================
+# Python Cache & Build
+# =====================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# =====================
+# AI Models & Heavy Files
+# =====================
+# Prevent accidental commit of the 14GB model if you moved it here
+*.bin
+*.pth
+*.pt
+*.safetensors
+*.ckpt
+*.h5
+*.onnx
+
+# =====================
+# Runtime / Generated
+# =====================
+# Ignore generated audio files from your tests
+*.wav
+*.mp3
+logs/
+*.log
+
+# =====================
+# IDE Settings
+# =====================
+.vscode/
+.idea/
+
+# =====================
+# Dependencies (VibeVoice)
+# =====================
+# If VibeVoice is a git repository inside this folder, 
+# you might want to handle it as a submodule or just ignore its own git artifacts.
+# For now, we keep the folder but ignore its internal build artifacts.
+VibeVoice/build/
+VibeVoice/dist/
+VibeVoice/*.egg-info/
