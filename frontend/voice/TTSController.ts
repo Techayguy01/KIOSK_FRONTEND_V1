@@ -85,7 +85,8 @@ class TTSControllerService {
                 utterance.voice = this.selectedVoice;
             }
 
-            utterance.rate = 1.0;
+            utterance.lang = this.selectedVoice?.lang || "en-US";
+            utterance.rate = 0.95;
             utterance.pitch = 1.0;
             utterance.volume = 1.0;
 

@@ -2,6 +2,7 @@ import React from "react";
 import { useUIState } from "../state/uiContext";
 import { useBrain } from "../hooks/useBrain";
 import { motion } from "framer-motion";
+import AnimatedGradientBackground from "../components/ui/animated-gradient-background";
 
 /**
  * BookingSummaryPage
@@ -10,8 +11,9 @@ import { motion } from "framer-motion";
  * Shows the complete booking for confirmation before payment.
  */
 export const BookingSummaryPage: React.FC = () => {
-    const { emit } = useUIState();
+    const { emit, data } = useUIState();
     const { bookingSlots } = useBrain();
+    const effectiveSlots = data?.bookingSlots || bookingSlots;
 
     const formatDate = (dateStr: string | null) => {
         if (!dateStr) return "—";
@@ -28,14 +30,16 @@ export const BookingSummaryPage: React.FC = () => {
     };
 
     return (
-        <div className="h-screen w-full flex flex-col items-center justify-center bg-slate-900 text-white p-8">
+        <div className="h-screen w-full overflow-hidden relative text-white">
+            <AnimatedGradientBackground Breathing={true} />
+            <div className="relative z-10 h-full w-full flex flex-col items-center justify-center p-8">
 
-            <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.5 }}
-                className="w-full max-w-lg"
-            >
+                <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.5 }}
+                    className="w-full max-w-lg"
+                >
                 {/* Header */}
                 <h1 className="text-3xl font-light text-center mb-2">Booking Summary</h1>
                 <p className="text-center text-white/50 text-sm mb-8">Please confirm your reservation</p>
@@ -45,41 +49,41 @@ export const BookingSummaryPage: React.FC = () => {
 
                     <div className="flex justify-between items-center border-b border-slate-700/30 pb-4">
                         <span className="text-white/50 text-sm">Room</span>
-                        <span className="text-lg font-medium">{bookingSlots.roomType || "—"}</span>
+                        <span className="text-lg font-medium">{effectiveSlots.roomType || "—"}</span>
                     </div>
 
                     <div className="flex justify-between items-center">
                         <span className="text-white/50 text-sm">Guests</span>
                         <span>
-                            {bookingSlots.adults || "—"} adult{bookingSlots.adults !== 1 ? "s" : ""}
-                            {bookingSlots.children ? `, ${bookingSlots.children} child${bookingSlots.children !== 1 ? "ren" : ""}` : ""}
+                            {effectiveSlots.adults || "—"} adult{effectiveSlots.adults !== 1 ? "s" : ""}
+                            {effectiveSlots.children ? `, ${effectiveSlots.children} child${effectiveSlots.children !== 1 ? "ren" : ""}` : ""}
                         </span>
                     </div>
 
                     <div className="flex justify-between items-center">
                         <span className="text-white/50 text-sm">Check-in</span>
-                        <span>{formatDate(bookingSlots.checkInDate)}</span>
+                        <span>{formatDate(effectiveSlots.checkInDate)}</span>
                     </div>
 
                     <div className="flex justify-between items-center">
                         <span className="text-white/50 text-sm">Check-out</span>
-                        <span>{formatDate(bookingSlots.checkOutDate)}</span>
+                        <span>{formatDate(effectiveSlots.checkOutDate)}</span>
                     </div>
 
                     <div className="flex justify-between items-center">
                         <span className="text-white/50 text-sm">Duration</span>
-                        <span>{bookingSlots.nights || "—"} night{bookingSlots.nights !== 1 ? "s" : ""}</span>
+                        <span>{effectiveSlots.nights || "—"} night{effectiveSlots.nights !== 1 ? "s" : ""}</span>
                     </div>
 
                     <div className="flex justify-between items-center">
                         <span className="text-white/50 text-sm">Guest Name</span>
-                        <span className="font-medium">{bookingSlots.guestName || "—"}</span>
+                        <span className="font-medium">{effectiveSlots.guestName || "—"}</span>
                     </div>
 
                     <div className="flex justify-between items-center border-t border-slate-700/30 pt-4">
                         <span className="text-white/50 text-sm">Total</span>
                         <span className="text-2xl font-semibold text-cyan-400">
-                            ₹{bookingSlots.totalPrice ? bookingSlots.totalPrice.toLocaleString() : "—"}
+                            ₹{effectiveSlots.totalPrice ? effectiveSlots.totalPrice.toLocaleString() : "—"}
                         </span>
                     </div>
                 </div>
@@ -104,7 +108,9 @@ export const BookingSummaryPage: React.FC = () => {
                 <p className="text-center text-white/30 text-xs mt-6">
                     Say "Confirm" to proceed or "Change something" to modify
                 </p>
-            </motion.div>
+                </motion.div>
+            </div>
         </div>
     );
 };
+

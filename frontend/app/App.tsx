@@ -19,10 +19,12 @@ import { ErrorBanner } from '../components/ErrorBanner';
 import { BackButton } from '../components/BackButton';
 import { CaptionsOverlay } from '../components/CaptionsOverlay';
 import { DevToolbar } from '../components/DevToolbar';
+import AnimatedGradientBackground from '../components/ui/animated-gradient-background';
 
 const App: React.FC = () => {
   // Local UI State (Renderer only)
   const [state, setState] = useState<UiState>('IDLE');
+  const [forcedState, setForcedState] = useState<UiState | null>(null);
   const [data, setData] = useState<any>({});
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -30,11 +32,10 @@ const App: React.FC = () => {
   // 1. CONNECT TO AGENT BRAIN
   useEffect(() => {
     // Subscribe to the Agent Adapter
-    const unsubscribe = AgentAdapter.subscribe((newState) => {
+    const unsubscribe = AgentAdapter.subscribe((newState, newData) => {
       console.log(`[APP RENDERER] Received State Update from Agent: ${newState}`);
       setState(newState);
-      // In a real app, 'data' would come from a View Model or State/Store mapped to the UiState.
-      // For now, we keep data empty or static as we focus on Navigation Authority.
+      setData(newData || {});
       setLoading(false);
     });
 
@@ -61,7 +62,7 @@ const App: React.FC = () => {
 
     try {
       // Send to Authority
-      AgentAdapter.dispatch(type as any, payload);
+      AgentAdapter.handleIntent(type as any, payload);
     } catch (e) {
       console.error("Agent Error", e);
       setError("System Error");
@@ -70,8 +71,10 @@ const App: React.FC = () => {
 
   // 3. DUMB ROUTER (State -> Component)
   // CRITICAL: This is a pure switch on Agent State. No logic allowed.
+  const effectiveState = forcedState ?? state;
+
   const renderPage = () => {
-    switch (state) {
+    switch (effectiveState) {
       case 'IDLE': return <IdlePage />;
 
       // WelcomePage handles both Voice and Manual visual modes
@@ -86,9 +89,12 @@ const App: React.FC = () => {
       case 'PAYMENT': return <PaymentPage />;
 
       case 'KEY_DISPENSING': return (
-        <div className="h-screen w-full flex flex-col items-center justify-center bg-slate-900 text-white">
-          <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-blue-500 mb-4"></div>
-          <h2 className="text-2xl font-light">Dispensing Key Card...</h2>
+        <div className="h-screen w-full overflow-hidden relative text-white">
+          <AnimatedGradientBackground Breathing={true} />
+          <div className="relative z-10 h-full w-full flex flex-col items-center justify-center">
+            <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-blue-500 mb-4"></div>
+            <h2 className="text-2xl font-light">Dispensing Key Card...</h2>
+          </div>
         </div>
       );
 
@@ -97,9 +103,12 @@ const App: React.FC = () => {
 
       // Error State (Runtime)
       case 'ERROR': return (
-        <div className="h-screen w-full flex flex-col items-center justify-center bg-red-900/20 text-white" onClick={() => emit('TOUCH_SELECTED')}>
-          <h2 className="text-3xl font-bold mb-4">System Error</h2>
-          <p>Please touch to restart.</p>
+        <div className="h-screen w-full overflow-hidden relative text-white" onClick={() => emit('TOUCH_SELECTED')}>
+          <AnimatedGradientBackground Breathing={true} />
+          <div className="relative z-10 h-full w-full flex flex-col items-center justify-center bg-red-900/20">
+            <h2 className="text-3xl font-bold mb-4">System Error</h2>
+            <p>Please touch to restart.</p>
+          </div>
         </div>
       );
 
@@ -129,10 +138,15 @@ const App: React.FC = () => {
         {/* Debug Info (To prove state comes from Agent) */}
         <div className="fixed bottom-2 right-2 z-50 bg-black/50 text-white text-xs p-1 rounded opacity-30 hover:opacity-100 pointer-events-none">
           Authority: AgentAdapter | State: {state}
+          {forcedState ? ` | Override: ${forcedState}` : ''}
         </div>
 
         {/* Development Toolbar */}
-        <DevToolbar />
+        <DevToolbar
+          onForceState={(next) => setForcedState(next as UiState | null)}
+          isUnlocked={Boolean(forcedState)}
+          currentState={effectiveState as any}
+        />
       </div>
     </UIContext.Provider>
   );

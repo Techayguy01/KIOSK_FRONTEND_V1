@@ -13,6 +13,9 @@
 import WebSocket from 'ws';
 
 const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY || '';
+const DEEPGRAM_MODEL = process.env.DEEPGRAM_MODEL || "nova-2";
+const DEEPGRAM_LANGUAGE = process.env.DEEPGRAM_LANGUAGE || "en-IN";
+const DEEPGRAM_ENDPOINTING_MS = process.env.DEEPGRAM_ENDPOINTING_MS || "1500";
 
 export interface DeepgramRelayOptions {
     sampleRate: number;  // Forwarded from frontend
@@ -39,9 +42,18 @@ export class DeepgramRelay {
         const sampleRate = this.options.sampleRate;
 
         // Nova-2 configuration with forwarded sample_rate
-        const url = `wss://api.deepgram.com/v1/listen?model=nova-2&encoding=linear16&sample_rate=${sampleRate}&interim_results=true&smart_format=true&endpointing=1000`;
+        const url =
+            `wss://api.deepgram.com/v1/listen` +
+            `?model=${encodeURIComponent(DEEPGRAM_MODEL)}` +
+            `&language=${encodeURIComponent(DEEPGRAM_LANGUAGE)}` +
+            `&encoding=linear16` +
+            `&sample_rate=${sampleRate}` +
+            `&interim_results=true` +
+            `&smart_format=true` +
+            `&endpointing=${encodeURIComponent(DEEPGRAM_ENDPOINTING_MS)}` +
+            `&vad_events=true`;
 
-        console.log(`[DeepgramRelay] Connecting to Nova-2 at ${sampleRate}Hz (forwarded from client)...`);
+        console.log(`[DeepgramRelay] Connecting to ${DEEPGRAM_MODEL} (${DEEPGRAM_LANGUAGE}) at ${sampleRate}Hz...`);
 
         this.ws = new WebSocket(url, {
             headers: {

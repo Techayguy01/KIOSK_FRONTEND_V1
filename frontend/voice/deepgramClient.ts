@@ -20,6 +20,9 @@ import { AudioCapture } from "./audioCapture";
 
 // Backend relay URL (configurable via env for production)
 const RELAY_URL = import.meta.env.VITE_VOICE_RELAY_URL || 'ws://localhost:3001';
+const INTERIM_COMMIT_MS = Number(import.meta.env.VITE_INTERIM_COMMIT_MS || 3500);
+const MIN_INTERIM_COMMIT_CONFIDENCE = Number(import.meta.env.VITE_INTERIM_COMMIT_CONFIDENCE || 0.65);
+const MIN_INTERIM_COMMIT_CHARS = Number(import.meta.env.VITE_INTERIM_COMMIT_CHARS || 8);
 
 // Phase 10: Network failure codes
 const RECOVERABLE_CLOSE_CODES = [1006, 1011, 1012, 1013];
@@ -221,10 +224,19 @@ class VoiceRelayClient {
         this.clearInterimTimer();
         // If we get stuck on a partial for 2.0s, force it through.
         this.interimTimer = setTimeout(() => {
-            console.warn(`[VoiceRelay] Interim Commit: Forcing finalize on "${this.lastInterimTranscript}"`);
-            this.accumulatedTranscript = this.lastInterimTranscript;
+            const candidate = this.lastInterimTranscript.trim();
+            if (
+                candidate.length < MIN_INTERIM_COMMIT_CHARS ||
+                this.lastConfidence < MIN_INTERIM_COMMIT_CONFIDENCE
+            ) {
+                console.warn(`[VoiceRelay] Interim Commit skipped: low quality "${candidate}" (confidence=${this.lastConfidence})`);
+                return;
+            }
+
+            console.warn(`[VoiceRelay] Interim Commit: Forcing finalize on "${candidate}"`);
+            this.accumulatedTranscript = candidate;
             this.triggerEndOfTurn();
-        }, 2000);
+        }, INTERIM_COMMIT_MS);
     }
 
     private clearInterimTimer() {
@@ -259,7 +271,8 @@ class VoiceRelayClient {
         const transcript = this.accumulatedTranscript;
 
         if (this.socket) {
-            this.socket.close();
+            // Use explicit normal close code to avoid ambiguous 1005 closes.
+            this.socket.close(1000, "client_stop");
             this.socket = null;
         }
 

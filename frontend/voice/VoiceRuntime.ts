@@ -23,6 +23,7 @@ import { TTSController } from "./TTSController";
  */
 
 export type VoiceMode = "idle" | "listening" | "speaking";
+type StopReason = "user" | "pause";
 export type VoiceTurnState = "IDLE" | "USER_SPEAKING" | "PROCESSING" | "SYSTEM_RESPONDING";
 
 // Configuration
@@ -304,7 +305,8 @@ class VoiceRuntimeService {
             return;
         }
 
-        if (this.isReconnectLooping()) {
+        // Apply reconnect protection only when we actually need to reconnect socket.
+        if (!DeepgramClient.getIsConnected() && this.isReconnectLooping()) {
             return;
         }
 
@@ -315,7 +317,9 @@ class VoiceRuntimeService {
             this.hasReceivedFinalTranscript = false;
             this.sessionStartTime = Date.now();
 
-            DeepgramClient.connect();
+            if (!DeepgramClient.getIsConnected()) {
+                DeepgramClient.connect();
+            }
             await AudioCapture.start();
 
             this.startNoSpeechTimer();
@@ -337,18 +341,21 @@ class VoiceRuntimeService {
     /**
      * Stop listening (user-initiated or timeout).
      */
-    public stopListening(): void {
+    public stopListening(reason: StopReason = "user"): void {
         if (!this.isListeningActive) return;
 
-        console.log("[VoiceRuntime] User requested STOP.");
+        console.log(`[VoiceRuntime] Stop listening (${reason}).`);
 
         // Set flag: "This was intentional, don't reconnect!"
-        this.isIntentionalStop = true;
+        this.isIntentionalStop = reason === "user";
         this.isListeningActive = false;
         this.clearAllTimers();
         this.clearWatchdog();
         AudioCapture.stop();
-        DeepgramClient.close();
+        // Keep websocket alive during TTS pause to avoid close/reconnect churn.
+        if (reason === "user") {
+            DeepgramClient.close();
+        }
 
         this.setMode("idle");
         this.emit({ type: "VOICE_SESSION_ENDED" });
@@ -363,7 +370,7 @@ class VoiceRuntimeService {
         // Stop listening before speaking (no overlap)
         if (this.mode === "listening") {
             console.log("[VoiceRuntime] Pausing mic to speak");
-            this.stopListening();
+            this.stopListening("pause");
         }
 
         this.setMode("speaking");
@@ -434,7 +441,7 @@ class VoiceRuntimeService {
             if (this.isListeningActive && !this.hasReceivedAnyTranscript) {
                 console.log("[Voice] Session auto-ended: no speech");
                 this.handleSilentTurn();  // Phase 10: Count as silent
-                this.stopListening();
+                this.stopListening("pause");
             }
         }, CONFIG.NO_SPEECH_TIMEOUT_MS);
     }
@@ -451,7 +458,7 @@ class VoiceRuntimeService {
             if (this.isListeningActive && !this.hasReceivedFinalTranscript) {
                 console.log("[Voice] Session auto-ended: no result");
                 this.handleSilentTurn();  // Phase 10
-                this.stopListening();
+                this.stopListening("pause");
             }
         }, CONFIG.NO_RESULT_TIMEOUT_MS);
     }
@@ -467,7 +474,7 @@ class VoiceRuntimeService {
         this.sessionTimeoutTimer = setTimeout(() => {
             if (this.isListeningActive) {
                 console.log("[Voice] Session auto-ended: max duration");
-                this.stopListening();
+                this.stopListening("pause");
             }
         }, CONFIG.MAX_SESSION_DURATION_MS);
     }

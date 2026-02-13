@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { useUIState } from "../state/uiContext";
 import { useBrain } from "../hooks/useBrain";
 import { motion, AnimatePresence } from "framer-motion";
+import AnimatedGradientBackground from "../components/ui/animated-gradient-background";
 
 /**
  * BookingCollectPage
@@ -28,8 +29,9 @@ const SLOT_LABELS: Record<string, string> = {
 const REQUIRED_SLOTS = ["roomType", "adults", "checkInDate", "checkOutDate", "guestName"];
 
 export const BookingCollectPage: React.FC = () => {
-    const { emit } = useUIState();
+    const { emit, data } = useUIState();
     const { conversationHistory, bookingSlots, isProcessing, lastResponse } = useBrain();
+    const effectiveBookingSlots = data?.bookingSlots || bookingSlots;
     const chatEndRef = useRef<HTMLDivElement>(null);
 
     // Auto-scroll chat to bottom
@@ -38,7 +40,7 @@ export const BookingCollectPage: React.FC = () => {
     }, [conversationHistory]);
 
     // Calculate progress
-    const filledCount = REQUIRED_SLOTS.filter(s => bookingSlots[s] !== null && bookingSlots[s] !== undefined).length;
+    const filledCount = REQUIRED_SLOTS.filter(s => effectiveBookingSlots[s] !== null && effectiveBookingSlots[s] !== undefined).length;
     const progress = (filledCount / REQUIRED_SLOTS.length) * 100;
 
     // Track slot changes for visual feedback
@@ -47,13 +49,13 @@ export const BookingCollectPage: React.FC = () => {
 
     useEffect(() => {
         const changed = new Set<string>();
-        for (const key of Object.keys(bookingSlots)) {
+        for (const key of Object.keys(effectiveBookingSlots)) {
             if (
-                bookingSlots[key] !== null &&
-                bookingSlots[key] !== undefined &&
+                effectiveBookingSlots[key] !== null &&
+                effectiveBookingSlots[key] !== undefined &&
                 previousSlots[key] !== undefined &&
                 previousSlots[key] !== null &&
-                previousSlots[key] !== bookingSlots[key]
+                previousSlots[key] !== effectiveBookingSlots[key]
             ) {
                 changed.add(key);
             }
@@ -63,14 +65,16 @@ export const BookingCollectPage: React.FC = () => {
             // Clear the "changed" highlight after 2 seconds
             setTimeout(() => setRecentlyChanged(new Set()), 2000);
         }
-        setPreviousSlots({ ...bookingSlots });
-    }, [bookingSlots]);
+        setPreviousSlots({ ...effectiveBookingSlots });
+    }, [effectiveBookingSlots]);
 
     return (
-        <div className="h-screen w-full flex bg-slate-900 text-white overflow-hidden">
+        <div className="h-screen w-full overflow-hidden relative text-white">
+            <AnimatedGradientBackground Breathing={true} />
+            <div className="relative z-10 h-full w-full flex overflow-hidden">
 
-            {/* LEFT: Conversation Panel */}
-            <div className="flex-1 flex flex-col p-8 max-w-[60%]">
+                {/* LEFT: Conversation Panel */}
+                <div className="flex-1 flex flex-col p-8 max-w-[60%]">
 
                 {/* Header */}
                 <div className="mb-6">
@@ -128,10 +132,10 @@ export const BookingCollectPage: React.FC = () => {
                 <div className="mt-4 text-center text-white/30 text-xs">
                     🎤 Speak to continue your booking
                 </div>
-            </div>
+                </div>
 
-            {/* RIGHT: Booking Card */}
-            <div className="w-[40%] bg-slate-800/50 border-l border-slate-700/50 p-8 flex flex-col">
+                {/* RIGHT: Booking Card */}
+                <div className="w-[40%] bg-slate-800/50 border-l border-slate-700/50 p-8 flex flex-col">
 
                 {/* Progress Bar */}
                 <div className="mb-6">
@@ -152,7 +156,7 @@ export const BookingCollectPage: React.FC = () => {
                 {/* Slot Cards */}
                 <div className="space-y-3 flex-1">
                     {Object.entries(SLOT_LABELS).map(([key, label]) => {
-                        const value = bookingSlots[key];
+                        const value = effectiveBookingSlots[key];
                         const isFilled = value !== null && value !== undefined;
                         const isRequired = REQUIRED_SLOTS.includes(key);
 
@@ -202,6 +206,7 @@ export const BookingCollectPage: React.FC = () => {
                 >
                     Cancel Booking
                 </button>
+                </div>
             </div>
         </div>
     );

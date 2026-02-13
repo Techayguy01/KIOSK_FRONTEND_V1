@@ -2,6 +2,7 @@ import React from 'react';
 import { useUIState } from '../state/uiContext';
 import { ProgressBar } from '../components/ProgressBar';
 import { CreditCard, Lock, Wifi, Loader2 } from 'lucide-react';
+import AnimatedGradientBackground from '../components/ui/animated-gradient-background';
 
 export const PaymentPage: React.FC = () => {
   const { data, emit, loading } = useUIState();
@@ -14,14 +15,16 @@ export const PaymentPage: React.FC = () => {
   };
 
   return (
-    <div className="h-screen w-full flex flex-col p-8 bg-slate-900">
-       <ProgressBar 
-        currentStep={progress.currentStep} 
-        totalSteps={progress.totalSteps} 
-        labels={progress.steps} 
-       />
+    <div className="h-screen w-full overflow-hidden relative">
+       <AnimatedGradientBackground Breathing={true} />
+       <div className="relative z-10 h-full w-full flex flex-col p-8">
+         <ProgressBar 
+          currentStep={progress.currentStep} 
+          totalSteps={progress.totalSteps} 
+          labels={progress.steps} 
+         />
 
-       <div className="flex-1 flex items-center justify-center gap-12 max-w-5xl mx-auto w-full">
+         <div className="flex-1 flex items-center justify-center gap-12 max-w-5xl mx-auto w-full">
          
          {/* Summary Card */}
          <div className="flex-1 bg-slate-800 rounded-2xl p-8 border border-slate-700 shadow-2xl">
@@ -87,6 +90,7 @@ export const PaymentPage: React.FC = () => {
             >
               {loading ? 'Processing...' : 'Simulate Card Insert'}
             </button>
+         </div>
          </div>
        </div>
     </div>
