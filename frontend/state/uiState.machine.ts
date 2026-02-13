@@ -41,7 +41,39 @@ const MACHINE_CONFIG: StateConfig = {
     canGoBack: true
   },
   ROOM_SELECT: {
-    on: { ROOM_SELECTED: 'PAYMENT' },
+    on: {
+      ROOM_SELECTED: 'BOOKING_COLLECT',
+      BACK_REQUESTED: 'MANUAL_MENU',
+      CANCEL_REQUESTED: 'WELCOME'
+    },
+    canGoBack: true
+  },
+  BOOKING_COLLECT: {
+    on: {
+      PROVIDE_GUESTS: 'BOOKING_COLLECT',
+      PROVIDE_DATES: 'BOOKING_COLLECT',
+      PROVIDE_NAME: 'BOOKING_COLLECT',
+      SELECT_ROOM: 'BOOKING_COLLECT',
+      ASK_ROOM_DETAIL: 'BOOKING_COLLECT',
+      ASK_PRICE: 'BOOKING_COLLECT',
+      GENERAL_QUERY: 'BOOKING_COLLECT',
+      MODIFY_BOOKING: 'BOOKING_COLLECT',
+      CONFIRM_BOOKING: 'BOOKING_SUMMARY',
+      CANCEL_BOOKING: 'ROOM_SELECT',
+      BACK_REQUESTED: 'ROOM_SELECT',
+      HELP_SELECTED: 'BOOKING_COLLECT',
+      RESET: 'IDLE'
+    },
+    canGoBack: true
+  },
+  BOOKING_SUMMARY: {
+    on: {
+      CONFIRM_PAYMENT: 'PAYMENT',
+      MODIFY_BOOKING: 'BOOKING_COLLECT',
+      BACK_REQUESTED: 'BOOKING_COLLECT',
+      CANCEL_BOOKING: 'WELCOME',
+      RESET: 'IDLE'
+    },
     canGoBack: true
   },
   PAYMENT: {
@@ -91,7 +123,7 @@ export const StateMachine = {
    */
   getPreviousState: (current: UIState): UIState => {
     // Phase 11.7: Simple Linear Flow for Demo
-    const flow: UIState[] = ['IDLE', 'WELCOME', 'SCAN_ID', 'ROOM_SELECT', 'PAYMENT'];
+    const flow: UIState[] = ['IDLE', 'WELCOME', 'SCAN_ID', 'ROOM_SELECT', 'BOOKING_COLLECT', 'BOOKING_SUMMARY', 'PAYMENT'];
     const idx = flow.indexOf(current);
     if (idx > 0) return flow[idx - 1];
 

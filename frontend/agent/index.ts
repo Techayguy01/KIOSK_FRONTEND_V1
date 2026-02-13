@@ -8,6 +8,8 @@ export type UiState =
     | "MANUAL_MENU"
     | "SCAN_ID"
     | "ROOM_SELECT"
+    | "BOOKING_COLLECT"
+    | "BOOKING_SUMMARY"
     | "PAYMENT"
     | "KEY_DISPENSING"
     | "COMPLETE"
@@ -27,6 +29,8 @@ export const STATE_SPEECH_MAP: Partial<Record<UiState, string>> = {
     MANUAL_MENU: "Please select an option from the menu.",
     SCAN_ID: "Please scan your ID or passport.",
     ROOM_SELECT: "Please select your preferred room.",
+    BOOKING_COLLECT: "Let me help you book a room. I'll need a few details.",
+    BOOKING_SUMMARY: "Let me confirm your booking details.",
     PAYMENT: "Please complete your payment.",
     KEY_DISPENSING: "Please wait while I prepare your key.",
     COMPLETE: "Thank you for choosing Grand Hotel. Enjoy your stay.",
@@ -46,6 +50,8 @@ export const STATE_INPUT_MODES: Record<UiState, InputMode[]> = {
     MANUAL_MENU: ["VOICE", "TOUCH"],
     SCAN_ID: ["TOUCH"], // Security/Hardware focus - Voice ignored
     ROOM_SELECT: ["VOICE", "TOUCH"], // Voice allowed for nav commands
+    BOOKING_COLLECT: ["VOICE", "TOUCH"], // Conversational booking - Voice primary
+    BOOKING_SUMMARY: ["VOICE", "TOUCH"], // Confirmation - Both allowed
     PAYMENT: ["TOUCH"], // Security/Privacy - Voice ignored
     KEY_DISPENSING: [], // Hardware lock - No input
     COMPLETE: ["TOUCH"], // Tap to finish/restart
@@ -77,6 +83,15 @@ export const VOICE_COMMAND_MAP: Record<UiState, Partial<Record<string, Intent>>>
     ROOM_SELECT: {
         "go back": "BACK_REQUESTED",
         "cancel": "CANCEL_REQUESTED",
+    },
+    BOOKING_COLLECT: {
+        "go back": "BACK_REQUESTED",
+        "cancel": "CANCEL_BOOKING",
+    },
+    BOOKING_SUMMARY: {
+        "confirm": "CONFIRM_PAYMENT",
+        "go back": "BACK_REQUESTED",
+        "cancel": "CANCEL_BOOKING",
     },
     // States where Voice is ignored (Redundant but explicit)
     SCAN_ID: {},
@@ -166,8 +181,36 @@ const TRANSITION_TABLE: Record<UiState, Partial<Record<Intent, UiState>>> = {
         CANCEL_REQUESTED: "WELCOME",
     },
     ROOM_SELECT: {
+        ROOM_SELECTED: "BOOKING_COLLECT",
         BACK_REQUESTED: "MANUAL_MENU", // Logical previous for both flows (or effectively restart)
         CANCEL_REQUESTED: "WELCOME",
+    },
+    BOOKING_COLLECT: {
+        // Booking intents (keep user in BOOKING_COLLECT while collecting)
+        PROVIDE_GUESTS: "BOOKING_COLLECT",
+        PROVIDE_DATES: "BOOKING_COLLECT",
+        PROVIDE_NAME: "BOOKING_COLLECT",
+        SELECT_ROOM: "BOOKING_COLLECT",
+        ASK_ROOM_DETAIL: "BOOKING_COLLECT",
+        ASK_PRICE: "BOOKING_COLLECT",
+        GENERAL_QUERY: "BOOKING_COLLECT",
+        MODIFY_BOOKING: "BOOKING_COLLECT",
+        // Completion: all slots filled → summary
+        CONFIRM_BOOKING: "BOOKING_SUMMARY",
+        // Escape hatches
+        CANCEL_BOOKING: "ROOM_SELECT",
+        BACK_REQUESTED: "ROOM_SELECT",
+        HELP_SELECTED: "BOOKING_COLLECT",
+        RESET: "IDLE",
+    },
+    BOOKING_SUMMARY: {
+        // User confirms → proceed to payment
+        CONFIRM_PAYMENT: "PAYMENT",
+        // User wants to change something → back to collection
+        MODIFY_BOOKING: "BOOKING_COLLECT",
+        BACK_REQUESTED: "BOOKING_COLLECT",
+        CANCEL_BOOKING: "WELCOME",
+        RESET: "IDLE",
     },
     PAYMENT: {
         BACK_REQUESTED: "ROOM_SELECT",

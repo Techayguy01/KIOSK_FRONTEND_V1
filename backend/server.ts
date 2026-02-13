@@ -20,6 +20,7 @@ import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { DeepgramRelay } from './deepgramRelay.js';
 import chatRouter from './src/routes/chat.js';
+import bookingChatRouter from './src/routes/bookingChat.js';
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
 const HTTP_PORT = parseInt(process.env.HTTP_PORT || '3002', 10);
@@ -39,11 +40,13 @@ app.get('/health', (req, res) => {
 
 // LLM Chat endpoint
 app.use('/api/chat', chatRouter);
+app.use('/api/chat/booking', bookingChatRouter);
 
 const httpServer = createServer(app);
 httpServer.listen(HTTP_PORT, () => {
     console.log(`[Brain] HTTP server listening on http://localhost:${HTTP_PORT}`);
     console.log(`[Brain] Chat endpoint: POST http://localhost:${HTTP_PORT}/api/chat`);
+    console.log(`[Brain] Booking endpoint: POST http://localhost:${HTTP_PORT}/api/chat/booking`);
 });
 
 // ============================================

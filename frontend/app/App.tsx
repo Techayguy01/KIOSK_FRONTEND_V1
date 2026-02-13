@@ -9,6 +9,8 @@ import { IdlePage } from '../pages/IdlePage';
 import { WelcomePage } from '../pages/WelcomePage';
 import { ScanIdPage } from '../pages/ScanIdPage';
 import { RoomSelectPage } from '../pages/RoomSelectPage';
+import { BookingCollectPage } from '../pages/BookingCollectPage';
+import { BookingSummaryPage } from '../pages/BookingSummaryPage';
 import { PaymentPage } from '../pages/PaymentPage';
 import { CompletePage } from '../pages/CompletePage';
 
@@ -79,6 +81,8 @@ const App: React.FC = () => {
 
       case 'SCAN_ID': return <ScanIdPage />;
       case 'ROOM_SELECT': return <RoomSelectPage />;
+      case 'BOOKING_COLLECT': return <BookingCollectPage />;
+      case 'BOOKING_SUMMARY': return <BookingSummaryPage />;
       case 'PAYMENT': return <PaymentPage />;
 
       case 'KEY_DISPENSING': return (

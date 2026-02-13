@@ -7,6 +7,8 @@ export type UIState =
   | 'MANUAL_MENU'
   | 'SCAN_ID'
   | 'ROOM_SELECT'
+  | 'BOOKING_COLLECT'
+  | 'BOOKING_SUMMARY'
   | 'PAYMENT'
   | 'KEY_DISPENSING'
   | 'COMPLETE'

@@ -15,4 +15,15 @@ export type Intent =
     | "BACK_REQUESTED"
     | "CANCEL_REQUESTED"
     | "EXPLAIN_CAPABILITIES"
-    | "GENERAL_QUERY";
+    | "GENERAL_QUERY"
+    // NEW: Booking flow intents
+    | "SELECT_ROOM"
+    | "PROVIDE_GUESTS"
+    | "PROVIDE_DATES"
+    | "PROVIDE_NAME"
+    | "CONFIRM_BOOKING"
+    | "MODIFY_BOOKING"
+    | "CANCEL_BOOKING"
+    | "ASK_ROOM_DETAIL"
+    | "COMPARE_ROOMS"
+    | "ASK_PRICE";
