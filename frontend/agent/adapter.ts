@@ -7,6 +7,8 @@ import { TTSController } from "../voice/TTSController";
 import { StateMachine } from "../state/uiState.machine";
 import { UIState } from "@contracts/backend.contract";
 import { roomsMock } from "../mocks/rooms.mock";
+import { buildTenantApiUrl, getTenantHeaders } from "../services/tenantContext";
+import { getTenant } from "../services/tenantContext";
 
 /**
  * AgentAdapter (Singleton) - Phase 9.4: TTS UX, Barge-In & Audio Authority
@@ -74,8 +76,6 @@ class AgentAdapterService {
 
     // Phase 9.4: Confidence thresholds for LLM safety gating
     private readonly CONFIDENCE_THRESHOLD_HIGH = 0.85;
-    private readonly LLM_API_URL = 'http://localhost:3002/api/chat';
-    private readonly BOOKING_LLM_API_URL = 'http://localhost:3002/api/chat/booking';
     private inactivityTimer: ReturnType<typeof setTimeout> | null = null;
     private readonly INACTIVITY_TIMEOUT_MS = 2 * 60 * 1000;
     private pendingCancelConfirmation = false;
@@ -475,13 +475,13 @@ class AgentAdapterService {
 
             const bookingStates: UiState[] = ['ROOM_SELECT', 'BOOKING_COLLECT', 'BOOKING_SUMMARY'];
             const targetUrl = bookingStates.includes(this.state)
-                ? this.BOOKING_LLM_API_URL
-                : this.LLM_API_URL;
+                ? buildTenantApiUrl("chat/booking")
+                : buildTenantApiUrl("chat");
 
             // 1. Call LLM Brain with session ID for memory
             const response = await fetch(targetUrl, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...getTenantHeaders() },
                 body: JSON.stringify({
                     transcript,
                     currentState: this.state,
@@ -839,8 +839,9 @@ class AgentAdapterService {
         // Speak Agent response (lookup from legacy map)
         const speech = STATE_SPEECH_MAP[nextState];
         if (speech) {
-            console.log(`[AgentAdapter] Speaking: "${speech}"`);
-            this.speak(speech);
+            const resolvedSpeech = this.withTenantName(speech);
+            console.log(`[AgentAdapter] Speaking: "${resolvedSpeech}"`);
+            this.speak(resolvedSpeech);
         } else {
             // If no speech, check if we should listen
             // Start listening if applicable
@@ -898,6 +899,11 @@ class AgentAdapterService {
     public speak(text: string): void {
         this.emitTranscript(text, true, 'ai');
         VoiceRuntime.speak(text);
+    }
+
+    private withTenantName(text: string): string {
+        const tenantName = getTenant()?.name || "our hotel";
+        return text.replace(/\{\{TENANT_NAME\}\}/g, tenantName);
     }
 
     /**

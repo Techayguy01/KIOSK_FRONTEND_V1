@@ -22,7 +22,8 @@ interface WelcomePageProps {
 }
 
 export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }) => {
-  const { data, emit, loading } = useUIState();
+  const { data, emit, loading, tenant } = useUIState();
+  const tenantName = tenant?.name || "Nexus";
 
   // Internal animation state only - NOT navigational state
   const [interactionState, setInteractionState] = useState<AgentState>(null);
@@ -127,7 +128,7 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
   const ManualMode = () => (
     <div className={`flex flex-col items-center justify-center h-full w-full max-w-4xl mx-auto p-6 ${fade}`}>
       <div className="text-center mb-12">
-        <h2 className="text-4xl font-light text-white mb-4">Welcome to Nexus</h2>
+        <h2 className="text-4xl font-light text-white mb-4">Welcome to {tenantName}</h2>
         <p className="text-slate-400 text-lg">How would you like to proceed?</p>
       </div>
 
@@ -191,7 +192,10 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
       <AnimatedGradientBackground Breathing={true} />
 
       {/* 1. TOP BAR */}
-      <div className="flex-none h-24 w-full px-8 flex items-center justify-end z-20">
+      <div className="flex-none h-24 w-full px-8 flex items-center justify-between z-20">
+        <div className="text-sm text-white/80 tracking-wide">
+          {tenantName}
+        </div>
         <Button
           variant="outline"
           size="sm"

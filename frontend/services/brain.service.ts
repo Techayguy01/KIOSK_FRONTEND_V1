@@ -10,10 +10,7 @@
  */
 
 import { AgentAdapter } from "../agent/adapter";
-
-// Backend URLs (same machine for kiosk, separate for cloud)
-const BRAIN_URL = "http://localhost:3002/api/chat";
-const BOOKING_BRAIN_URL = "http://localhost:3002/api/chat/booking";
+import { buildTenantApiUrl, getTenantHeaders } from "./tenantContext";
 
 // States that use the booking endpoint
 const BOOKING_STATES = ["BOOKING_COLLECT", "BOOKING_SUMMARY", "ROOM_SELECT"];
@@ -80,14 +77,14 @@ export async function sendToBrain(
 
     // Decide which endpoint based on current state
     const isBookingMode = BOOKING_STATES.includes(currentState);
-    const url = isBookingMode ? BOOKING_BRAIN_URL : BRAIN_URL;
+    const url = isBookingMode ? buildTenantApiUrl("chat/booking") : buildTenantApiUrl("chat");
 
     console.log(`[BrainService] Sending to ${isBookingMode ? "Booking" : "General"} Brain: "${transcript}" (State: ${currentState})`);
 
     try {
         const response = await fetch(url, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", ...getTenantHeaders() },
             body: JSON.stringify({
                 transcript,
                 currentState,

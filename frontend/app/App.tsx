@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { UIContext } from '../state/uiContext';
 // Agent Authority
 import { AgentAdapter } from '../agent/adapter';
@@ -20,14 +21,37 @@ import { BackButton } from '../components/BackButton';
 import { CaptionsOverlay } from '../components/CaptionsOverlay';
 import { DevToolbar } from '../components/DevToolbar';
 import AnimatedGradientBackground from '../components/ui/animated-gradient-background';
+import { setTenantContext, TenantPayload } from '../services/tenantContext';
 
-const App: React.FC = () => {
+const DEFAULT_TENANT_SLUG = 'grand-hotel';
+
+const STATE_TO_ROUTE: Record<UiState, string> = {
+  IDLE: 'idle',
+  WELCOME: 'welcome',
+  AI_CHAT: 'ai-chat',
+  MANUAL_MENU: 'manual-menu',
+  SCAN_ID: 'scan-id',
+  ROOM_SELECT: 'room-select',
+  BOOKING_COLLECT: 'booking-collect',
+  BOOKING_SUMMARY: 'booking-summary',
+  PAYMENT: 'payment',
+  KEY_DISPENSING: 'key-dispensing',
+  COMPLETE: 'complete',
+  ERROR: 'error',
+};
+
+const TenantKioskApp: React.FC = () => {
+  const { tenantSlug } = useParams<{ tenantSlug: string }>();
+  const location = useLocation();
+  const navigate = useNavigate();
+
   // Local UI State (Renderer only)
   const [state, setState] = useState<UiState>('IDLE');
   const [forcedState, setForcedState] = useState<UiState | null>(null);
   const [data, setData] = useState<any>({});
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [tenant, setTenant] = useState<TenantPayload | null>(null);
 
   // 1. CONNECT TO AGENT BRAIN
   useEffect(() => {
@@ -73,6 +97,52 @@ const App: React.FC = () => {
   // CRITICAL: This is a pure switch on Agent State. No logic allowed.
   const effectiveState = forcedState ?? state;
 
+  // Keep URL in sync with rendered kiosk state under /:tenantSlug/<page>
+  useEffect(() => {
+    const safeTenantSlug = tenantSlug || DEFAULT_TENANT_SLUG;
+    const expectedPath = `/${safeTenantSlug}/${STATE_TO_ROUTE[effectiveState]}`;
+
+    if (location.pathname !== expectedPath) {
+      navigate(expectedPath, { replace: true });
+    }
+  }, [effectiveState, location.pathname, navigate, tenantSlug]);
+
+  // Resolve tenant object once slug is known and expose it globally
+  useEffect(() => {
+    const safeTenantSlug = tenantSlug || DEFAULT_TENANT_SLUG;
+    let alive = true;
+
+    setTenantContext(safeTenantSlug, null);
+
+    (async () => {
+      try {
+        const response = await fetch(`http://localhost:3002/api/${safeTenantSlug}/tenant`, {
+          headers: { 'x-tenant-slug': safeTenantSlug },
+        });
+
+        if (!response.ok) {
+          throw new Error(`Tenant resolve failed (${response.status})`);
+        }
+
+        const payload = await response.json();
+        const resolvedTenant = (payload?.tenant || null) as TenantPayload | null;
+        if (!alive) return;
+
+        setTenant(resolvedTenant);
+        setTenantContext(safeTenantSlug, resolvedTenant);
+      } catch (e) {
+        console.error('[App] Failed to resolve tenant', e);
+        if (!alive) return;
+        setTenant(null);
+        setTenantContext(safeTenantSlug, null);
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [tenantSlug]);
+
   const renderPage = () => {
     switch (effectiveState) {
       case 'IDLE': return <IdlePage />;
@@ -117,7 +187,7 @@ const App: React.FC = () => {
   };
 
   return (
-    <UIContext.Provider value={{ state, data, emit, loading, transcript: '' }}>
+    <UIContext.Provider value={{ state, data, emit, loading, transcript: '', tenantSlug: tenantSlug || DEFAULT_TENANT_SLUG, tenant }}>
       <div className="antialiased w-full h-full relative">
 
         {/* Global Navigation Controls (Visibility controlled implicitly by page rendering, backing is Agent driven) */}
@@ -149,6 +219,23 @@ const App: React.FC = () => {
         />
       </div>
     </UIContext.Provider>
+  );
+};
+
+const TenantRootRedirect: React.FC = () => {
+  const { tenantSlug } = useParams<{ tenantSlug: string }>();
+  const slug = tenantSlug || DEFAULT_TENANT_SLUG;
+  return <Navigate to={`/${slug}/welcome`} replace />;
+};
+
+const App: React.FC = () => {
+  return (
+    <Routes>
+      <Route path="/" element={<Navigate to={`/${DEFAULT_TENANT_SLUG}/welcome`} replace />} />
+      <Route path="/:tenantSlug" element={<TenantRootRedirect />} />
+      <Route path="/:tenantSlug/*" element={<TenantKioskApp />} />
+      <Route path="*" element={<Navigate to={`/${DEFAULT_TENANT_SLUG}/welcome`} replace />} />
+    </Routes>
   );
 };
 

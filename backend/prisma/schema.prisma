@@ -1,0 +1,103 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Plan {
+  FREE
+  PRO
+  ENTERPRISE
+}
+
+enum BookingStatus {
+  DRAFT
+  CONFIRMED
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  TENANT_OWNER
+  FRONT_DESK
+  KIOSK_MACHINE
+}
+
+model Tenant {
+  id          String       @id @default(uuid()) @db.Uuid
+  name        String       @db.VarChar(255)
+  slug        String       @unique @db.VarChar(120)
+  plan        Plan         @default(FREE)
+  createdAt   DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  hotelConfig HotelConfig?
+  roomTypes   RoomType[]
+  bookings    Booking[]
+  users       User[]
+
+  @@map("tenants")
+}
+
+model HotelConfig {
+  id           String   @id @default(uuid()) @db.Uuid
+  tenantId     String   @unique @map("tenant_id") @db.Uuid
+  timezone     String   @db.VarChar(100)
+  supportPhone String   @map("support_phone") @db.VarChar(40)
+  checkInTime  DateTime @map("check_in_time") @db.Time(6)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("hotel_configs")
+}
+
+model RoomType {
+  id         String    @id @default(uuid()) @db.Uuid
+  tenantId   String    @map("tenant_id") @db.Uuid
+  name       String    @db.VarChar(255)
+  code       String    @db.VarChar(60)
+  price      Decimal   @db.Decimal(10, 2)
+  amenities  String[]
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenant     Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  bookings   Booking[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@map("room_types")
+}
+
+model Booking {
+  id          String        @id @default(uuid()) @db.Uuid
+  tenantId    String        @map("tenant_id") @db.Uuid
+  guestName   String        @map("guest_name") @db.VarChar(255)
+  checkInDate DateTime      @map("check_in_date") @db.Date
+  status      BookingStatus @default(DRAFT)
+  roomTypeId  String        @map("room_type_id") @db.Uuid
+  createdAt   DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenant      Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  roomType    RoomType      @relation(fields: [roomTypeId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId])
+  @@index([roomTypeId])
+  @@map("bookings")
+}
+
+model User {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  email     String   @db.VarChar(255)
+  role      UserRole
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@map("users")
+}

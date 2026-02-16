@@ -4,11 +4,21 @@
     "type": "module",
     "scripts": {
         "dev": "tsx watch server.ts",
-        "start": "tsx server.ts"
+        "start": "tsx server.ts",
+        "prisma:generate": "prisma generate",
+        "prisma:migrate": "prisma migrate dev",
+        "prisma:deploy": "prisma migrate deploy",
+        "prisma:studio": "prisma studio",
+        "prisma:seed": "prisma db seed",
+        "prisma:verify": "tsx prisma/verifyIsolation.ts"
+    },
+    "prisma": {
+        "seed": "tsx prisma/seed.ts"
     },
     "dependencies": {
         "@langchain/core": "^1.1.19",
         "@langchain/groq": "^1.0.4",
+        "@prisma/client": "^6.19.2",
         "cors": "^2.8.6",
         "dotenv": "^16.4.1",
         "express": "^5.2.1",
@@ -19,6 +29,7 @@
         "@types/cors": "^2.8.19",
         "@types/express": "^5.0.6",
         "@types/ws": "^8.5.10",
+        "prisma": "^7.4.0",
         "tsx": "^4.7.0",
         "typescript": "^5.3.3"
     }

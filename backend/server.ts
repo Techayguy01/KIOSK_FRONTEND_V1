@@ -21,6 +21,8 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { DeepgramRelay } from './deepgramRelay.js';
 import chatRouter from './src/routes/chat.js';
 import bookingChatRouter from './src/routes/bookingChat.js';
+import { resolveTenant } from './src/middleware/tenantResolver.js';
+import { prisma } from './src/db/prisma.js';
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
 const HTTP_PORT = parseInt(process.env.HTTP_PORT || '3002', 10);
@@ -38,9 +40,72 @@ app.get('/health', (req, res) => {
     res.json({ status: 'ok', service: 'kiosk-brain' });
 });
 
+// Tenant resolution probe endpoints
+app.get('/api/tenant', resolveTenant, (req, res) => {
+    res.json({ tenant: req.tenant });
+});
+
+app.get('/api/:tenantSlug/tenant', resolveTenant, (req, res) => {
+    res.json({ tenant: req.tenant });
+});
+
+app.get('/api/rooms', resolveTenant, async (req, res) => {
+    const tenant = req.tenant;
+    if (!tenant) {
+        res.status(404).json({ message: 'Tenant not found' });
+        return;
+    }
+
+    const roomTypes = await prisma.roomType.findMany({
+        where: { tenantId: tenant.id },
+        orderBy: { price: 'asc' },
+    });
+
+    const rooms = roomTypes.map((room, idx) => ({
+        id: room.id,
+        name: room.name,
+        price: Number(room.price),
+        currency: "USD",
+        image: `https://picsum.photos/400/300?random=${idx + 1}`,
+        features: room.amenities,
+        code: room.code,
+    }));
+
+    res.json({ rooms });
+});
+
+app.get('/api/:tenantSlug/rooms', resolveTenant, async (req, res) => {
+    const tenant = req.tenant;
+    if (!tenant) {
+        res.status(404).json({ message: 'Tenant not found' });
+        return;
+    }
+
+    const roomTypes = await prisma.roomType.findMany({
+        where: { tenantId: tenant.id },
+        orderBy: { price: 'asc' },
+    });
+
+    const rooms = roomTypes.map((room, idx) => ({
+        id: room.id,
+        name: room.name,
+        price: Number(room.price),
+        currency: "USD",
+        image: `https://picsum.photos/400/300?random=${idx + 1}`,
+        features: room.amenities,
+        code: room.code,
+    }));
+
+    res.json({ rooms });
+});
+
 // LLM Chat endpoint
-app.use('/api/chat', chatRouter);
-app.use('/api/chat/booking', bookingChatRouter);
+app.use('/api/chat', resolveTenant, chatRouter);
+app.use('/api/chat/booking', resolveTenant, bookingChatRouter);
+
+// URL path-based tenant routing support
+app.use('/api/:tenantSlug/chat', resolveTenant, chatRouter);
+app.use('/api/:tenantSlug/chat/booking', resolveTenant, bookingChatRouter);
 
 const httpServer = createServer(app);
 httpServer.listen(HTTP_PORT, () => {

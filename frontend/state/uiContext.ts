@@ -8,6 +8,8 @@ const initialContext: UIContextType = {
   transcript: '',
   emit: () => { throw new Error("Not Implemented: UIContext Provider missing"); },
   loading: false,
+  tenantSlug: 'grand-hotel',
+  tenant: null,
 };
 
 export const UIContext = createContext<UIContextType>(initialContext);

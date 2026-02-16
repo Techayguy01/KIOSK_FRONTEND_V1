@@ -5,13 +5,18 @@ import { ProgressBar } from '../components/ProgressBar';
 import { Loader2 } from 'lucide-react';
 import AnimatedGradientBackground from '../components/ui/animated-gradient-background';
 import { roomsMock } from '../mocks/rooms.mock';
+import { RoomDTO, RoomService } from '../services/room.service';
 
 export const RoomSelectPage: React.FC = () => {
   const { data, emit, loading } = useUIState();
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
-  const rooms = Array.isArray(data.rooms) && data.rooms.length > 0
-    ? data.rooms
-    : roomsMock.available_rooms;
+  const [liveRooms, setLiveRooms] = useState<RoomDTO[] | null>(null);
+  const [roomsError, setRoomsError] = useState<string | null>(null);
+  const rooms = liveRooms && liveRooms.length > 0
+    ? liveRooms
+    : Array.isArray(data.rooms) && data.rooms.length > 0
+      ? data.rooms
+      : roomsMock.available_rooms;
   const progress = data.progress || { currentStep: 2, totalSteps: 4, steps: ['Room'] };
 
   useEffect(() => {
@@ -19,6 +24,26 @@ export const RoomSelectPage: React.FC = () => {
       setSelectedRoomId(data.selectedRoom.id);
     }
   }, [data?.selectedRoom?.id]);
+
+  useEffect(() => {
+    let active = true;
+    setRoomsError(null);
+
+    RoomService.getAvailableRooms()
+      .then((fetchedRooms) => {
+        if (!active) return;
+        setLiveRooms(fetchedRooms);
+      })
+      .catch((error) => {
+        console.error("[RoomSelectPage] Failed to load live rooms:", error);
+        if (!active) return;
+        setRoomsError("Live room data unavailable. Showing fallback rooms.");
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const handleContinue = () => {
     if (selectedRoomId) {
@@ -41,6 +66,7 @@ export const RoomSelectPage: React.FC = () => {
           <header className="mb-8 text-center">
             <h2 className="text-3xl font-light text-white mb-2">Select Your Room</h2>
             <p className="text-slate-400">We have prepared a selection based on your preferences.</p>
+            {roomsError && <p className="text-amber-300 text-sm mt-2">{roomsError}</p>}
           </header>
 
           <div className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 overflow-y-auto pb-24 px-4 transition-opacity ${loading ? 'opacity-50 pointer-events-none' : ''}`}>
