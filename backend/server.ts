@@ -23,6 +23,9 @@ import chatRouter from './src/routes/chat.js';
 import bookingChatRouter from './src/routes/bookingChat.js';
 import { resolveTenant } from './src/middleware/tenantResolver.js';
 import { prisma } from './src/db/prisma.js';
+import { attachRequestContext, requestAccessLogger } from './src/middleware/requestContext.js';
+import { sendApiError } from './src/utils/http.js';
+import { logWithContext } from './src/utils/logger.js';
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
 const HTTP_PORT = parseInt(process.env.HTTP_PORT || '3002', 10);
@@ -34,69 +37,85 @@ const DEFAULT_SAMPLE_RATE = 48000;
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use(attachRequestContext);
+app.use(requestAccessLogger);
 
 // Health check
 app.get('/health', (req, res) => {
-    res.json({ status: 'ok', service: 'kiosk-brain' });
+    res.json({ status: 'ok', service: 'kiosk-brain', requestId: req.requestId });
 });
 
 // Tenant resolution probe endpoints
 app.get('/api/tenant', resolveTenant, (req, res) => {
-    res.json({ tenant: req.tenant });
+    res.json({ tenant: req.tenant, requestId: req.requestId });
 });
 
 app.get('/api/:tenantSlug/tenant', resolveTenant, (req, res) => {
-    res.json({ tenant: req.tenant });
+    res.json({ tenant: req.tenant, requestId: req.requestId });
 });
 
 app.get('/api/rooms', resolveTenant, async (req, res) => {
-    const tenant = req.tenant;
-    if (!tenant) {
-        res.status(404).json({ message: 'Tenant not found' });
-        return;
+    try {
+        const tenant = req.tenant;
+        if (!tenant) {
+            sendApiError(res, 404, "TENANT_NOT_FOUND", "Tenant not found", req.requestId);
+            return;
+        }
+
+        const roomTypes = await prisma.roomType.findMany({
+            where: { tenantId: tenant.id },
+            orderBy: { price: 'asc' },
+        });
+
+        const rooms = roomTypes.map((room, idx) => ({
+            id: room.id,
+            name: room.name,
+            price: Number(room.price),
+            currency: "USD",
+            image: `https://picsum.photos/400/300?random=${idx + 1}`,
+            features: room.amenities,
+            code: room.code,
+        }));
+
+        res.json({ rooms, requestId: req.requestId });
+    } catch (error) {
+        logWithContext(req, "ERROR", "Failed to fetch tenant rooms", {
+            error: error instanceof Error ? error.message : String(error),
+        });
+        sendApiError(res, 500, "ROOMS_FETCH_FAILED", "Failed to fetch rooms", req.requestId);
     }
-
-    const roomTypes = await prisma.roomType.findMany({
-        where: { tenantId: tenant.id },
-        orderBy: { price: 'asc' },
-    });
-
-    const rooms = roomTypes.map((room, idx) => ({
-        id: room.id,
-        name: room.name,
-        price: Number(room.price),
-        currency: "USD",
-        image: `https://picsum.photos/400/300?random=${idx + 1}`,
-        features: room.amenities,
-        code: room.code,
-    }));
-
-    res.json({ rooms });
 });
 
 app.get('/api/:tenantSlug/rooms', resolveTenant, async (req, res) => {
-    const tenant = req.tenant;
-    if (!tenant) {
-        res.status(404).json({ message: 'Tenant not found' });
-        return;
+    try {
+        const tenant = req.tenant;
+        if (!tenant) {
+            sendApiError(res, 404, "TENANT_NOT_FOUND", "Tenant not found", req.requestId);
+            return;
+        }
+
+        const roomTypes = await prisma.roomType.findMany({
+            where: { tenantId: tenant.id },
+            orderBy: { price: 'asc' },
+        });
+
+        const rooms = roomTypes.map((room, idx) => ({
+            id: room.id,
+            name: room.name,
+            price: Number(room.price),
+            currency: "USD",
+            image: `https://picsum.photos/400/300?random=${idx + 1}`,
+            features: room.amenities,
+            code: room.code,
+        }));
+
+        res.json({ rooms, requestId: req.requestId });
+    } catch (error) {
+        logWithContext(req, "ERROR", "Failed to fetch tenant rooms", {
+            error: error instanceof Error ? error.message : String(error),
+        });
+        sendApiError(res, 500, "ROOMS_FETCH_FAILED", "Failed to fetch rooms", req.requestId);
     }
-
-    const roomTypes = await prisma.roomType.findMany({
-        where: { tenantId: tenant.id },
-        orderBy: { price: 'asc' },
-    });
-
-    const rooms = roomTypes.map((room, idx) => ({
-        id: room.id,
-        name: room.name,
-        price: Number(room.price),
-        currency: "USD",
-        image: `https://picsum.photos/400/300?random=${idx + 1}`,
-        features: room.amenities,
-        code: room.code,
-    }));
-
-    res.json({ rooms });
 });
 
 // LLM Chat endpoint
@@ -109,9 +128,9 @@ app.use('/api/:tenantSlug/chat/booking', resolveTenant, bookingChatRouter);
 
 const httpServer = createServer(app);
 httpServer.listen(HTTP_PORT, () => {
-    console.log(`[Brain] HTTP server listening on http://localhost:${HTTP_PORT}`);
-    console.log(`[Brain] Chat endpoint: POST http://localhost:${HTTP_PORT}/api/chat`);
-    console.log(`[Brain] Booking endpoint: POST http://localhost:${HTTP_PORT}/api/chat/booking`);
+    logWithContext(undefined, "INFO", `HTTP server listening on http://localhost:${HTTP_PORT}`);
+    logWithContext(undefined, "INFO", `Chat endpoint: POST http://localhost:${HTTP_PORT}/api/chat`);
+    logWithContext(undefined, "INFO", `Booking endpoint: POST http://localhost:${HTTP_PORT}/api/chat/booking`);
 });
 
 // ============================================

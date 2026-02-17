@@ -1,5 +1,7 @@
 import { NextFunction, Request, Response } from "express";
 import { prisma } from "../db/prisma.js";
+import { sendApiError } from "../utils/http.js";
+import { logWithContext } from "../utils/logger.js";
 
 function getTenantSlug(req: Request): string | null {
   const fromPath =
@@ -19,9 +21,7 @@ export async function resolveTenant(req: Request, res: Response, next: NextFunct
   try {
     const tenantSlug = getTenantSlug(req);
     if (!tenantSlug) {
-      res.status(400).json({
-        message: "Tenant slug is required",
-      });
+      sendApiError(res, 400, "TENANT_SLUG_REQUIRED", "Tenant slug is required", req.requestId);
       return;
     }
 
@@ -33,15 +33,18 @@ export async function resolveTenant(req: Request, res: Response, next: NextFunct
     });
 
     if (!tenant) {
-      res.status(404).json({ message: "Tenant not found" });
+      sendApiError(res, 404, "TENANT_NOT_FOUND", "Tenant not found", req.requestId);
       return;
     }
 
     req.tenant = tenant;
     req.tenantSlug = tenantSlug;
+    logWithContext(req, "INFO", "Tenant resolved", { tenantId: tenant.id, slug: tenant.slug });
     next();
   } catch (error) {
-    console.error("[TenantResolver] Failed to resolve tenant:", error);
-    res.status(500).json({ message: "Failed to resolve tenant" });
+    logWithContext(req, "ERROR", "Tenant resolution failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    sendApiError(res, 500, "TENANT_RESOLUTION_FAILED", "Failed to resolve tenant", req.requestId);
   }
 }

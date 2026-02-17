@@ -76,6 +76,14 @@ model Booking {
   tenantId    String        @map("tenant_id") @db.Uuid
   guestName   String        @map("guest_name") @db.VarChar(255)
   checkInDate DateTime      @map("check_in_date") @db.Date
+  checkOutDate DateTime     @map("check_out_date") @db.Date
+  adults      Int
+  children    Int?
+  nights      Int
+  totalPrice  Decimal?      @map("total_price") @db.Decimal(10, 2)
+  sessionId   String?       @map("session_id") @db.VarChar(120)
+  idempotencyKey String?    @map("idempotency_key") @db.VarChar(190)
+  paymentRef  String?       @map("payment_ref") @db.VarChar(120)
   status      BookingStatus @default(DRAFT)
   roomTypeId  String        @map("room_type_id") @db.Uuid
   createdAt   DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -83,7 +91,9 @@ model Booking {
   tenant      Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   roomType    RoomType      @relation(fields: [roomTypeId], references: [id], onDelete: Restrict)
 
+  @@unique([tenantId, idempotencyKey])
   @@index([tenantId])
+  @@index([tenantId, status])
   @@index([roomTypeId])
   @@map("bookings")
 }

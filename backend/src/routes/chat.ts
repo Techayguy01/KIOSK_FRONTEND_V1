@@ -1,10 +1,20 @@
 import { Router, Request, Response } from 'express';
+import { z } from "zod";
 import { llm } from '../llm/groqClient';
 import { LLMResponseSchema, FALLBACK_RESPONSE } from '../llm/contracts';
 import { buildSystemContext } from '../context/contextBuilder';
-import { HOTEL_CONFIG } from '../context/hotelData';
+import { HOTEL_CONFIG } from '../context/hotelData.js';
+import { validateBody } from "../middleware/validateRequest.js";
+import { logWithContext } from "../utils/logger.js";
+import { sendApiError } from "../utils/http.js";
 
 const router = Router();
+const ENABLE_STATIC_CONTEXT_FALLBACK = process.env.ENABLE_STATIC_CONTEXT_FALLBACK === "1";
+const ChatRequestSchema = z.object({
+    transcript: z.string().optional(),
+    currentState: z.string().optional(),
+    sessionId: z.string().optional(),
+});
 
 /**
  * Phase 9.6: Session Memory Store
@@ -71,19 +81,22 @@ OUTPUT FORMAT (JSON ONLY):
 }
 `;
 
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', validateBody(ChatRequestSchema), async (req: Request, res: Response) => {
     const start = Date.now();
     try {
         const { transcript, currentState, sessionId } = req.body;
         const sid = sessionId || "default";  // Fallback for testing
 
-        console.log(`[Brain] Input: "${transcript}" | State: ${currentState} | Session: ${sid}`);
+        logWithContext(req, "INFO", "General chat request received", {
+            currentState,
+            sessionId: sid,
+        });
 
         // 1. PRIVACY GUARD 🛡️
         // If we are back at WELCOME or IDLE, the previous user is gone. Wipe memory.
         if (currentState === "WELCOME" || currentState === "IDLE") {
             if (sessionMemory.has(sid)) {
-                console.log(`[Brain] Privacy wipe: Session ${sid} memory cleared`);
+                logWithContext(req, "INFO", "Privacy wipe: cleared general chat memory", { sessionId: sid });
                 sessionMemory.delete(sid);
             }
         }
@@ -96,6 +109,11 @@ router.post('/', async (req: Request, res: Response) => {
 
         // 2. Retrieve History
         let history = sessionMemory.get(sid) || [];
+        const tenant = req.tenant;
+        if (!tenant) {
+            sendApiError(res, 404, "TENANT_NOT_FOUND", "Tenant not found", req.requestId);
+            return;
+        }
 
         // 3. Build History String for Prompt
         const recentHistory = history.slice(-MAX_HISTORY_TURNS);
@@ -109,14 +127,24 @@ ${recentHistory.map(m => `${m.role === 'user' ? 'Guest' : 'Concierge'}: ${m.cont
         }
 
         // 4. Build the Dynamic Context
+        const hotelConfig = tenant.hotelConfig;
+        const fallbackConfig = ENABLE_STATIC_CONTEXT_FALLBACK ? HOTEL_CONFIG : null;
+
         const contextJson = buildSystemContext({
             currentState: currentState || "IDLE",
             transcript
+        }, {
+            hotelName: tenant.name,
+            timezone: hotelConfig?.timezone ?? fallbackConfig?.timezone,
+            checkIn: hotelConfig?.checkInTime ?? fallbackConfig?.checkInStart,
+            checkOut: fallbackConfig?.checkOutEnd ?? "11:00",
+            amenities: fallbackConfig?.amenities ?? [],
+            location: fallbackConfig?.location ?? "Lobby Kiosk",
         });
 
         // 5. Inject into Prompt Template
         const filledPrompt = SYSTEM_PROMPT_TEMPLATE
-            .replace('{{HOTEL_NAME}}', HOTEL_CONFIG.name)
+            .replace('{{HOTEL_NAME}}', tenant.name)
             .replace('{{CONTEXT_JSON}}', contextJson)
             .replace('{{CURRENT_STATE}}', currentState || "IDLE")
             .replace('{{CONVERSATION_HISTORY}}', historySection);
@@ -132,7 +160,7 @@ ${recentHistory.map(m => `${m.role === 'user' ? 'Guest' : 'Concierge'}: ${m.cont
         const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
 
         if (!jsonMatch) {
-            console.warn("[Brain] LLM failed to output JSON:", rawContent);
+            logWithContext(req, "WARN", "LLM failed to output JSON", { rawContent });
             throw new Error("Malformed LLM Output");
         }
 
@@ -148,12 +176,24 @@ ${recentHistory.map(m => `${m.role === 'user' ? 'Guest' : 'Concierge'}: ${m.cont
         }
         sessionMemory.set(sid, history);
 
-        console.log(`[Brain] Validated:`, validated, `(${Date.now() - start}ms)`);
+        logWithContext(req, "INFO", "General chat response validated", {
+            intent: validated.intent,
+            confidence: validated.confidence,
+            elapsedMs: Date.now() - start,
+        });
         res.json(validated);
 
     } catch (error) {
-        console.error("[Brain] Rejected:", error);
-        res.json(FALLBACK_RESPONSE);
+        logWithContext(req, "ERROR", "General chat request failed", {
+            error: error instanceof Error ? error.message : String(error),
+        });
+        sendApiError(
+            res,
+            500,
+            "CHAT_INTERNAL_ERROR",
+            FALLBACK_RESPONSE.speech || "Chat request failed",
+            req.requestId
+        );
     }
 });
 
