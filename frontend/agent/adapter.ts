@@ -6,7 +6,6 @@ import { SpeechOutputController } from "../voice/SpeechOutputController";
 import { TTSController } from "../voice/TTSController";
 import { StateMachine } from "../state/uiState.machine";
 import { UIState } from "@contracts/backend.contract";
-import { roomsMock } from "../mocks/rooms.mock";
 import { buildTenantApiUrl, getTenantHeaders } from "../services/tenantContext";
 import { getTenant } from "../services/tenantContext";
 
@@ -606,12 +605,12 @@ class AgentAdapterService {
     private applyPayloadData(intent: string, payload?: any, nextState?: UiState): void {
         const merged: Record<string, any> = { ...this.viewData };
 
-        if ((nextState === 'ROOM_SELECT' || this.state === 'ROOM_SELECT') && !Array.isArray(merged.rooms)) {
-            merged.rooms = roomsMock.available_rooms;
-        }
-
         if (payload?.room) {
             merged.selectedRoom = payload.room;
+        }
+
+        if (Array.isArray(payload?.rooms)) {
+            merged.rooms = payload.rooms;
         }
 
         if (payload?.slots) {
@@ -658,7 +657,8 @@ class AgentAdapterService {
         const t = (transcript || "").toLowerCase();
         if (!t) return null;
 
-        const rooms = roomsMock.available_rooms;
+        const rooms = Array.isArray(this.viewData.rooms) ? this.viewData.rooms : [];
+        if (rooms.length === 0) return null;
         const byName = rooms.find((r: any) => t.includes(String(r.name).toLowerCase()));
         if (byName) return byName;
 
