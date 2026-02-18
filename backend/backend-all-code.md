@@ -1,64 +1,34 @@
-# Backend Code Documentation
+# Backend Folder - Complete Code Documentation
 
-## 1. Folder Structure
+## 📁 Backend Folder Structure
 
 ```
-KIOSK_FRONTEND_V1/backend/
-├── .env                          # Environment variables (API keys)
-├── package.json                  # Project dependencies and scripts
-├── package-lock.json             # Locked dependency versions
-├── server.ts                     # Main server entry point (WebSocket + HTTP)
-├── deepgramRelay.ts              # Deepgram WebSocket relay module
-├── test-llm.mjs                  # LLM integration test script
-├── node_modules/                 # Dependencies (excluded from documentation)
+backend/
+├── server.ts
+├── deepgramRelay.ts
+├── test-llm.mjs
+├── package.json
 └── src/
+    ├── routes/
+    │   └── chat.ts
     ├── context/
-    │   ├── contextBuilder.ts     # Builds situational context for LLM
-    │   └── hotelData.ts          # Static hotel configuration data
-    ├── llm/
-    │   ├── contracts.ts          # LLM response schemas and validation
-    │   └── groqClient.ts         # Groq LLM client initialization
-    └── routes/
-        └── chat.ts               # HTTP endpoint for LLM chat requests
+    │   ├── contextBuilder.ts
+    │   └── hotelData.ts
+    └── llm/
+        ├── contracts.ts
+        └── groqClient.ts
 ```
 
 ---
 
-## 2. Code Files
-
-### a) Location: `KIOSK_FRONTEND_V1/backend/package.json`
-
-```json
-{
-    "name": "kiosk-voice-relay",
-    "version": "1.0.0",
-    "type": "module",
-    "scripts": {
-        "dev": "tsx watch server.ts",
-        "start": "tsx server.ts"
-    },
-    "dependencies": {
-        "@langchain/core": "^1.1.19",
-        "@langchain/groq": "^1.0.4",
-        "cors": "^2.8.6",
-        "dotenv": "^16.4.1",
-        "express": "^5.2.1",
-        "ws": "^8.16.0",
-        "zod": "^4.3.6"
-    },
-    "devDependencies": {
-        "@types/cors": "^2.8.19",
-        "@types/express": "^5.0.6",
-        "@types/ws": "^8.5.10",
-        "tsx": "^4.7.0",
-        "typescript": "^5.3.3"
-    }
-}
-```
+## 📄 Files Documentation
 
 ---
 
-### b) Location: `KIOSK_FRONTEND_V1/backend/server.ts`
+### 1. `backend/server.ts`
+
+**Description:**  
+Main server entry point that initializes both the WebSocket server for Deepgram voice relay and HTTP server for LLM chat endpoints. Acts as the central orchestration layer connecting browser audio to Deepgram STT and providing REST API for AI chat functionality.
 
 ```typescript
 /**
@@ -181,7 +151,10 @@ console.log(`[VoiceRelay] Ready. Waiting for connections on port ${PORT}`);
 
 ---
 
-### c) Location: `KIOSK_FRONTEND_V1/backend/deepgramRelay.ts`
+### 2. `backend/deepgramRelay.ts`
+
+**Description:**  
+WebSocket relay class that establishes and manages connection to Deepgram Nova-2 STT service. Handles audio streaming from browser to Deepgram and forwards transcription results back, keeping the API key server-side for security.
 
 ```typescript
 /**
@@ -316,7 +289,10 @@ export class DeepgramRelay {
 
 ---
 
-### d) Location: `KIOSK_FRONTEND_V1/backend/test-llm.mjs`
+### 3. `backend/test-llm.mjs`
+
+**Description:**  
+Test script for validating LLM integration. Tests basic functionality, governance, context awareness, confidence scoring, state awareness, and session memory capabilities of the chat endpoint.
 
 ```javascript
 // Phase 9 Test Script
@@ -395,173 +371,45 @@ runTests();
 
 ---
 
-### e) Location: `KIOSK_FRONTEND_V1/backend/src/llm/contracts.ts`
+### 4. `backend/package.json`
 
-```typescript
-import { z } from "zod";
+**Description:**  
+NPM package configuration defining project dependencies (Express, WebSocket, Groq LLM, Zod) and scripts for running the development and production servers.
 
-/**
- * LLM Contracts (Phase 9.2 - Prompt Governance)
- * 
- * This is the SINGLE SOURCE OF TRUTH for LLM output validation.
- * The LLM is an ADVISOR - it can only suggest intents from this list.
- * The Agent (FSM) is the AUTHORITY - it decides if the intent is valid.
- */
-
-// 1. Define the Strict List of Allowed Intents
-// These MUST match your Agent's FSM capabilities.
-export const IntentSchema = z.enum([
-    "IDLE",
-    "WELCOME",
-    "CHECK_IN",     // User wants to check in
-    "SCAN_ID",      // User is ready to scan ID / providing name
-    "PAYMENT",      // User wants to pay
-    "HELP",         // User needs assistance
-    "REPEAT",       // User asked to repeat the last thing
-    "UNKNOWN",      // LLM is confused / Out of domain
-    "BOOK_ROOM",    // Phase 16: Booking Intent
-    "RECOMMEND_ROOM", // Phase 16: Agentic Choice
-    "GENERAL_QUERY"   // Phase 16: Chat / Policy / Jokes
-]);
-
-// Phase 9.4: Confidence Thresholds for Safety Gating
-export const CONFIDENCE_THRESHOLDS = {
-    HIGH: 0.85,     // Execute immediately
-    MEDIUM: 0.50,   // Ask clarifying question
-    // Below 0.50 is considered Noise/Silence - reject
-};
-
-// 2. Define the strict JSON Output Schema
-export const LLMResponseSchema = z.object({
-    speech: z.string().describe("A concise, polite response for the TTS (max 2 sentences)."),
-    intent: IntentSchema.describe("The classification of the user's request."),
-    confidence: z.number().min(0).max(1).describe("Self-evaluated confidence score (0.0 to 1.0).")
-});
-
-export type LLMResponse = z.infer<typeof LLMResponseSchema>;
-export type ValidIntent = z.infer<typeof IntentSchema>;
-
-// 3. Default fallback for validation failures
-export const FALLBACK_RESPONSE: LLMResponse = {
-    speech: "I'm having trouble understanding. Please use the touch screen.",
-    intent: "UNKNOWN",
-    confidence: 0.0
-};
-```
-
----
-
-### f) Location: `KIOSK_FRONTEND_V1/backend/src/llm/groqClient.ts`
-
-```typescript
-import { ChatGroq } from "@langchain/groq";
-import dotenv from "dotenv";
-
-dotenv.config();
-
-if (!process.env.GROQ_API_KEY) {
-    console.warn("⚠️ GROQ_API_KEY is missing. Voice will be dumb.");
-}
-
-// Llama 3.3 70B Versatile: High intelligence, extremely low latency (Groq LPU)
-// Updated from decommissioned llama3-70b-8192
-export const llm = new ChatGroq({
-    apiKey: process.env.GROQ_API_KEY,
-    model: "llama-3.3-70b-versatile",
-    temperature: 0, // Deterministic = Safety
-    maxTokens: 1024,
-});
-
-console.log("[LLM] Groq (Llama 3.3 70B Versatile) initialized.");
-```
-
----
-
-### g) Location: `KIOSK_FRONTEND_V1/backend/src/context/hotelData.ts`
-
-```typescript
-/**
- * Hotel Configuration (Phase 9.3 - Context Injection)
- * 
- * Static "Truth" about the hotel.
- * This data is injected into every LLM prompt.
- */
-
-export const HOTEL_CONFIG = {
-    name: "Grand Hotel Nagpur",
-    timezone: "Asia/Kolkata", // CRITICAL: Force local time, not server time
-    checkInStart: "14:00", // THis is Check-in-Time
-    checkOutEnd: "11:00", // This is Check-out-Time
-    amenities: ["Free Wi-Fi", "Pool (6AM-10PM)", "Breakfast (7AM-10AM)", "Spa"], // This is Amenities
-    supportPhone: "999", // This is Support Phone
-    location: "Lobby Kiosk" // This is Location
-};
-```
-
----
-
-### h) Location: `KIOSK_FRONTEND_V1/backend/src/context/contextBuilder.ts`
-
-```typescript
-import { HOTEL_CONFIG } from "./hotelData";
-
-/**
- * Context Builder (Phase 9.3 - Situational Awareness)
- * 
- * Builds the "World View" for the LLM every request.
- * This is STATELESS - we inject reality, not memory.
- */
-
-interface ContextInput {
-    currentState: string;
-    transcript: string;
-}
-
-export function buildSystemContext(input: ContextInput): string {
-    // 1. Get Local Hotel Time (Not Server Time!)
-    const now = new Date();
-
-    const localTime = new Intl.DateTimeFormat('en-US', {
-        timeZone: HOTEL_CONFIG.timezone,
-        hour: 'numeric',
-        minute: 'numeric',
-        hour12: true
-    }).format(now);
-
-    const currentHour = parseInt(new Intl.DateTimeFormat('en-US', {
-        timeZone: HOTEL_CONFIG.timezone,
-        hour: 'numeric',
-        hour12: false
-    }).format(now));
-
-    const partOfDay = currentHour < 12 ? "Morning" : currentHour < 18 ? "Afternoon" : "Evening";
-
-    // 2. Build Context Object
-    const context = {
-        environment: {
-            hotel: HOTEL_CONFIG.name,
-            location: HOTEL_CONFIG.location,
-            localTime: localTime,
-            partOfDay: partOfDay,
-        },
-        kioskState: {
-            currentScreen: input.currentState,
-            canSpeak: true, // Voice is active
-        },
-        policy: {
-            checkIn: HOTEL_CONFIG.checkInStart,
-            checkOut: HOTEL_CONFIG.checkOutEnd,
-            amenities: HOTEL_CONFIG.amenities,
-        }
-    };
-
-    return JSON.stringify(context, null, 2);
+```json
+{
+    "name": "kiosk-voice-relay",
+    "version": "1.0.0",
+    "type": "module",
+    "scripts": {
+        "dev": "tsx watch server.ts",
+        "start": "tsx server.ts"
+    },
+    "dependencies": {
+        "@langchain/core": "^1.1.19",
+        "@langchain/groq": "^1.0.4",
+        "cors": "^2.8.6",
+        "dotenv": "^16.4.1",
+        "express": "^5.2.1",
+        "ws": "^8.16.0",
+        "zod": "^4.3.6"
+    },
+    "devDependencies": {
+        "@types/cors": "^2.8.19",
+        "@types/express": "^5.0.6",
+        "@types/ws": "^8.5.10",
+        "tsx": "^4.7.0",
+        "typescript": "^5.3.3"
+    }
 }
 ```
 
 ---
 
-### i) Location: `KIOSK_FRONTEND_V1/backend/src/routes/chat.ts`
+### 5. `backend/src/routes/chat.ts`
+
+**Description:**  
+Express router handling `/api/chat` endpoint. Manages LLM chat requests with session memory, privacy controls, context building, and Zod validation. Supports conversation history and automatic memory wiping on session end.
 
 ```typescript
 import { Router, Request, Response } from 'express';
@@ -728,78 +576,192 @@ export default router;
 
 ---
 
-## 3. Architecture Overview
+### 6. `backend/src/context/contextBuilder.ts`
 
-### System Components
+**Description:**  
+Builds dynamic situational context for LLM prompts including hotel information, local time, timezone-aware greetings, and current kiosk state. Provides stateless world view injection for each LLM request.
 
-1. **Voice Relay (WebSocket Server)**
-   - Port: 3001
-   - Purpose: Relay audio between browser and Deepgram STT service
-   - Acts as a secure proxy to keep API keys server-side
+```typescript
+import { HOTEL_CONFIG } from "./hotelData";
 
-2. **LLM Brain (HTTP Server)**
-   - Port: 3002
-   - Purpose: Process transcripts and return intent + speech responses
-   - Endpoint: `POST /api/chat`
+/**
+ * Context Builder (Phase 9.3 - Situational Awareness)
+ * 
+ * Builds the "World View" for the LLM every request.
+ * This is STATELESS - we inject reality, not memory.
+ */
 
-3. **Deepgram Integration**
-   - Model: Nova-2
-   - Encoding: Linear16 PCM
-   - Features: Interim results, smart formatting, endpointing
+interface ContextInput {
+    currentState: string;
+    transcript: string;
+}
 
-4. **LLM Integration**
-   - Provider: Groq
-   - Model: Llama 3.3 70B Versatile
-   - Temperature: 0 (deterministic)
-   - Output: Structured JSON with Zod validation
+export function buildSystemContext(input: ContextInput): string {
+    // 1. Get Local Hotel Time (Not Server Time!)
+    const now = new Date();
 
-### Key Design Principles
+    const localTime = new Intl.DateTimeFormat('en-US', {
+        timeZone: HOTEL_CONFIG.timezone,
+        hour: 'numeric',
+        minute: 'numeric',
+        hour12: true
+    }).format(now);
 
-- **Backend is a PIPE, not a BRAIN**: Voice relay passes data without interpretation
-- **LLM is an ADVISOR, not a CONTROLLER**: Suggests intents, doesn't control flow
-- **Privacy-First**: Session memory wiped when returning to WELCOME/IDLE states
-- **Validation-First**: All LLM outputs validated against strict schemas
-- **Context-Aware**: Injects hotel data, time, and state into every request
+    const currentHour = parseInt(new Intl.DateTimeFormat('en-US', {
+        timeZone: HOTEL_CONFIG.timezone,
+        hour: 'numeric',
+        hour12: false
+    }).format(now));
 
-### Data Flow
+    const partOfDay = currentHour < 12 ? "Morning" : currentHour < 18 ? "Afternoon" : "Evening";
 
-```
-Browser → WebSocket (3001) → Deepgram → Transcripts → Browser
-Browser → HTTP POST /api/chat (3002) → LLM → Intent + Speech → Browser
-```
+    // 2. Build Context Object
+    const context = {
+        environment: {
+            hotel: HOTEL_CONFIG.name,
+            location: HOTEL_CONFIG.location,
+            localTime: localTime,
+            partOfDay: partOfDay,
+        },
+        kioskState: {
+            currentScreen: input.currentState,
+            canSpeak: true, // Voice is active
+        },
+        policy: {
+            checkIn: HOTEL_CONFIG.checkInStart,
+            checkOut: HOTEL_CONFIG.checkOutEnd,
+            amenities: HOTEL_CONFIG.amenities,
+        }
+    };
 
----
-
-## 4. Environment Variables Required
-
-Create a `.env` file in the backend directory with:
-
-```env
-DEEPGRAM_API_KEY=your_deepgram_api_key_here
-GROQ_API_KEY=your_groq_api_key_here
-PORT=3001
-HTTP_PORT=3002
-```
-
----
-
-## 5. Running the Backend
-
-### Development Mode (with hot reload)
-```bash
-npm run dev
-```
-
-### Production Mode
-```bash
-npm start
-```
-
-### Testing LLM Integration
-```bash
-node test-llm.mjs
+    return JSON.stringify(context, null, 2);
+}
 ```
 
 ---
 
-**End of Backend Documentation**
+### 7. `backend/src/context/hotelData.ts`
+
+**Description:**  
+Static configuration file containing hotel-specific information (name, timezone, check-in/out times, amenities, support phone). This data is injected into LLM prompts for context-aware responses.
+
+```typescript
+/**
+ * Hotel Configuration (Phase 9.3 - Context Injection)
+ * 
+ * Static "Truth" about the hotel.
+ * This data is injected into every LLM prompt.
+ */
+
+export const HOTEL_CONFIG = {
+    name: "Grand Hotel Nagpur",
+    timezone: "Asia/Kolkata", // CRITICAL: Force local time, not server time
+    checkInStart: "14:00", // THis is Check-in-Time
+    checkOutEnd: "11:00", // This is Check-out-Time
+    amenities: ["Free Wi-Fi", "Pool (6AM-10PM)", "Breakfast (7AM-10AM)", "Spa"], // This is Amenities
+    supportPhone: "999", // This is Support Phone
+    location: "Lobby Kiosk" // This is Location
+};
+```
+
+---
+
+### 8. `backend/src/llm/contracts.ts`
+
+**Description:**  
+Zod schemas and type definitions for LLM input/output validation. Defines allowed intents, confidence thresholds, response structure, and fallback responses for prompt governance and type safety.
+
+```typescript
+import { z } from "zod";
+
+/**
+ * LLM Contracts (Phase 9.2 - Prompt Governance)
+ * 
+ * This is the SINGLE SOURCE OF TRUTH for LLM output validation.
+ * The LLM is an ADVISOR - it can only suggest intents from this list.
+ * The Agent (FSM) is the AUTHORITY - it decides if the intent is valid.
+ */
+
+// 1. Define the Strict List of Allowed Intents
+// These MUST match your Agent's FSM capabilities.
+export const IntentSchema = z.enum([
+    "IDLE",
+    "WELCOME",
+    "CHECK_IN",     // User wants to check in
+    "SCAN_ID",      // User is ready to scan ID / providing name
+    "PAYMENT",      // User wants to pay
+    "HELP",         // User needs assistance
+    "REPEAT",       // User asked to repeat the last thing
+    "UNKNOWN",      // LLM is confused / Out of domain
+    "BOOK_ROOM",    // Phase 16: Booking Intent
+    "RECOMMEND_ROOM", // Phase 16: Agentic Choice
+    "GENERAL_QUERY"   // Phase 16: Chat / Policy / Jokes
+]);
+
+// Phase 9.4: Confidence Thresholds for Safety Gating
+export const CONFIDENCE_THRESHOLDS = {
+    HIGH: 0.85,     // Execute immediately
+    MEDIUM: 0.50,   // Ask clarifying question
+    // Below 0.50 is considered Noise/Silence - reject
+};
+
+// 2. Define the strict JSON Output Schema
+export const LLMResponseSchema = z.object({
+    speech: z.string().describe("A concise, polite response for the TTS (max 2 sentences)."),
+    intent: IntentSchema.describe("The classification of the user's request."),
+    confidence: z.number().min(0).max(1).describe("Self-evaluated confidence score (0.0 to 1.0).")
+});
+
+export type LLMResponse = z.infer<typeof LLMResponseSchema>;
+export type ValidIntent = z.infer<typeof IntentSchema>;
+
+// 3. Default fallback for validation failures
+export const FALLBACK_RESPONSE: LLMResponse = {
+    speech: "I'm having trouble understanding. Please use the touch screen.",
+    intent: "UNKNOWN",
+    confidence: 0.0
+};
+```
+
+---
+
+### 9. `backend/src/llm/groqClient.ts`
+
+**Description:**  
+Initializes Groq LLM client (Llama 3.3 70B Versatile model) with LangChain. Configured for deterministic, low-latency responses with temperature=0 for safety and consistency in production environment.
+
+```typescript
+import { ChatGroq } from "@langchain/groq";
+import dotenv from "dotenv";
+
+dotenv.config();
+
+if (!process.env.GROQ_API_KEY) {
+    console.warn("⚠️ GROQ_API_KEY is missing. Voice will be dumb.");
+}
+
+// Llama 3.3 70B Versatile: High intelligence, extremely low latency (Groq LPU)
+// Updated from decommissioned llama3-70b-8192
+export const llm = new ChatGroq({
+    apiKey: process.env.GROQ_API_KEY,
+    model: "llama-3.3-70b-versatile",
+    temperature: 0, // Deterministic = Safety
+    maxTokens: 1024,
+});
+
+console.log("[LLM] Groq (Llama 3.3 70B Versatile) initialized.");
+```
+
+---
+
+## 🎯 Summary
+
+This backend provides:
+- **Voice Relay**: WebSocket server for real-time Deepgram STT integration
+- **LLM Brain**: HTTP API for AI-powered intent detection and response generation
+- **Context Awareness**: Dynamic context building with timezone and hotel data
+- **Session Memory**: In-memory conversation tracking with privacy controls
+- **Type Safety**: Zod schema validation for all LLM interactions
+- **Governance**: Strict intent enumeration and confidence scoring
+
+**Key Technologies**: Express.js, WebSocket, Deepgram Nova-2, Groq (Llama 3.3), LangChain, Zod, TypeScript

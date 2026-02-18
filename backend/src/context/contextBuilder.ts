@@ -10,6 +10,7 @@ import { HOTEL_CONFIG } from "./hotelData";
 interface ContextInput {
     currentState: string;
     transcript: string;
+    hotelDataOverride?: any;
 }
 
 export function buildSystemContext(input: ContextInput): string {
@@ -31,6 +32,8 @@ export function buildSystemContext(input: ContextInput): string {
 
     const partOfDay = currentHour < 12 ? "Morning" : currentHour < 18 ? "Afternoon" : "Evening";
 
+    const roomInfo = input.hotelDataOverride?.availableRooms || "Check manual menu for rooms.";
+
     // 2. Build Context Object
     const context = {
         environment: {
@@ -47,7 +50,9 @@ export function buildSystemContext(input: ContextInput): string {
             checkIn: HOTEL_CONFIG.checkInStart,
             checkOut: HOTEL_CONFIG.checkOutEnd,
             amenities: HOTEL_CONFIG.amenities,
-        }
+        },
+        // Phase 16: Real-time room availability
+        rooms: roomInfo
     };
 
     return JSON.stringify(context, null, 2);

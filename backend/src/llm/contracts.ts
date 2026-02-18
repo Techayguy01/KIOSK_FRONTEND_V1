@@ -35,7 +35,13 @@ export const CONFIDENCE_THRESHOLDS = {
 export const LLMResponseSchema = z.object({
     speech: z.string().describe("A concise, polite response for the TTS (max 2 sentences)."),
     intent: IntentSchema.describe("The classification of the user's request."),
-    confidence: z.number().min(0).max(1).describe("Self-evaluated confidence score (0.0 to 1.0).")
+    confidence: z.number().min(0).max(1).describe("Self-evaluated confidence score (0.0 to 1.0)."),
+    // Phase 16: Booking Intent
+    bookingIntent: z.object({
+        roomId: z.string(),
+        guestEmail: z.string().email().optional(),
+        confirmed: z.boolean()
+    }).optional()
 });
 
 export type LLMResponse = z.infer<typeof LLMResponseSchema>;

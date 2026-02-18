@@ -1,0 +1,51 @@
+// backend/prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// --- AI MEMORY ---
+// Replaces the in-memory Map for chat history
+model Session {
+  id        String   @id // The sessionId passed from frontend
+  messages  Json     // Stores array of { role, content }
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  metadata  Json?    // Store intent confidence, user mood, etc.
+}
+
+// --- PMS MIRROR (Mocking the real hotel DB) ---
+model Room {
+  id          String    @id @default(uuid())
+  number      String    @unique
+  type        String    // "DELUXE", "SUITE"
+  price       Float
+  status      String    // "AVAILABLE", "OCCUPIED", "DIRTY"
+  description String
+  amenities   String[]
+  bookings    Booking[]
+}
+
+model Guest {
+  id        String   @id @default(uuid())
+  firstName String
+  lastName  String
+  email     String   @unique
+  bookings  Booking[]
+}
+
+model Booking {
+  id        String   @id @default(uuid())
+  guestId   String
+  roomId    String
+  checkIn   DateTime
+  checkOut  DateTime
+  status    String   // "CONFIRMED", "CHECKED_IN", "CANCELLED"
+  guest     Guest    @relation(fields: [guestId], references: [id])
+  room      Room     @relation(fields: [roomId], references: [id])
+}

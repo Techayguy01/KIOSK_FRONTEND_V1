@@ -1,158 +1,122 @@
-import { Router, Request, Response } from 'express';
+import { Router } from 'express';
 import { llm } from '../llm/groqClient';
 import { LLMResponseSchema, FALLBACK_RESPONSE } from '../llm/contracts';
 import { buildSystemContext } from '../context/contextBuilder';
-import { HOTEL_CONFIG } from '../context/hotelData';
+import { sessionService } from '../services/sessionService';
+import { hotelService } from '../services/hotelService';
+import { bookingService } from '../services/bookingService';
+import { v4 as uuidv4 } from 'uuid';
 
 const router = Router();
+const MAX_HISTORY_TURNS = 6;
 
-/**
- * Phase 9.6: Session Memory Store
- * 
- * Simple in-memory session store (Map<sessionId, History[]>)
- * In production, use Redis. For Kiosk (single active user), memory is fine.
- * 
- * PRIVACY RULE: Memory is WIPED when user returns to WELCOME/IDLE.
- */
-interface ChatMessage {
-    role: "user" | "assistant";
-    content: string;
-}
-
-const sessionMemory = new Map<string, ChatMessage[]>();
-const MAX_HISTORY_TURNS = 6;  // Last 3 exchanges (6 messages)
-
-/**
- * Phase 9.4 - Context-Aware System Prompt with Confidence Scoring
- * Phase 9.6 - Now includes conversation history
- */
-const SYSTEM_PROMPT_TEMPLATE = `
-You are Siya, the AI Concierge at {{HOTEL_NAME}}.
-Your goal is to assist guests with Check-In, Booking, and General Questions.
-You must be helpful, concise, and professional.
-
---- CURRENT SITUATIONAL CONTEXT ---
-{{CONTEXT_JSON}}
------------------------------------
-
-{{CONVERSATION_HISTORY}}
-
-# CRITICAL RULES:
-1.  **Identify Intent:** Classify the user's request into one of these strict intents:
-    * CHECK_IN (User wants to check in, scan ID, or lookup reservation).
-    * BOOK_ROOM (User wants to book a new room).
-    * RECOMMEND_ROOM (User asks YOU to choose/recommend a room).
-    * HELP (User is confused, angry, or asks for a human).
-    * GENERAL_QUERY (General questions about policy, weather, jokes).
-    * IDLE (No speech detected or irrelevant).
-    * UNKNOWN (Cannot determine intent).
-
-2.  **State Awareness:** You are currently on the "{{CURRENT_STATE}}" screen.
-
-3.  **Handle "Re-Stated" Intents:**
-    * If the user says "I want to book" and they are *already* booking, treat it as a "GENERAL_QUERY" confirmation.
-    * *Reply:* "Great. Please select a room from the screen to proceed."
-
-4.  **Handle "Agentic Choice":**
-    * If the user says "You choose" or "Recommend one", you MUST make a decision.
-    * *Reply:* "I have selected the Deluxe Suite for you. It has a great view."
-    * *Intent:* RECOMMEND_ROOM
-
-5.  **Format:**
-    * Keep 'speech' short (under 2 sentences).
-    * Never say "I am an AI".
-    * Output strictly in JSON format.
-
-OUTPUT FORMAT (JSON ONLY):
-{
-  "speech": "string (The spoken response)",
-  "intent": "VALID_INTENT_ENUM",
-  "confidence": number (0.0 to 1.0)
-}
-`;
-
-router.post('/', async (req: Request, res: Response) => {
-    const start = Date.now();
+router.post('/', async (req, res) => {
     try {
         const { transcript, currentState, sessionId } = req.body;
-        const sid = sessionId || "default";  // Fallback for testing
+        const sid = sessionId || "default-session";
 
-        console.log(`[Brain] Input: "${transcript}" | State: ${currentState} | Session: ${sid}`);
-
-        // 1. PRIVACY GUARD 🛡️
-        // If we are back at WELCOME or IDLE, the previous user is gone. Wipe memory.
+        // 1. PRIVACY GUARD: Wipe memory when back at WELCOME/IDLE
         if (currentState === "WELCOME" || currentState === "IDLE") {
-            if (sessionMemory.has(sid)) {
-                console.log(`[Brain] Privacy wipe: Session ${sid} memory cleared`);
-                sessionMemory.delete(sid);
-            }
+            await sessionService.clearSession(sid);
         }
 
-        // Empty transcript = IDLE
-        if (!transcript || transcript.trim().length === 0) {
-            res.json({ speech: "", intent: "IDLE", confidence: 1.0 });
-            return;
-        }
+        // 2. Fetch History from DB
+        let history = await sessionService.getHistory(sid);
 
-        // 2. Retrieve History
-        let history = sessionMemory.get(sid) || [];
+        // 3. Fetch REAL Room Data
+        const availableRooms = await hotelService.getAvailableRooms();
+        const roomContext = availableRooms.map(r =>
+            `- Room ${r.number} (${r.type}): $${r.price}. ${r.description}`
+        ).join('\n');
 
-        // 3. Build History String for Prompt
-        const recentHistory = history.slice(-MAX_HISTORY_TURNS);
-        let historySection = "";
-        if (recentHistory.length > 0) {
-            historySection = `--- PREVIOUS CONVERSATION ---
-${recentHistory.map(m => `${m.role === 'user' ? 'Guest' : 'Concierge'}: ${m.content}`).join('\n')}
-------------------------------`;
-        } else {
-            historySection = "--- PREVIOUS CONVERSATION ---\n(This is the start of the conversation)\n------------------------------";
-        }
-
-        // 4. Build the Dynamic Context
+        // 4. Build Context (Now with real rooms!)
         const contextJson = buildSystemContext({
-            currentState: currentState || "IDLE",
-            transcript
+            currentState,
+            transcript,
+            hotelDataOverride: { availableRooms: roomContext }
         });
 
-        // 5. Inject into Prompt Template
-        const filledPrompt = SYSTEM_PROMPT_TEMPLATE
-            .replace('{{HOTEL_NAME}}', HOTEL_CONFIG.name)
-            .replace('{{CONTEXT_JSON}}', contextJson)
-            .replace('{{CURRENT_STATE}}', currentState || "IDLE")
-            .replace('{{CONVERSATION_HISTORY}}', historySection);
+        // 5. Format History for LLM
+        const recentHistory = history.slice(-MAX_HISTORY_TURNS);
+        const historySection = recentHistory.length > 0
+            ? `--- PREVIOUS CONVERSATION ---\n${recentHistory.map(m => `${m.role === 'user' ? 'Guest' : 'Siya'}: ${m.text}`).join('\n')}\n------------------------------`
+            : "";
 
-        // 6. Call LLM with Context + History
+        // 6. Call LLM
+        const systemPrompt = `You are Siya, the AI Concierge.
+* Never say "I am an AI".
+* Output strictly in JSON format.
+
+6.  **Handle Booking:**
+    * If the user explicitly confirms they want to book a specific room, you MUST:
+    * Set "bookingIntent" object in your JSON response.
+    * Set "roomId" to the Room Number (e.g., "101").
+    * Set "confirmed" to true.
+    * Keep your speech brief: "Excellent choice. I am initiating the payment for Room 101."
+
+OUTPUT FORMAT (JSON ONLY):
+${contextJson}
+${historySection}`;
+
         const response = await llm.invoke([
-            { role: "system", content: filledPrompt },
+            { role: "system", content: systemPrompt },
             { role: "user", content: transcript }
         ]);
 
-        // 7. Extract JSON from response
         const rawContent = response.content.toString();
+        // Extract JSON from LLM response (sometimes they add extra text)
         const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
 
-        if (!jsonMatch) {
-            console.warn("[Brain] LLM failed to output JSON:", rawContent);
-            throw new Error("Malformed LLM Output");
-        }
+        if (!jsonMatch) throw new Error("No JSON found in LLM response");
 
+        // 7. ZOD VALIDATION
         const parsedJson = JSON.parse(jsonMatch[0]);
-
-        // 8. ZOD VALIDATION
         const validated = LLMResponseSchema.parse(parsedJson);
 
-        // 9. UPDATE MEMORY (Post-Response)
-        history.push({ role: "user", content: transcript });
-        if (validated.speech) {
-            history.push({ role: "assistant", content: validated.speech });
-        }
-        sessionMemory.set(sid, history);
+        // --- NEW: HANDLE BOOKING ---
+        // Initialize clientResponse with validated data and default paymentUrl as null
+        let clientResponse: any = { ...validated, paymentUrl: null };
 
-        console.log(`[Brain] Validated:`, validated, `(${Date.now() - start}ms)`);
-        res.json(validated);
+        if (validated.bookingIntent && validated.bookingIntent.confirmed) {
+            try {
+                // 1. Find the room ID based on the number the AI heard
+                const room = await hotelService.getRoomByNumber(validated.bookingIntent.roomId);
+
+                if (room) {
+                    // 2. Create Booking
+                    // Hardcoded guest email for kiosk demo as per legacy instructions
+                    const booking = await bookingService.createPendingBooking(room.id, "guest@example.com");
+
+                    // 3. Create Payment Link
+                    const paymentUrl = await bookingService.createPaymentSession(booking.id, room.price);
+
+                    clientResponse.paymentUrl = paymentUrl;
+                    clientResponse.speech += " I've prepared the payment terminal for you.";
+                } else {
+                    clientResponse.speech = "I apologize, but I couldn't find that room number.";
+                }
+            } catch (e) {
+                console.error("Booking failed:", e);
+                clientResponse.speech = "I apologize, but that room seems to have just been taken.";
+            }
+        }
+        // ---------------------------
+
+        // 8. UPDATE MEMORY (Post-Response) to DB
+        await sessionService.addMessage(sid, {
+            id: uuidv4(), role: "user", text: transcript, timestamp: Date.now()
+        });
+
+        if (clientResponse.speech) {
+            await sessionService.addMessage(sid, {
+                id: uuidv4(), role: "assistant", text: clientResponse.speech, timestamp: Date.now()
+            });
+        }
+
+        res.json(clientResponse);
 
     } catch (error) {
-        console.error("[Brain] Rejected:", error);
+        console.error("[Brain] Error:", error);
         res.json(FALLBACK_RESPONSE);
     }
 });

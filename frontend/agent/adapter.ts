@@ -436,6 +436,12 @@ class AgentAdapterService {
                 this.speak(decision.speech);
             }
 
+            // Phase 16: Handle "Payment" (QR Code)
+            if (decision.paymentUrl) {
+                console.log("[AgentAdapter] 💰 Payment URL received:", decision.paymentUrl);
+                this.notifyListeners({ paymentUrl: decision.paymentUrl });
+            }
+
             // 4. Handle "Moving" (State Machine)
             // Use dispatch() instead of handleIntent() to avoid killing the TTS we just started.
             // dispatch() respects the State Machine and Voice Authority without hard-stopping audio.
@@ -701,13 +707,14 @@ class AgentAdapterService {
         return VoiceRuntime.getMode() === 'speaking';
     }
 
-    private notifyListeners() {
+    private notifyListeners(additionalData: any = {}) {
         const metadata = StateMachine.getMetadata(this.state as UIState);
         const fullData = {
             metadata: {
                 ...metadata,
                 listening: this.hasVoiceAuthority()
-            }
+            },
+            ...additionalData // Phase 16: Inject dynamic data (paymentUrl, etc)
         };
         this.listeners.forEach(listener => listener(this.state, fullData));
     }
