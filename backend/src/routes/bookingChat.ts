@@ -163,6 +163,10 @@ function isUuid(value: string): boolean {
     return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
+function hasOverlappingDates(existingStart: Date, existingEnd: Date, nextStart: Date, nextEnd: Date): boolean {
+    return existingStart < nextEnd && nextStart < existingEnd;
+}
+
 router.post("/", validateBody(BookingChatRequestSchema), async (req: Request, res: Response) => {
     const start = Date.now();
     try {
@@ -339,40 +343,44 @@ router.post("/", validateBody(BookingChatRequestSchema), async (req: Request, re
                 const idempotencyKey = `${tenant.id}:${sid}:${room.id}:${checkInDate.toISOString().slice(0, 10)}:${checkOutDate.toISOString().slice(0, 10)}:${String(session.slots.guestName).trim().toLowerCase()}`;
                 const status = validated.intent === "CONFIRM_BOOKING" ? "CONFIRMED" : "DRAFT";
 
-                if (session.bookingId) {
-                    const updated = await prisma.booking.update({
-                        where: { id: session.bookingId },
-                        data: {
-                            guestName: String(session.slots.guestName),
-                            roomTypeId: room.id,
-                            checkInDate,
-                            checkOutDate,
-                            adults,
-                            children: children !== null && Number.isFinite(children) ? children : null,
-                            nights: Number(nights),
-                            totalPrice: Number.isFinite(totalPrice) ? totalPrice : null,
-                            sessionId: sid,
-                            idempotencyKey,
-                            status,
-                        },
-                    });
-                    persistedBookingId = updated.id;
-                } else {
-                    const existing = await prisma.booking.findFirst({
+                const persisted = await prisma.$transaction(async (tx) => {
+                    const conflictingConfirmed = await tx.booking.findMany({
                         where: {
                             tenantId: tenant.id,
-                            idempotencyKey,
+                            roomTypeId: room.id,
+                            status: "CONFIRMED",
+                            NOT: session.bookingId ? { id: session.bookingId } : undefined,
                         },
-                        select: { id: true },
+                        select: {
+                            id: true,
+                            checkInDate: true,
+                            checkOutDate: true,
+                        },
                     });
 
-                    if (existing) {
-                        persistedBookingId = existing.id;
-                        session.bookingId = existing.id;
-                    } else {
-                        const created = await prisma.booking.create({
-                            data: {
+                    const hasConflict = conflictingConfirmed.some((item) =>
+                        hasOverlappingDates(item.checkInDate, item.checkOutDate, checkInDate, checkOutDate)
+                    );
+                    if (hasConflict) {
+                        throw new Error("BOOKING_DATE_CONFLICT");
+                    }
+
+                    if (session.bookingId) {
+                        const existingOwnedBooking = await tx.booking.findFirst({
+                            where: {
+                                id: session.bookingId,
                                 tenantId: tenant.id,
+                            },
+                            select: { id: true },
+                        });
+
+                        if (!existingOwnedBooking) {
+                            throw new Error("BOOKING_NOT_FOUND_FOR_TENANT");
+                        }
+
+                        const updated = await tx.booking.update({
+                            where: { id: session.bookingId },
+                            data: {
                                 guestName: String(session.slots.guestName),
                                 roomTypeId: room.id,
                                 checkInDate,
@@ -387,10 +395,43 @@ router.post("/", validateBody(BookingChatRequestSchema), async (req: Request, re
                             },
                             select: { id: true },
                         });
-                        persistedBookingId = created.id;
-                        session.bookingId = created.id;
+                        return updated.id;
                     }
-                }
+
+                    const existing = await tx.booking.findFirst({
+                        where: {
+                            tenantId: tenant.id,
+                            idempotencyKey,
+                        },
+                        select: { id: true },
+                    });
+
+                    if (existing) {
+                        return existing.id;
+                    }
+
+                    const created = await tx.booking.create({
+                        data: {
+                            tenantId: tenant.id,
+                            guestName: String(session.slots.guestName),
+                            roomTypeId: room.id,
+                            checkInDate,
+                            checkOutDate,
+                            adults,
+                            children: children !== null && Number.isFinite(children) ? children : null,
+                            nights: Number(nights),
+                            totalPrice: Number.isFinite(totalPrice) ? totalPrice : null,
+                            sessionId: sid,
+                            idempotencyKey,
+                            status,
+                        },
+                        select: { id: true },
+                    });
+                    return created.id;
+                });
+
+                persistedBookingId = persisted;
+                session.bookingId = persisted;
             } else {
                 logWithContext(req, "WARN", "Booking marked complete but required persistence fields are invalid", {
                     roomType: session.slots.roomType,
@@ -428,6 +469,16 @@ router.post("/", validateBody(BookingChatRequestSchema), async (req: Request, re
         res.json(finalResponse);
 
     } catch (error) {
+        if (error instanceof Error && error.message === "BOOKING_DATE_CONFLICT") {
+            sendApiError(
+                res,
+                409,
+                "BOOKING_DATE_CONFLICT",
+                "Selected room is already booked for the requested dates",
+                req.requestId
+            );
+            return;
+        }
         logWithContext(req, "ERROR", "Booking chat request failed", {
             error: error instanceof Error ? error.message : String(error),
         });
