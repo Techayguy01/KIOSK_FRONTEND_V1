@@ -11,21 +11,12 @@
 
 import { AgentAdapter } from "../agent/adapter";
 import { buildTenantApiUrl, getTenantHeaders } from "./tenantContext";
+import type { BookingChatResponseDTO, ChatResponseDTO } from "@contracts/api.contract";
 
 // States that use the booking endpoint
 const BOOKING_STATES = ["BOOKING_COLLECT", "BOOKING_SUMMARY", "ROOM_SELECT"];
 
-export interface BrainResponse {
-    speech: string;
-    intent: string;
-    confidence: number;
-    // Booking-specific fields (only from booking endpoint)
-    extractedSlots?: Record<string, any>;
-    accumulatedSlots?: Record<string, any>;
-    missingSlots?: string[];
-    nextSlotToAsk?: string | null;
-    isComplete?: boolean;
-}
+export type BrainResponse = ChatResponseDTO & Partial<BookingChatResponseDTO>;
 
 // Subscribers who want to know about brain responses (e.g., TTS, UI)
 type BrainResponseListener = (response: BrainResponse) => void;

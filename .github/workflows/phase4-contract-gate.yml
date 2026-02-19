@@ -1,0 +1,88 @@
+name: Phase4 Contract Gate
+
+on:
+  pull_request:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  contract-and-isolation:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: kiosk_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install backend deps
+        working-directory: backend
+        run: npm ci
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+
+      - name: Apply base schema
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/kiosk_db?schema=public
+        run: npx prisma db execute --file prisma/migrations/0001_init_multitenant/migration.sql --schema prisma/schema.prisma
+
+      - name: Apply phase2 migration
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/kiosk_db?schema=public
+        run: npx prisma db execute --file prisma/migrations/20260217120000_phase2_booking_persistence/migration.sql --schema prisma/schema.prisma
+
+      - name: Apply db hardening migration
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/kiosk_db?schema=public
+        run: npx prisma db execute --file prisma/migrations/20260219070000_db_hardening/migration.sql --schema prisma/schema.prisma
+
+      - name: Seed data
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/kiosk_db?schema=public
+        run: npm run prisma:seed
+
+      - name: Start backend
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/kiosk_db?schema=public
+          HTTP_PORT: 3002
+          PORT: 3001
+          GROQ_API_KEY: test-key
+        run: |
+          nohup npm run start > backend.log 2>&1 &
+          sleep 8
+          curl -f http://localhost:3002/health
+
+      - name: Run phase4 verification
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/kiosk_db?schema=public
+          API_BASE_URL: http://localhost:3002
+        run: npm run verify:phase4
+
+      - name: Frontend build gate
+        working-directory: frontend
+        run: npm run build

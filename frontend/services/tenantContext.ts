@@ -1,16 +1,6 @@
-export interface TenantConfig {
-  timezone: string;
-  supportPhone: string;
-  checkInTime: string;
-}
+import type { TenantDTO } from "@contracts/api.contract";
 
-export interface TenantPayload {
-  id: string;
-  name: string;
-  slug: string;
-  plan: string;
-  hotelConfig?: TenantConfig | null;
-}
+export type TenantPayload = TenantDTO;
 
 const API_BASE_URL = "http://localhost:3002";
 

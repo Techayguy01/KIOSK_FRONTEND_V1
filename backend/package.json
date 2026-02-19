@@ -10,7 +10,8 @@
         "prisma:deploy": "prisma migrate deploy",
         "prisma:studio": "prisma studio",
         "prisma:seed": "prisma db seed",
-        "prisma:verify": "tsx prisma/verifyIsolation.ts"
+        "prisma:verify": "tsx prisma/verifyIsolation.ts",
+        "verify:phase4": "tsx prisma/verifyPhase4Contracts.ts"
     },
     "prisma": {
         "seed": "tsx prisma/seed.ts"

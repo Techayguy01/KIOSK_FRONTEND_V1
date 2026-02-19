@@ -1,14 +1,7 @@
 import { buildTenantApiUrl, getTenantHeaders } from "./tenantContext";
+import type { RoomsResponseDTO, RoomDTO } from "@contracts/api.contract";
 
-export interface RoomDTO {
-  id: string;
-  name: string;
-  price: number;
-  currency: string;
-  image: string;
-  features: string[];
-  code?: string;
-}
+export type { RoomDTO };
 
 export class RoomServiceError extends Error {
   status: number;
@@ -45,7 +38,7 @@ export const RoomService = {
       throw new RoomServiceError(errorMessage, response.status, errorCode);
     }
 
-    const payload = await response.json();
+    const payload = (await response.json()) as RoomsResponseDTO;
     return Array.isArray(payload?.rooms) ? payload.rooms : [];
   },
 };
