@@ -11,12 +11,23 @@
 
 import { AgentAdapter } from "../agent/adapter";
 import { buildTenantApiUrl, getTenantHeaders } from "./tenantContext";
-import type { BookingChatResponseDTO, ChatResponseDTO } from "@contracts/api.contract";
+import type { BookingChatResponseDTO, ChatRequestDTO, ChatResponseDTO } from "@contracts/api.contract";
 
 // States that use the booking endpoint
 const BOOKING_STATES = ["BOOKING_COLLECT", "BOOKING_SUMMARY", "ROOM_SELECT"];
 
 export type BrainResponse = ChatResponseDTO & Partial<BookingChatResponseDTO>;
+type BrainTurn = { role: "user" | "assistant"; text: string };
+
+export interface SendToBrainOptions {
+    slotContext?: {
+        activeSlot: string | null;
+        expectedType: "number" | "date" | "string" | null;
+        promptAsked: string;
+    };
+    filledSlots?: Record<string, unknown>;
+    conversationHistory?: BrainTurn[];
+}
 
 // Subscribers who want to know about brain responses (e.g., TTS, UI)
 type BrainResponseListener = (response: BrainResponse) => void;
@@ -59,7 +70,8 @@ export function resetSession(): void {
  */
 export async function sendToBrain(
     transcript: string,
-    currentState: string
+    currentState: string,
+    options?: SendToBrainOptions
 ): Promise<BrainResponse | null> {
     if (!transcript || transcript.trim().length === 0) {
         console.log("[BrainService] Empty transcript, skipping");
@@ -72,15 +84,35 @@ export async function sendToBrain(
 
     console.log(`[BrainService] Sending to ${isBookingMode ? "Booking" : "General"} Brain: "${transcript}" (State: ${currentState})`);
 
+    const payload: ChatRequestDTO = {
+        transcript,
+        currentState,
+        sessionId,
+    };
+
+    if (isBookingMode) {
+        const slotContext = options?.slotContext || AgentAdapter.getSlotContext();
+        const filledSlots = options?.filledSlots || AgentAdapter.getBookingSlots();
+        payload.activeSlot = slotContext.activeSlot;
+        payload.expectedType = slotContext.expectedType;
+        payload.lastSystemPrompt = slotContext.promptAsked || undefined;
+        payload.filledSlots = filledSlots;
+
+        if (Array.isArray(options?.conversationHistory) && options.conversationHistory.length > 0) {
+            payload.conversationHistory = options.conversationHistory.slice(-6).map((turn) => ({
+                role: turn.role,
+                content: turn.text,
+            }));
+        }
+    }
+
+    console.log("[BrainService] Outgoing payload:", payload);
+
     try {
         const response = await fetch(url, {
             method: "POST",
             headers: { "Content-Type": "application/json", ...getTenantHeaders() },
-            body: JSON.stringify({
-                transcript,
-                currentState,
-                sessionId,
-            }),
+            body: JSON.stringify(payload),
         });
 
         if (!response.ok) {

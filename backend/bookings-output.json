@@ -1,0 +1,130 @@
+[
+  {
+    "id": "e9890a1f-b762-499f-8d63-79b83cf555db",
+    "tenantId": "b2fa28e8-b06c-43b5-82e9-2365539fba7a",
+    "guestName": "Tanay Badade",
+    "checkInDate": "2026-02-27T00:00:00.000Z",
+    "checkOutDate": "2026-03-02T00:00:00.000Z",
+    "adults": 4,
+    "children": null,
+    "nights": 4,
+    "totalPrice": "1800",
+    "sessionId": "session_1772098222413_1mpj3s",
+    "idempotencyKey": "b2fa28e8-b06c-43b5-82e9-2365539fba7a:session_1772098222413_1mpj3s:abea5734-b902-442c-b5c7-e0b71fbd378a:2026-02-27:2026-03-02:tanay badade",
+    "paymentRef": null,
+    "status": "CONFIRMED",
+    "roomTypeId": "abea5734-b902-442c-b5c7-e0b71fbd378a",
+    "createdAt": "2026-02-26T09:31:20.323Z",
+    "updatedAt": "2026-02-26T09:31:38.952Z",
+    "roomType": {
+      "id": "abea5734-b902-442c-b5c7-e0b71fbd378a",
+      "tenantId": "b2fa28e8-b06c-43b5-82e9-2365539fba7a",
+      "name": "Ocean View Deluxe",
+      "code": "DELUXE_OCEAN",
+      "price": "450",
+      "amenities": [
+        "Ocean View Balcony",
+        "King Bed",
+        "Premium Breakfast"
+      ],
+      "createdAt": "2026-02-24T10:03:19.614Z",
+      "updatedAt": "2026-02-24T10:03:19.614Z"
+    }
+  },
+  {
+    "id": "c6b58f9c-e3a9-4c23-9932-fcb755479a0f",
+    "tenantId": "b2fa28e8-b06c-43b5-82e9-2365539fba7a",
+    "guestName": "Jolson Joseph",
+    "checkInDate": "2026-03-04T00:00:00.000Z",
+    "checkOutDate": "2026-03-09T00:00:00.000Z",
+    "adults": 4,
+    "children": null,
+    "nights": 5,
+    "totalPrice": "2250",
+    "sessionId": "session_1772097590442_6psfmc",
+    "idempotencyKey": "b2fa28e8-b06c-43b5-82e9-2365539fba7a:session_1772097590442_6psfmc:abea5734-b902-442c-b5c7-e0b71fbd378a:2026-03-04:2026-03-09:jolson joseph",
+    "paymentRef": null,
+    "status": "DRAFT",
+    "roomTypeId": "abea5734-b902-442c-b5c7-e0b71fbd378a",
+    "createdAt": "2026-02-26T09:20:59.747Z",
+    "updatedAt": "2026-02-26T09:21:22.119Z",
+    "roomType": {
+      "id": "abea5734-b902-442c-b5c7-e0b71fbd378a",
+      "tenantId": "b2fa28e8-b06c-43b5-82e9-2365539fba7a",
+      "name": "Ocean View Deluxe",
+      "code": "DELUXE_OCEAN",
+      "price": "450",
+      "amenities": [
+        "Ocean View Balcony",
+        "King Bed",
+        "Premium Breakfast"
+      ],
+      "createdAt": "2026-02-24T10:03:19.614Z",
+      "updatedAt": "2026-02-24T10:03:19.614Z"
+    }
+  },
+  {
+    "id": "a436101b-b42f-4427-839a-d9f28f3062a3",
+    "tenantId": "671351bf-21eb-4d6b-879d-8c832080ee8e",
+    "guestName": "Paras",
+    "checkInDate": "2026-02-26T00:00:00.000Z",
+    "checkOutDate": "2026-02-27T00:00:00.000Z",
+    "adults": 2,
+    "children": null,
+    "nights": 1,
+    "totalPrice": "80",
+    "sessionId": "session_1772087651770_72zp2u",
+    "idempotencyKey": "671351bf-21eb-4d6b-879d-8c832080ee8e:session_1772087651770_72zp2u:dbd8bca2-b688-4665-bcba-a53f86ab0c5b:2026-02-26:2026-02-27:paras",
+    "paymentRef": null,
+    "status": "CONFIRMED",
+    "roomTypeId": "dbd8bca2-b688-4665-bcba-a53f86ab0c5b",
+    "createdAt": "2026-02-26T06:35:03.166Z",
+    "updatedAt": "2026-02-26T06:35:03.166Z",
+    "roomType": {
+      "id": "dbd8bca2-b688-4665-bcba-a53f86ab0c5b",
+      "tenantId": "671351bf-21eb-4d6b-879d-8c832080ee8e",
+      "name": "Standard Single",
+      "code": "STANDARD_SINGLE",
+      "price": "80",
+      "amenities": [
+        "Single Bed",
+        "Private Bath",
+        "Self-Service Checkout"
+      ],
+      "createdAt": "2026-02-24T10:03:19.658Z",
+      "updatedAt": "2026-02-24T10:03:19.658Z"
+    }
+  },
+  {
+    "id": "1425f019-fb29-4ad1-b5bd-082ce6a6782d",
+    "tenantId": "b2fa28e8-b06c-43b5-82e9-2365539fba7a",
+    "guestName": "Jason Joseph",
+    "checkInDate": "2026-02-24T00:00:00.000Z",
+    "checkOutDate": "2026-02-25T00:00:00.000Z",
+    "adults": 2,
+    "children": null,
+    "nights": 1,
+    "totalPrice": "450",
+    "sessionId": "session_1771938001052_mz6ire",
+    "idempotencyKey": "b2fa28e8-b06c-43b5-82e9-2365539fba7a:session_1771938001052_mz6ire:abea5734-b902-442c-b5c7-e0b71fbd378a:2026-02-24:2026-02-25:jason joseph",
+    "paymentRef": null,
+    "status": "CONFIRMED",
+    "roomTypeId": "abea5734-b902-442c-b5c7-e0b71fbd378a",
+    "createdAt": "2026-02-24T13:01:25.959Z",
+    "updatedAt": "2026-02-24T13:02:23.157Z",
+    "roomType": {
+      "id": "abea5734-b902-442c-b5c7-e0b71fbd378a",
+      "tenantId": "b2fa28e8-b06c-43b5-82e9-2365539fba7a",
+      "name": "Ocean View Deluxe",
+      "code": "DELUXE_OCEAN",
+      "price": "450",
+      "amenities": [
+        "Ocean View Balcony",
+        "King Bed",
+        "Premium Breakfast"
+      ],
+      "createdAt": "2026-02-24T10:03:19.614Z",
+      "updatedAt": "2026-02-24T10:03:19.614Z"
+    }
+  }
+]

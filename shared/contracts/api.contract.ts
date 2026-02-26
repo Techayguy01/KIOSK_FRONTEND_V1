@@ -45,6 +45,11 @@ export interface ChatRequestDTO {
   transcript?: string;
   currentState?: string;
   sessionId?: string;
+  activeSlot?: BookingSlotName | null;
+  expectedType?: BookingSlotExpectedType | null;
+  lastSystemPrompt?: string;
+  filledSlots?: Record<string, unknown>;
+  conversationHistory?: ChatTurnDTO[];
 }
 
 export interface ChatResponseDTO {
@@ -55,9 +60,25 @@ export interface ChatResponseDTO {
 
 export interface BookingChatResponseDTO extends ChatResponseDTO {
   extractedSlots?: Record<string, unknown>;
+  extractedValue?: string | number | null;
   accumulatedSlots?: Record<string, unknown>;
   missingSlots?: string[];
   nextSlotToAsk?: string | null;
   isComplete?: boolean;
   persistedBookingId?: string | null;
+}
+
+export type BookingSlotName =
+  | "roomType"
+  | "adults"
+  | "children"
+  | "checkInDate"
+  | "checkOutDate"
+  | "guestName";
+
+export type BookingSlotExpectedType = "number" | "date" | "string";
+
+export interface ChatTurnDTO {
+  role: "user" | "assistant";
+  content: string;
 }

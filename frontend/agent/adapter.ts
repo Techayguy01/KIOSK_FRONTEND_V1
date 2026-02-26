@@ -52,6 +52,87 @@ type VoiceTelemetryEvent =
 
 type Sentiment = 'POSITIVE' | 'NEUTRAL' | 'FRUSTRATED' | 'URGENT';
 
+export type BookingSlotKey =
+    | "roomType"
+    | "adults"
+    | "children"
+    | "checkInDate"
+    | "checkOutDate"
+    | "guestName";
+
+export type BookingSlotExpectedType = "number" | "date" | "string";
+
+export interface SlotContext {
+    activeSlot: BookingSlotKey | null;
+    expectedType: BookingSlotExpectedType | null;
+    promptAsked: string;
+}
+
+const SLOT_EXPECTED_TYPE_MAP: Record<BookingSlotKey, BookingSlotExpectedType> = {
+    roomType: "string",
+    adults: "number",
+    children: "number",
+    checkInDate: "date",
+    checkOutDate: "date",
+    guestName: "string",
+};
+
+const SLOT_TO_INTENT_MAP: Record<BookingSlotKey, string> = {
+    roomType: "SELECT_ROOM",
+    adults: "PROVIDE_GUESTS",
+    children: "PROVIDE_GUESTS",
+    checkInDate: "PROVIDE_DATES",
+    checkOutDate: "PROVIDE_DATES",
+    guestName: "PROVIDE_NAME",
+};
+
+const SLOT_PROMPT_LOOKUP: Array<{
+    slot: BookingSlotKey;
+    expectedType: BookingSlotExpectedType;
+    prompts: string[];
+}> = [
+    {
+        slot: "roomType",
+        expectedType: "string",
+        prompts: [
+            "which room would you like to book",
+            "please tell me which room you would like to book",
+            "would you like to book it"
+        ],
+    },
+    {
+        slot: "adults",
+        expectedType: "number",
+        prompts: ["how many adults will be staying"],
+    },
+    {
+        slot: "children",
+        expectedType: "number",
+        prompts: ["how many children will be staying"],
+    },
+    {
+        slot: "checkInDate",
+        expectedType: "date",
+        prompts: [
+            "please tell me your check in and check out dates",
+            "what is your check in date"
+        ],
+    },
+    {
+        slot: "checkOutDate",
+        expectedType: "date",
+        prompts: ["what is your check out date"],
+    },
+    {
+        slot: "guestName",
+        expectedType: "string",
+        prompts: [
+            "what name should i use for this booking",
+            "what name should i use for the booking"
+        ],
+    },
+];
+
 class AgentAdapterService {
     private state: UiState = "IDLE";
     private viewData: Record<string, any> = {};
@@ -82,6 +163,11 @@ class AgentAdapterService {
     private lastRealtimeIntent: Intent | null = null;
     private lastRealtimeIntentAt = 0;
     private readonly REALTIME_INTENT_DEDUP_MS = 1500;
+    private slotContext: SlotContext = {
+        activeSlot: null,
+        expectedType: null,
+        promptAsked: "",
+    };
 
     constructor() {
         console.log("[AgentAdapter] Initialized (Phase 9.4 - LLM Confidence Gating)");
@@ -506,6 +592,80 @@ class AgentAdapterService {
         return "Please review the details. Say confirm booking when you are ready.";
     }
 
+    private setActiveSlot(slot: BookingSlotKey, expectedType: BookingSlotExpectedType, promptAsked: string): void {
+        this.slotContext = {
+            activeSlot: slot,
+            expectedType,
+            promptAsked,
+        };
+        console.log(`[AgentAdapter] Active Slot: ${slot} (expecting: ${expectedType})`);
+    }
+
+    private clearActiveSlot(): void {
+        this.slotContext = {
+            activeSlot: null,
+            expectedType: null,
+            promptAsked: "",
+        };
+    }
+
+    private normalizePromptText(text: string): string {
+        return String(text || "")
+            .toLowerCase()
+            .replace(/[^\w\s]/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+    }
+
+    private maybeTrackSlotFromPrompt(text: string): void {
+        if (!text || !["ROOM_SELECT", "BOOKING_COLLECT", "BOOKING_SUMMARY"].includes(this.state)) {
+            return;
+        }
+
+        const normalized = this.normalizePromptText(text);
+        for (const rule of SLOT_PROMPT_LOOKUP) {
+            if (rule.prompts.some((prompt) => normalized.includes(prompt))) {
+                this.setActiveSlot(rule.slot, rule.expectedType, text);
+                return;
+            }
+        }
+    }
+
+    private maybeClearFilledActiveSlot(payloadSlots: Record<string, unknown>): void {
+        const active = this.slotContext.activeSlot;
+        if (!active) return;
+        if (!Object.prototype.hasOwnProperty.call(payloadSlots, active)) return;
+
+        const value = payloadSlots[active];
+        if (value !== null && value !== undefined && String(value).trim() !== "") {
+            console.log(`[AgentAdapter] Slot filled: ${active}=${String(value)}`);
+            this.clearActiveSlot();
+        }
+    }
+
+    private applyBookingCollectIntentGuardrail(rawIntent: string, mappedIntent: string): string {
+        if (this.state !== "BOOKING_COLLECT") {
+            return mappedIntent;
+        }
+
+        const activeSlot = this.slotContext.activeSlot;
+        if (!activeSlot) {
+            return mappedIntent;
+        }
+
+        const normalizedRaw = (rawIntent || "").toUpperCase().trim();
+        const suspiciousIntents = new Set(["SELECT_ROOM", "GENERAL_QUERY", "UNKNOWN"]);
+        if (!suspiciousIntents.has(normalizedRaw)) {
+            return mappedIntent;
+        }
+
+        const correctedIntent = SLOT_TO_INTENT_MAP[activeSlot] || mappedIntent;
+        if (correctedIntent !== mappedIntent) {
+            console.log(`[Agent] Correcting misfire: ${normalizedRaw || "UNKNOWN"} -> ${correctedIntent}`);
+        }
+        return correctedIntent;
+    }
+
     private isRoomInfoQuery(rawTranscript: string): boolean {
         const transcript = (rawTranscript || "").toLowerCase().trim();
         if (!transcript) return false;
@@ -780,7 +940,11 @@ class AgentAdapterService {
                 body: JSON.stringify({
                     transcript,
                     currentState: this.state,
-                    sessionId: sessionId || this.getSessionId()
+                    sessionId: sessionId || this.getSessionId(),
+                    activeSlot: this.slotContext.activeSlot,
+                    expectedType: this.slotContext.expectedType,
+                    lastSystemPrompt: this.slotContext.promptAsked || undefined,
+                    filledSlots: this.viewData.bookingSlots || {},
                 })
             });
 
@@ -794,6 +958,7 @@ class AgentAdapterService {
             // 2. Map Fuzzy Intent -> Strict Event
             const rawIntent = decision.intent;
             let strictEvent = this.mapIntentToEvent(rawIntent);
+            strictEvent = this.applyBookingCollectIntentGuardrail(rawIntent, strictEvent);
             const slotRoomHint = decision?.accumulatedSlots?.roomType || decision?.extractedSlots?.roomType;
             let inferredRoom = this.state === "ROOM_SELECT"
                 ? this.inferRoomFromTranscript(transcript)
@@ -878,6 +1043,7 @@ class AgentAdapterService {
      */
     public clearSession(): void {
         this.sessionId = null;
+        this.clearActiveSlot();
         console.log("[AgentAdapter] Session cleared for privacy");
     }
 
@@ -886,6 +1052,14 @@ class AgentAdapterService {
      */
     public getState(): UiState {
         return this.state;
+    }
+
+    public getSlotContext(): SlotContext {
+        return { ...this.slotContext };
+    }
+
+    public getBookingSlots(): Record<string, unknown> {
+        return { ...(this.viewData.bookingSlots || {}) };
     }
 
     /**
@@ -899,6 +1073,7 @@ class AgentAdapterService {
         const metadata = StateMachine.getMetadata(this.state as UIState);
         const fullData = {
             ...this.viewData,
+            slotContext: this.slotContext,
             metadata: {
                 ...metadata,
                 listening: this.hasVoiceAuthority() // Approximate check
@@ -935,6 +1110,7 @@ class AgentAdapterService {
 
         if (payload?.slots) {
             merged.bookingSlots = { ...(merged.bookingSlots || {}), ...payload.slots };
+            this.maybeClearFilledActiveSlot(payload.slots);
 
             if (!merged.selectedRoom && payload.slots.roomType && Array.isArray(merged.rooms)) {
                 merged.selectedRoom =
@@ -952,6 +1128,14 @@ class AgentAdapterService {
 
         if (payload?.nextSlotToAsk !== undefined) {
             merged.nextSlotToAsk = payload.nextSlotToAsk;
+            const hintedSlot = payload.nextSlotToAsk as BookingSlotKey | null;
+            if (hintedSlot && SLOT_EXPECTED_TYPE_MAP[hintedSlot]) {
+                this.slotContext = {
+                    ...this.slotContext,
+                    activeSlot: hintedSlot,
+                    expectedType: SLOT_EXPECTED_TYPE_MAP[hintedSlot],
+                };
+            }
         }
 
         if (intent === 'ROOM_SELECTED' && !merged.selectedRoom && Array.isArray(merged.rooms)) {
@@ -1159,6 +1343,9 @@ class AgentAdapterService {
 
         const previousState = this.state;
         this.state = nextState;
+        if (nextState !== "BOOKING_COLLECT") {
+            this.clearActiveSlot();
+        }
         this.applyPayloadData(intent || 'UNKNOWN', payload, nextState);
         this.resetInactivityTimer();
         this.hasAnnouncedRoomOptions = false;
@@ -1248,6 +1435,7 @@ class AgentAdapterService {
      * Wrapped to emit 'ai' transcript events.
      */
     public speak(text: string): void {
+        this.maybeTrackSlotFromPrompt(text);
         this.emitTranscript(text, true, 'ai');
         VoiceRuntime.speak(text);
     }
@@ -1293,6 +1481,7 @@ class AgentAdapterService {
         const metadata = StateMachine.getMetadata(this.state as UIState);
         const fullData = {
             ...this.viewData,
+            slotContext: this.slotContext,
             metadata: {
                 ...metadata,
                 listening: this.hasVoiceAuthority()
@@ -1307,6 +1496,7 @@ class AgentAdapterService {
         this.lastIntent = null;
         this.lastIntentTime = 0;
         this.intentTimestamps = [];
+        this.clearActiveSlot();
         this.notifyListeners();
     }
 

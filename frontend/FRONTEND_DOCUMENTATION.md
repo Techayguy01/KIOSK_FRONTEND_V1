@@ -308,7 +308,7 @@ import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 're
 import { UIContext } from '../state/uiContext';
 // Agent Authority
 import { AgentAdapter } from '../agent/adapter';
-import { UiState } from '../agent/index'; // Import directly from source
+import { UiState } from '../agent/index';
 
 // Pages
 import { IdlePage } from '../pages/IdlePage';
@@ -320,8 +320,7 @@ import { BookingSummaryPage } from '../pages/BookingSummaryPage';
 import { PaymentPage } from '../pages/PaymentPage';
 import { CompletePage } from '../pages/CompletePage';
 
-// Components
-import { ErrorBanner } from '../components/ErrorBanner';
+// UI Components
 import { BackButton } from '../components/BackButton';
 import { CaptionsOverlay } from '../components/CaptionsOverlay';
 import { DevToolbar } from '../components/DevToolbar';
@@ -344,41 +343,31 @@ const TenantKioskApp: React.FC = () => {
   // Local UI State (Renderer only)
   const [state, setState] = useState<UiState>('IDLE');
   const [data, setData] = useState<any>({});
-  const [loading, setLoading] = useState<boolean>(false);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // 1. CONNECT TO AGENT BRAIN
   useEffect(() => {
+    // Set tenant context for services that need it
+    if (tenantSlug) {
+      setTenantContext({ slug: tenantSlug } as TenantPayload);
+    }
+
     // Subscribe to the Agent Adapter
     const unsubscribe = AgentAdapter.subscribe((newState, newData) => {
       console.log(`[APP RENDERER] Received State Update from Agent: ${newState}`);
       setState(newState);
       setData(newData || {});
-      // In a real app, 'data' would come from a View Model or State/Store mapped to the UiState.
-      // For now, we keep data empty or static as we focus on Navigation Authority.
       setLoading(false);
     });
 
-    return () => {
-      unsubscribe();
-    }
-  }, []);
+    return unsubscribe;
+  }, [tenantSlug]);
 
-  // 2. INTENT EMITTER (Forwarder to Agent)
-  const emit = async (type: string, payload?: any) => {
-    console.log(`[APP RENDERER] Emitting Intent: ${type}`);
-
-    // UI Feedback: "Processing..."
-    // Note: We don't disable UI for *every* intent, but for major transitions it's good practice.
-    // However, since Agent is instantaneous (synchronous pure function), loading is minimal.
-    // We'll keep it simple.
-
-    if (type === 'ERROR_DISMISSED') {
-      setError(null);
-      // If error clearing needs to change state, dispatch an intent. 
-      // Current design: ERROR state handles dismissal via BACK/TOUCH.
-      return;
-    }
+  // 2. EMIT INTENT (UI -> Agent)
+  const emit = (type: string, payload?: any) => {
+    console.log(`[UI EVENT] Emitting Intent: ${type}`, payload);
+    setLoading(true);
 
     try {
       // Send to Authority
@@ -386,20 +375,26 @@ const TenantKioskApp: React.FC = () => {
     } catch (e) {
       console.error("Agent Error", e);
       setError("System Error");
+      setLoading(false);
     }
   };
 
   // 3. DUMB ROUTER (State -> Component)
   // CRITICAL: This is a pure switch on Agent State. No logic allowed.
-  // ... (useEffect for URL sync and Tenant resolution)
+  useEffect(() => {
+    // Sync URL with Agent State
+    const route = STATE_TO_ROUTE[state];
+    if (route && !location.pathname.endsWith(route)) {
+        navigate(`/${tenantSlug || DEFAULT_TENANT_SLUG}/${route}`, { replace: true });
+    }
+  }, [state, tenantSlug, navigate, location]);
+
   const renderPage = () => {
     switch (state) {
       case 'IDLE': return <IdlePage />;
-
-      // WelcomePage handles both Voice and Manual visual modes
-      case 'WELCOME': return <WelcomePage visualMode="voice" />;
-      case 'AI_CHAT': return <WelcomePage visualMode="voice" />;
-      case 'MANUAL_MENU': return <WelcomePage visualMode="manual" />;
+      case 'WELCOME': return <WelcomePage />;
+      case 'AI_CHAT': return <WelcomePage />;
+      case 'MANUAL_MENU': return <WelcomePage />;
 
       case 'SCAN_ID': return <ScanIdPage />;
       case 'ROOM_SELECT': return <RoomSelectPage />;
@@ -457,15 +452,6 @@ const TenantKioskApp: React.FC = () => {
         <DevToolbar />
       </div>
     </UIContext.Provider>
-  );
-};
-
-const App: React.FC = () => {
-  return (
-    <Routes>
-      <Route path="/:tenantSlug/*" element={<TenantKioskApp />} />
-      <Route path="*" element={<Navigate to={`/${DEFAULT_TENANT_SLUG}/welcome`} replace />} />
-    </Routes>
   );
 };
 
@@ -528,31 +514,6 @@ export const useUIState = () => useContext(UIContext);
 
 ---
 
-## 5. Voice & AI Integration
-
-### a) Location: `KIOSK_FRONTEND_V1/frontend/hooks/useBrain.ts`
-
-This hook provides components with reactive access to the "Brain" (LLM) state, including conversation history, accumulated booking slots, and processing status.
-
-```typescript
-export function useBrain() {
-    return { conversationHistory, bookingSlots, isProcessing, sendTranscript, resetBrainSession };
-}
-```
-
-### b) Location: `KIOSK_FRONTEND_V1/frontend/services/brain.service.ts`
-
-The bridge between raw voice transcripts and the backend AI. It handles endpoint selection (chat vs. booking) and dispatches intents to the `AgentAdapter` based on confidence scores.
-
-```typescript
-export async function sendToBrain(transcript: string, currentState: string) {
-    // 1. Fetch from backend /chat or /chat/booking
-    // 2. Dispatch high-confidence intents to AgentAdapter
-}
-```
-
----
-
 ## 5. Utilities
 
 ### a) Location: `KIOSK_FRONTEND_V1/frontend/lib/utils.ts`
@@ -586,40 +547,41 @@ export const ApiClient = {
 
 **CRITICAL RULES** (from `rules-for-antigravity.md`):
 
-1.  **Frontend Is a Renderer, Not a Brain**
-    -   Improve layout, visuals, animations, accessibility, responsiveness
-    -   NEVER decide flow, infer intent, auto-navigate, or simulate backend intelligence
+1. **Frontend Is a Renderer, Not a Brain**
+   - Improve layout, visuals, animations, accessibility, responsiveness
+   - NEVER decide flow, infer intent, auto-navigate, or simulate backend intelligence
 
-2.  **Never Change Flow Logic**
-    -   All screen changes happen ONLY when `ui_state` changes
-    -   No timers, no chaining, no assumptions
+2. **Never Change Flow Logic**
+   - All screen changes happen ONLY when `ui_state` changes
+   - No timers, no chaining, no assumptions
 
-3.  **`ui_state` Is Read-Only**
-    -   Read and render based on it
-    -   NEVER mutate, derive, or replace it
+3. **`ui_state` Is Read-Only**
+   - Read and render based on it
+   - NEVER mutate, derive, or replace it
 
-4.  **Emit Intents, Never Outcomes**
-    -   Frontend emits: `CHECK_IN_SELECTED`, `VOICE_INPUT_STARTED`, `BACK_REQUESTED`
-    -   Frontend NEVER emits: `ID_VERIFIED`, `PAYMENT_SUCCESS`, `ROOM_ASSIGNED`
+4. **Emit Intents, Never Outcomes**
+   - Frontend emits: `CHECK_IN_SELECTED`, `VOICE_INPUT_STARTED`, `BACK_REQUESTED`
+   - Frontend NEVER emits: `ID_VERIFIED`, `PAYMENT_SUCCESS`, `ROOM_ASSIGNED`
 
-5.  **Pages Must Be Dumb**
-    -   Pages don't know what comes next or where they came from
-    -   Pages only render UI and forward user actions via `emit()`
+5. **Pages Must Be Dumb**
+   - Pages don't know what comes next
+   - Pages don't know where they came from
+   - Pages only render UI and forward user actions
 
 ### Directory Ownership
 
 **SAFE TO MODIFY** (Frontend-owned):
--   `/pages` - Page components (Dumb Renderers)
--   `/components` - UI components
--   `/mocks` - Mock data for testing
--   `/hooks` - UI-related hooks
--   `/lib` - Pure utilities
+- `/pages` - Page components
+- `/components` - UI components
+- `/mocks` - Mock data for testing
+- `/hooks` - React hooks
+- `/lib` - Utilities
 
 **DO NOT MODIFY** (Backend integration):
--   `/agent` - Agent FSM authority (The "Brain")
--   `/services` - Service layer & AI integration
--   `/voice` - Voice runtime (complex integration)
--   `/api` - API contracts
+- `/agent` - Agent FSM authority
+- `/services` - Service layer
+- `/voice` - Voice runtime (complex integration)
+- `/api` - API contracts
 
 ### Data Flow
 
@@ -629,6 +591,7 @@ graph TD
     Intent --> Adapter[AgentAdapter]
     Adapter --> Agent[Agent FSM]
     Agent --> State[New ui_state]
+    State --> App[App.tsx Router]
     App --> Render[Render Dumb Page]
 
     Voice([Voice Input]) --> VR[Voice Runtime]
@@ -640,7 +603,7 @@ graph TD
 
 ---
 
-## 7. Communication Protocols (Intents)
+## 6. Communication Protocols (Intents)
 
 Intents are the only way the frontend can request a state change. Current major intents in `agent/index.ts`:
 
@@ -654,36 +617,53 @@ Intents are the only way the frontend can request a state change. Current major 
 
 ---
 
-### Key Components
+## 7. Voice & AI Integration
 
-1.  **App.tsx** - Main application router
-    -   Subscribes to AgentAdapter for state updates
-    -   Provides `emit()` function to pages
-    -   Routes `ui_state` to appropriate page component
+### a) Location: `KIOSK_FRONTEND_V1/frontend/hooks/useBrain.ts`
 
-2.  **AgentAdapter** - Bridge between UI and Agent
-    -   Receives intents from UI
-    -   Dispatches to Agent FSM
-    -   Publishes state updates to subscribers
+This hook provides components with reactive access to the "Brain" (LLM) state, including conversation history, accumulated booking slots, and processing status.
 
-3.  **Pages** - Dumb renderers
-    -   Receive `ui_state` via context
-    -   Emit intents via `emit()` function
-    -   No business logic, no flow control
+```typescript
+export function useBrain() {
+    return { conversationHistory, bookingSlots, isProcessing, sendTranscript, resetBrainSession };
+}
+```
 
-4.  **VoiceRuntime** - Voice interaction system
-    -   Manages audio capture and STT
-    -   Handles TTS playback
-    -   Emits voice-related intents
+### b) Location: `KIOSK_FRONTEND_V1/frontend/services/brain.service.ts`
 
----
+The bridge between raw voice transcripts and the backend AI. It handles endpoint selection (chat vs. booking) and dispatches intents to the `AgentAdapter` based on confidence scores.
 
-## 8. File Count Summary
+```typescript
+export async function sendToBrain(transcript: string, currentState: string) {
+    // 1. Fetch from backend /chat or /chat/booking
+    // 2. Dispatch high-confidence intents to AgentAdapter
+}
+```
+
+## 8. Key Components
+
+1. **App.tsx** - Main application router
+   - Subscribes to AgentAdapter for state updates
+   - Provides `emit()` function to pages
+   - Routes `ui_state` to appropriate page component
+
+2. **AgentAdapter** - Bridge between UI and Agent
+   - Receives intents from UI
+   - Dispatches to Agent FSM
+   - Publishes state updates to subscribers
+
+3. **Pages** - Dumb renderers
+   - Receive `ui_state` via context
+   - Emit intents via `emit()` function
+   - No business logic, no flow control
+
+4. **VoiceRuntime** - Voice interaction system
+   - Manages audio capture and STT
+## 9. File Count Summary
 
 | Directory | Files | Purpose |
 |-----------|-------|---------|
-| Configuration | 6 | Project setup and build config |
-| app/ | 1 | Main application component |
+| app/ | 1 | App root & routing |
 | agent/ | 5 | State machine authority (DO NOT MODIFY) |
 | api/ | 1 | API client placeholder |
 | state/ | 3 | UI state management |
@@ -692,13 +672,13 @@ Intents are the only way the frontend can request a state change. Current major 
 | voice/ | 10 | Voice/audio runtime (DO NOT MODIFY) |
 | services/ | 7 | Service layer (DO NOT MODIFY) |
 | mocks/ | 6 | Mock data (SAFE TO MODIFY) |
-| hooks/ | 3 | React hooks (SAFE TO MODIFY) |
+| hooks/ | 4 | React hooks (SAFE TO MODIFY) |
 | lib/ | 1 | Utilities (SAFE TO MODIFY) |
 | **Total** | **66** | **Complete frontend codebase** |
 
 ---
 
-## 9. Running the Frontend
+## 10. Running the Frontend
 
 ### Development Mode
 ```bash
@@ -721,7 +701,7 @@ npm run preview
 
 ---
 
-## 10. Important Notes
+## 11. Important Notes
 
 ### Merge-Safety Rule
 
@@ -732,10 +712,10 @@ If the answer is NO → reject the change.
 ### Testing Without Backend
 
 Delete backend logic entirely. Expected result:
--   ✅ UI renders
--   ✅ Buttons work
--   ✅ Chat shows
--   ❌ **Flow does NOT complete**
+- ✅ UI renders
+- ✅ Buttons work
+- ✅ Chat shows
+- ❌ **Flow does NOT complete**
 
 If flow still completes → frontend crossed the line.
 
@@ -751,7 +731,7 @@ If flow still completes → frontend crossed the line.
 
 ---
 
-## 11. Additional Resources
+## 12. Additional Resources
 
 For detailed code of individual files, please refer to:
 - **Pages**: See `/pages` directory for all 8 page components

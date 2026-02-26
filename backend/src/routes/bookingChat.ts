@@ -1,22 +1,25 @@
 import { Router, Request, Response } from "express";
 import { z } from "zod";
 import { llm } from "../llm/groqClient.js";
-import { BookingLLMResponseSchema, BOOKING_FALLBACK } from "../llm/bookingContracts.js";
-import { buildSystemContext } from "../context/contextBuilder.js";
+import {
+    BookingChatRequestSchema,
+    BookingLLMResponse,
+    BookingLLMResponseSchema,
+    BookingSlotExpectedType,
+    BookingSlotName,
+    BOOKING_FALLBACK
+} from "../llm/bookingContracts.js";
+import { buildBookingSlotContext, buildSystemContext } from "../context/contextBuilder.js";
 import { HOTEL_CONFIG } from "../context/hotelData.js";
 import { ROOM_INVENTORY } from "../context/roomInventory.js";
 import { validateBody } from "../middleware/validateRequest.js";
 import { logWithContext } from "../utils/logger.js";
 import { sendApiError } from "../utils/http.js";
 import { prisma } from "../db/prisma.js";
+import { extractNormalizedNumber, normalizeForSlot } from "../utils/normalize.js";
 
 const router = Router();
 const ENABLE_STATIC_CONTEXT_FALLBACK = process.env.ENABLE_STATIC_CONTEXT_FALLBACK === "1";
-const BookingChatRequestSchema = z.object({
-    transcript: z.string().optional(),
-    currentState: z.string().optional(),
-    sessionId: z.string().optional(),
-});
 
 /**
  * Booking Session Memory
@@ -32,6 +35,23 @@ interface BookingSession {
 
 const bookingSessions = new Map<string, BookingSession>();
 const MAX_HISTORY_TURNS = 10; // 5 exchanges
+const REQUIRED_SLOTS = ["roomType", "adults", "checkInDate", "checkOutDate", "guestName"];
+const SLOT_FILLING_INTENTS = [
+    "PROVIDE_GUESTS",
+    "PROVIDE_DATES",
+    "PROVIDE_NAME",
+    "MODIFY_BOOKING",
+    "CANCEL_BOOKING",
+    "BACK_REQUESTED",
+];
+const SLOT_TO_EXPECTED_INTENT: Partial<Record<BookingSlotName, BookingLLMResponse["intent"]>> = {
+    roomType: "SELECT_ROOM",
+    adults: "PROVIDE_GUESTS",
+    children: "PROVIDE_GUESTS",
+    checkInDate: "PROVIDE_DATES",
+    checkOutDate: "PROVIDE_DATES",
+    guestName: "PROVIDE_NAME",
+};
 
 const BOOKING_SYSTEM_PROMPT = `
 You are Siya, the AI Concierge at {{HOTEL_NAME}}.
@@ -50,7 +70,7 @@ You are currently helping a guest BOOK A ROOM through voice conversation.
 Unfilled slots: {{MISSING_SLOTS}}
 -----------------------------
 
-{{CONVERSATION_HISTORY}}
+{{ACTIVE_SLOT_CONTEXT}}
 
 # YOUR TASK:
 You are having a natural conversation to collect booking details.
@@ -82,7 +102,7 @@ You must extract information from the user's speech and fill these slots:
 # OUTPUT FORMAT (strict JSON):
 {
   "speech": "Your spoken response (max 2 sentences)",
-  "intent": "SELECT_ROOM|PROVIDE_GUESTS|PROVIDE_DATES|PROVIDE_NAME|CONFIRM_BOOKING|MODIFY_BOOKING|CANCEL_BOOKING|ASK_ROOM_DETAIL|COMPARE_ROOMS|ASK_PRICE|GENERAL_QUERY|HELP|UNKNOWN",
+  "intent": "SELECT_ROOM|PROVIDE_GUESTS|PROVIDE_DATES|PROVIDE_NAME|CONFIRM_BOOKING|MODIFY_BOOKING|CANCEL_BOOKING|ASK_ROOM_DETAIL|COMPARE_ROOMS|ASK_PRICE|BACK_REQUESTED|GENERAL_QUERY|HELP|UNKNOWN",
   "confidence": 0.0-1.0,
   "extractedSlots": {
     "roomType": "Ocean View Deluxe" or "DELUXE_OCEAN" or null,
@@ -94,6 +114,7 @@ You must extract information from the user's speech and fill these slots:
     "nights": 2 or null,
     "totalPrice": 9000 or null
   },
+  "extractedValue": "5 or 2026-02-13 or John Smith",
   "nextSlotToAsk": "adults" or null,
   "isComplete": false
 }
@@ -167,15 +188,120 @@ function hasOverlappingDates(existingStart: Date, existingEnd: Date, nextStart: 
     return existingStart < nextEnd && nextStart < existingEnd;
 }
 
+function isFilledValue(value: unknown): boolean {
+    return value !== null && value !== undefined && String(value).trim() !== "";
+}
+
+function mergeIncomingSlots(
+    base: Record<string, unknown>,
+    incoming?: Record<string, unknown>
+): Record<string, unknown> {
+    if (!incoming) return base;
+    const merged = { ...base };
+    for (const [key, value] of Object.entries(incoming)) {
+        if (isFilledValue(value)) {
+            merged[key] = value;
+        }
+    }
+    return merged;
+}
+
+function isExplicitTopicChange(transcript: string): boolean {
+    const text = transcript.toLowerCase();
+    return /\b(cancel|go back|back|never mind|nevermind|start over|modify|change)\b/.test(text);
+}
+
+function coerceSlotFillingIntent(
+    result: BookingLLMResponse,
+    activeSlot: BookingSlotName | null | undefined,
+    transcript: string
+): BookingLLMResponse {
+    if (!activeSlot) {
+        return result;
+    }
+
+    if (SLOT_FILLING_INTENTS.includes(result.intent)) {
+        return result;
+    }
+
+    if (isExplicitTopicChange(transcript)) {
+        return result;
+    }
+
+    const expectedIntent = SLOT_TO_EXPECTED_INTENT[activeSlot];
+    if (!expectedIntent) {
+        return result;
+    }
+
+    return {
+        ...result,
+        intent: expectedIntent,
+        confidence: Math.max(result.confidence, 0.8),
+    };
+}
+
+function applyActiveSlotExtractionFallback(
+    result: BookingLLMResponse,
+    activeSlot: BookingSlotName | null | undefined,
+    expectedType: BookingSlotExpectedType | null | undefined,
+    transcript: string
+): BookingLLMResponse {
+    if (!activeSlot) {
+        return result;
+    }
+
+    const extractedSlots = { ...(result.extractedSlots || {}) } as Record<string, unknown>;
+    if (isFilledValue(extractedSlots[activeSlot])) {
+        return { ...result, extractedSlots, extractedValue: extractedSlots[activeSlot] as string | number | null };
+    }
+
+    if (expectedType === "number") {
+        const parsed = extractNormalizedNumber(transcript, activeSlot);
+        if (parsed !== null) {
+            extractedSlots[activeSlot] = parsed;
+            return { ...result, extractedSlots, extractedValue: parsed };
+        }
+    }
+
+    if (expectedType === "string") {
+        const value = transcript.trim();
+        if (value) {
+            extractedSlots[activeSlot] = value;
+            return { ...result, extractedSlots, extractedValue: value };
+        }
+    }
+
+    if (expectedType === "date") {
+        const isoMatch = transcript.match(/\d{4}-\d{2}-\d{2}/);
+        if (isoMatch) {
+            extractedSlots[activeSlot] = isoMatch[0];
+            return { ...result, extractedSlots, extractedValue: isoMatch[0] };
+        }
+    }
+
+    return result;
+}
+
 router.post("/", validateBody(BookingChatRequestSchema), async (req: Request, res: Response) => {
     const start = Date.now();
     try {
-        const { transcript, currentState, sessionId } = req.body;
+        const {
+            transcript,
+            currentState,
+            sessionId,
+            activeSlot,
+            expectedType,
+            lastSystemPrompt,
+            filledSlots,
+            conversationHistory,
+        } = req.body as z.infer<typeof BookingChatRequestSchema>;
         const sid = sessionId || "default";
 
         logWithContext(req, "INFO", "Booking chat request received", {
             currentState,
             sessionId: sid,
+            activeSlot: activeSlot || null,
+            expectedType: expectedType || null,
         });
 
         // Privacy wipe on WELCOME/IDLE
@@ -192,8 +318,26 @@ router.post("/", validateBody(BookingChatRequestSchema), async (req: Request, re
             return;
         }
 
+        const normalizedTranscript = normalizeForSlot(transcript, expectedType, activeSlot);
+        if (normalizedTranscript !== transcript) {
+            logWithContext(req, "INFO", "Normalized transcript for active slot", {
+                before: transcript,
+                after: normalizedTranscript,
+                activeSlot: activeSlot || null,
+                expectedType: expectedType || null,
+            });
+        }
+
         // Get or create session
         let session: BookingSession = bookingSessions.get(sid) || { history: [], slots: {} };
+        session.slots = mergeIncomingSlots(session.slots, filledSlots);
+
+        if (Array.isArray(conversationHistory) && conversationHistory.length > 0 && session.history.length === 0) {
+            session.history = conversationHistory.slice(-MAX_HISTORY_TURNS).map((turn) => ({
+                role: turn.role,
+                content: turn.content,
+            }));
+        }
         const tenant = req.tenant;
         if (!tenant) {
             sendApiError(res, 404, "TENANT_NOT_FOUND", "Tenant not found", req.requestId);
@@ -246,17 +390,14 @@ router.post("/", validateBody(BookingChatRequestSchema), async (req: Request, re
             logWithContext(req, "WARN", "Using static room inventory fallback because tenant has no room types");
         }
 
-        // Build history string
+        // Build history messages for LLM call
         const recentHistory = session.history.slice(-MAX_HISTORY_TURNS);
-        const historySection = recentHistory.length > 0
-            ? `--- PREVIOUS CONVERSATION ---\n${recentHistory.map(m => `${m.role === "user" ? "Guest" : "Concierge"}: ${m.content}`).join("\n")}\n------------------------------`
-            : "--- PREVIOUS CONVERSATION ---\n(This is the start of the booking conversation)\n------------------------------";
 
         // Build context
         const hotelConfig = tenant.hotelConfig;
         const fallbackConfig = ENABLE_STATIC_CONTEXT_FALLBACK ? HOTEL_CONFIG : null;
         const contextJson = buildSystemContext(
-            { currentState: currentState || "BOOKING", transcript },
+            { currentState: currentState || "BOOKING", transcript: normalizedTranscript },
             {
                 hotelName: tenant.name,
                 timezone: hotelConfig?.timezone ?? fallbackConfig?.timezone,
@@ -272,8 +413,15 @@ router.post("/", validateBody(BookingChatRequestSchema), async (req: Request, re
             ? JSON.stringify(session.slots, null, 2)
             : "{ (no slots filled yet) }";
 
-        const requiredSlots = ["roomType", "adults", "checkInDate", "checkOutDate", "guestName"];
-        const missingSlots = requiredSlots.filter(s => !session.slots[s]);
+        const missingSlots = REQUIRED_SLOTS.filter((slot) => !isFilledValue(session.slots[slot]));
+        const slotContextSection = buildBookingSlotContext({
+            activeSlot,
+            expectedType,
+            lastSystemPrompt,
+            filledSlots: session.slots,
+            missingSlots,
+            constrainedIntents: activeSlot ? SLOT_FILLING_INTENTS : undefined,
+        });
 
         // Build prompt
         const filledPrompt = BOOKING_SYSTEM_PROMPT
@@ -282,13 +430,25 @@ router.post("/", validateBody(BookingChatRequestSchema), async (req: Request, re
             .replace("{{ROOM_INVENTORY}}", formatInventoryForPrompt(roomTypes))
             .replace("{{BOOKING_SLOTS}}", slotsDisplay)
             .replace("{{MISSING_SLOTS}}", missingSlots.length > 0 ? missingSlots.join(", ") : "(all filled!)")
-            .replace("{{CONVERSATION_HISTORY}}", historySection);
+            .replace("{{ACTIVE_SLOT_CONTEXT}}", slotContextSection);
+
+        const llmMessages: Array<{ role: "system" | "assistant" | "user"; content: string }> = [
+            { role: "system", content: filledPrompt },
+            ...recentHistory.map((entry) => ({
+                role: entry.role,
+                content: entry.content,
+            })),
+            { role: "user", content: normalizedTranscript },
+        ];
 
         // Call LLM
-        const response = await llm.invoke([
-            { role: "system", content: filledPrompt },
-            { role: "user", content: transcript }
-        ]);
+        logWithContext(req, "INFO", "Booking LLM messages prepared", {
+            sessionId: sid,
+            messageCount: llmMessages.length,
+            includesHistory: recentHistory.length > 0,
+            activeSlot: activeSlot || null,
+        });
+        const response = await llm.invoke(llmMessages);
 
         // Extract JSON
         const rawContent = response.content.toString();
@@ -300,7 +460,20 @@ router.post("/", validateBody(BookingChatRequestSchema), async (req: Request, re
         }
 
         const parsedJson = JSON.parse(jsonMatch[0]);
-        const validated = BookingLLMResponseSchema.parse(parsedJson);
+        let validated = BookingLLMResponseSchema.parse(parsedJson);
+
+        validated = applyActiveSlotExtractionFallback(
+            validated,
+            activeSlot,
+            expectedType,
+            normalizedTranscript
+        );
+
+        validated = coerceSlotFillingIntent(
+            validated,
+            activeSlot,
+            normalizedTranscript
+        );
 
         // Merge extracted slots into session
         if (validated.extractedSlots) {
@@ -456,7 +629,7 @@ router.post("/", validateBody(BookingChatRequestSchema), async (req: Request, re
         const finalResponse = {
             ...validated,
             accumulatedSlots: session.slots,
-            missingSlots: requiredSlots.filter(s => !session.slots[s]),
+            missingSlots: REQUIRED_SLOTS.filter(s => !session.slots[s]),
             persistedBookingId,
         };
 

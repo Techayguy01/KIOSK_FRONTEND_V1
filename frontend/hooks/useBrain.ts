@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { sendToBrain, onBrainResponse, resetSession, BrainResponse } from "../services/brain.service";
 import { useUIState } from "../state/uiContext";
+import { AgentAdapter } from "../agent/adapter";
 
 /**
  * useBrain Hook
@@ -56,15 +57,17 @@ export function useBrain() {
 
     const sendTranscript = useCallback(async (transcript: string) => {
         setIsProcessing(true);
+        const nextHistory = [...conversationHistory, { role: "user" as const, text: transcript }];
 
         // Add user message to history
-        setConversationHistory(prev => [
-            ...prev,
-            { role: "user", text: transcript }
-        ]);
+        setConversationHistory(nextHistory);
 
-        await sendToBrain(transcript, state);
-    }, [state]);
+        await sendToBrain(transcript, state, {
+            slotContext: AgentAdapter.getSlotContext(),
+            filledSlots: bookingSlots,
+            conversationHistory: nextHistory,
+        });
+    }, [state, bookingSlots, conversationHistory]);
 
     return {
         lastResponse,
