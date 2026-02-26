@@ -1,27 +1,16 @@
-/**
- * Audio Capture Module (Phase 8.2 - AudioWorklet)
- * 
- * Captures raw PCM audio from browser microphone using AudioWorklet.
- * AudioWorklet runs on a separate thread, eliminating main-thread stalls.
- * 
- * This is MANDATORY for production-grade, low-latency STT.
- * ScriptProcessorNode caused "ghost speech" due to main-thread blocking.
- * 
- * STRATEGY:
- * - Capture at native browser sample rate (44.1k / 48k)
- * - Convert Float32 → Int16 INSIDE the worklet (off main thread)
- * - Send Int16Array chunks to main thread via postMessage
- * - Zero resampling, zero buffering hacks
+﻿/**
+ * Audio Capture Module
+ *
+ * Captures raw PCM audio from browser microphone via AudioWorklet.
  */
 
 type AudioChunkCallback = (chunk: Int16Array) => void;
 
-// AudioWorklet processor code (embedded as Blob for Vite compatibility)
 const workletCode = `
 class PCMProcessor extends AudioWorkletProcessor {
     constructor() {
         super();
-        this.bufferSize = 4096;
+        this.bufferSize = 2048;
         this.buffer = new Float32Array(this.bufferSize);
         this.bufferIndex = 0;
         this.frameCount = 0;
@@ -36,13 +25,11 @@ class PCMProcessor extends AudioWorkletProcessor {
         return int16Array;
     }
 
-    process(inputs, outputs, parameters) {
+    process(inputs) {
         const input = inputs[0];
         if (input && input[0]) {
             const channelData = input[0];
-            
-            // === DIAGNOSTIC: Energy Probe ===
-            // Calculate RMS volume every ~50 frames to detect silence
+
             this.frameCount++;
             if (this.frameCount % 50 === 0) {
                 let sum = 0;
@@ -51,26 +38,21 @@ class PCMProcessor extends AudioWorkletProcessor {
                     sum += channelData[i] * channelData[i];
                 }
                 const volume = Math.sqrt(sum / sampleCount);
-                // Send volume to main thread for logging
                 this.port.postMessage({ type: 'volume', volume: volume });
             }
-            // === END DIAGNOSTIC ===
-            
+
             for (let i = 0; i < channelData.length; i++) {
                 this.buffer[this.bufferIndex++] = channelData[i];
-                
+
                 if (this.bufferIndex >= this.bufferSize) {
-                    // Convert to Int16 and send to main thread
                     const int16Chunk = this.float32ToInt16(this.buffer);
                     this.port.postMessage({ type: 'audio', buffer: int16Chunk.buffer }, [int16Chunk.buffer]);
-                    
-                    // Reset buffer
                     this.buffer = new Float32Array(this.bufferSize);
                     this.bufferIndex = 0;
                 }
             }
         }
-        return true; // Keep processor alive
+        return true;
     }
 }
 
@@ -82,12 +64,13 @@ class AudioCaptureService {
     private mediaStream: MediaStream | null = null;
     private workletNode: AudioWorkletNode | null = null;
     private source: MediaStreamAudioSourceNode | null = null;
+    private silentGain: GainNode | null = null;
     private chunkCallback: AudioChunkCallback | null = null;
-    private isCapturing: boolean = false;
-    private sampleRate: number = 48000;
+    private isCapturing = false;
+    private sampleRate = 48000;
 
     constructor() {
-        console.log("[AudioCapture] Initialized (Phase 8.2 - AudioWorklet)");
+        console.log("[AudioCapture] Initialized");
     }
 
     public onAudioChunk(callback: AudioChunkCallback) {
@@ -105,62 +88,50 @@ class AudioCaptureService {
         }
 
         try {
-            // Request microphone permission
+            const enableEchoCancellation = import.meta.env.VITE_ECHO_CANCELLATION === "true";
+            const enableNoiseSuppression = import.meta.env.VITE_NOISE_SUPPRESSION !== "false";
+            const enableAutoGainControl = import.meta.env.VITE_AUTO_GAIN_CONTROL === "true";
+
             this.mediaStream = await navigator.mediaDevices.getUserMedia({
                 audio: {
-                    channelCount: 1, // Mono
-                    echoCancellation: true,
-                    noiseSuppression: true,
-                    autoGainControl: true,
+                    channelCount: 1,
+                    echoCancellation: enableEchoCancellation,
+                    noiseSuppression: enableNoiseSuppression,
+                    autoGainControl: enableAutoGainControl,
                 }
             });
 
-            // FIX: Remove sampleRate constraint - use Native Rate (48k/44.1k)
-            // Browser captures at native rate, we tell Deepgram the REAL rate
-            this.audioContext = new AudioContext({
-                latencyHint: 'interactive'
-                // sampleRate removed - uses native rate
-            });
-
-            // Get the REAL rate
+            this.audioContext = new AudioContext({ latencyHint: "interactive" });
             this.sampleRate = this.audioContext.sampleRate;
-            console.log(`[AudioCapture] Context created at NATIVE rate: ${this.sampleRate}Hz`);
+            console.log(`[AudioCapture] Context native sample rate: ${this.sampleRate}Hz`);
 
-            // Create Blob URL for worklet (Vite-safe)
-            const blob = new Blob([workletCode], { type: 'application/javascript' });
+            const blob = new Blob([workletCode], { type: "application/javascript" });
             const workletUrl = URL.createObjectURL(blob);
-
-            // Register the AudioWorklet
             await this.audioContext.audioWorklet.addModule(workletUrl);
             URL.revokeObjectURL(workletUrl);
 
-            // Create source from stream
             this.source = this.audioContext.createMediaStreamSource(this.mediaStream);
+            this.workletNode = new AudioWorkletNode(this.audioContext, "pcm-processor");
 
-            // Create AudioWorkletNode
-            this.workletNode = new AudioWorkletNode(this.audioContext, 'pcm-processor');
-
-            // Receive messages from worklet
             this.workletNode.port.onmessage = (event) => {
                 const msg = event.data;
-
-                if (msg.type === 'volume') {
-                    // === DIAGNOSTIC: Energy Probe Log ===
+                if (msg.type === "volume") {
                     console.log(`[AudioProbe] Mic Volume: ${msg.volume.toFixed(4)}`);
-                } else if (msg.type === 'audio') {
-                    if (this.chunkCallback) {
-                        const int16Chunk = new Int16Array(msg.buffer);
-                        this.chunkCallback(int16Chunk);
-                    }
+                } else if (msg.type === "audio" && this.chunkCallback) {
+                    this.chunkCallback(new Int16Array(msg.buffer));
                 }
             };
 
-            // Connect: source → worklet → destination (must connect to destination to stay alive)
             this.source.connect(this.workletNode);
-            this.workletNode.connect(this.audioContext.destination);
+
+            // Route through a muted gain node to keep the graph alive without audible loopback.
+            this.silentGain = this.audioContext.createGain();
+            this.silentGain.gain.value = 0;
+            this.workletNode.connect(this.silentGain);
+            this.silentGain.connect(this.audioContext.destination);
 
             this.isCapturing = true;
-            console.log("[AudioCapture] Started capturing audio with AudioWorklet.");
+            console.log("[AudioCapture] Started");
         } catch (error) {
             console.error("[AudioCapture] Failed to start:", error);
             throw error;
@@ -173,11 +144,15 @@ class AudioCaptureService {
             return;
         }
 
-        // Disconnect and cleanup
         if (this.workletNode) {
             this.workletNode.disconnect();
             this.workletNode.port.onmessage = null;
             this.workletNode = null;
+        }
+
+        if (this.silentGain) {
+            this.silentGain.disconnect();
+            this.silentGain = null;
         }
 
         if (this.source) {
@@ -196,7 +171,7 @@ class AudioCaptureService {
         }
 
         this.isCapturing = false;
-        console.log("[AudioCapture] Stopped capturing audio.");
+        console.log("[AudioCapture] Stopped");
     }
 
     public getIsCapturing(): boolean {

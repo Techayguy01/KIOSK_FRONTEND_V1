@@ -1,6 +1,7 @@
 import { VoiceEvent } from "./voice.types";
 import { AudioCapture } from "./audioCapture";
 import { DeepgramClient } from "./deepgramClient";
+import { WebSpeechClient } from "./webSpeechClient";
 import { normalizeTranscript } from "./normalizeTranscript";
 import { TTSController } from "./TTSController";
 
@@ -24,16 +25,18 @@ import { TTSController } from "./TTSController";
 
 export type VoiceMode = "idle" | "listening" | "speaking";
 type StopReason = "user" | "pause";
+type SttProvider = "deepgram" | "webspeech";
 export type VoiceTurnState = "IDLE" | "USER_SPEAKING" | "PROCESSING" | "SYSTEM_RESPONDING";
 
 // Configuration
 const CONFIG = {
-    MIN_CHARS: 3,
+    // Allow short confirmations like "ha", "na", "ok".
+    MIN_CHARS: Number(import.meta.env.VITE_MIN_TRANSCRIPT_CHARS || 1),
     FILLERS: ["uh", "um", "hmm", "huh", "ah", "oh"],
-    NO_SPEECH_TIMEOUT_MS: 5000,
-    NO_RESULT_TIMEOUT_MS: 8000,
+    NO_SPEECH_TIMEOUT_MS: Number(import.meta.env.VITE_NO_SPEECH_TIMEOUT_MS || 8000),
+    NO_RESULT_TIMEOUT_MS: Number(import.meta.env.VITE_NO_RESULT_TIMEOUT_MS || 12000),
     MAX_SESSION_DURATION_MS: 30000,
-    MIN_CONFIDENCE: 0.55,
+    MIN_CONFIDENCE: Number(import.meta.env.VITE_MIN_TRANSCRIPT_CONFIDENCE || 0.2),
     MAX_RECONNECTS_PER_MINUTE: 5,
 
     // Phase 10: Production Hardening
@@ -42,6 +45,8 @@ const CONFIG = {
     WARN_SILENT_TURNS: 2,              // After 2 → play warning
     NETWORK_RETRY_DELAY_MS: 1000,      // Wait before retry
     DEBUG_MODE: import.meta.env.DEV,   // Only in dev
+    STT_PROVIDER: import.meta.env.VITE_STT_PROVIDER === "webspeech" ? "webspeech" : "deepgram",
+    ENABLE_WEBSPEECH_FALLBACK: import.meta.env.VITE_ENABLE_WEBSPEECH_FALLBACK !== "false",
 };
 
 // Phase 10: Debug session tracking
@@ -60,6 +65,7 @@ class VoiceRuntimeService {
 
     private mode: VoiceMode = "idle";
     private isListeningActive: boolean = false;
+    private activeSttProvider: SttProvider = CONFIG.STT_PROVIDER;
 
     // Timing state
     private sessionStartTime: number = 0;
@@ -90,71 +96,92 @@ class VoiceRuntimeService {
 
     constructor() {
         console.log("[VoiceRuntime] Initialized (Phase 10 - Production Hardening)");
+        console.log(`[VoiceRuntime] STT provider: ${this.activeSttProvider}`);
 
-        // Wire audio chunks to Deepgram
+        // Wire audio chunks to Deepgram only when Deepgram is active.
         AudioCapture.onAudioChunk((chunk) => {
-            if (this.mode === "listening") {
+            if (this.mode === "listening" && this.activeSttProvider === "deepgram") {
                 DeepgramClient.send(chunk);
             }
         });
 
-        // Phase 9.4: Barge-in - User starts speaking, stop TTS instantly
-        DeepgramClient.onSpeechStarted(() => {
+        const handleSpeechStarted = () => {
             if (TTSController.isSpeaking()) {
                 console.log("[VoiceRuntime] BARGE-IN: User started speaking, stopping TTS");
                 TTSController.bargeIn();
                 this.setMode("listening");
             }
-            // Reset watchdog on speech activity
             this.resetWatchdog();
-        });
+        };
 
-        // Interim transcripts
-        DeepgramClient.onInterim((transcript, isFinal) => {
+        const handleInterimTranscript = (transcript: string) => {
             if (this.mode === "listening" && transcript) {
                 this.hasReceivedAnyTranscript = true;
                 this.clearNoSpeechTimer();
-                this.resetWatchdog();  // Activity detected
-                this.transcriptBuffer.push(transcript);  // Track for privacy clear
+                this.resetWatchdog();
+                this.transcriptBuffer.push(transcript);
                 this.emit({ type: "VOICE_TRANSCRIPT_PARTIAL", transcript });
             }
+        };
+
+        const handleFinalTranscript = (accumulatedTranscript: string, confidence?: number) => {
+            if (this.mode !== "listening" || !accumulatedTranscript.trim()) {
+                return;
+            }
+
+            this.hasReceivedFinalTranscript = true;
+            this.clearNoResultTimer();
+            this.resetWatchdog();
+
+            const normalized = normalizeTranscript(accumulatedTranscript);
+            this.transcriptBuffer.push(normalized);
+
+            // Log STT latency (dev only)
+            this.recordSTTLatency();
+
+            // Quality gate
+            const validation = this.validateTranscript(normalized);
+            if (!validation.valid) {
+                this.logDebug(`Transcript rejected: ${validation.reason}`);
+                this.handleSilentTurn();
+                return;
+            }
+
+            // Confidence check
+            if (
+                confidence !== undefined &&
+                confidence < CONFIG.MIN_CONFIDENCE &&
+                !this.isCommandLikeTranscript(normalized)
+            ) {
+                this.logDebug(`Transcript rejected: low confidence (${confidence})`);
+                this.handleSilentTurn();
+                return;
+            }
+
+            this.consecutiveSilentTurns = 0;
+            this.metrics.turnCount++;
+
+            console.log(`[VoiceRuntime] Final: "${normalized}"`);
+            this.emit({ type: "VOICE_TRANSCRIPT_READY", transcript: normalized });
+        };
+
+        DeepgramClient.onSpeechStarted(handleSpeechStarted);
+        DeepgramClient.onInterim((transcript) => {
+            handleInterimTranscript(transcript);
+        });
+        DeepgramClient.onEndOfTurn(handleFinalTranscript);
+        DeepgramClient.onError((error) => {
+            this.handleDeepgramFailure(error);
         });
 
-        // Final transcript
-        DeepgramClient.onEndOfTurn((accumulatedTranscript, confidence) => {
-            if (this.mode === "listening" && accumulatedTranscript.trim()) {
-                this.hasReceivedFinalTranscript = true;
-                this.clearNoResultTimer();
-                this.resetWatchdog();
-
-                const normalized = normalizeTranscript(accumulatedTranscript);
-                this.transcriptBuffer.push(normalized);
-
-                // Log STT latency (dev only)
-                this.recordSTTLatency();
-
-                // Quality gate
-                const validation = this.validateTranscript(normalized);
-                if (!validation.valid) {
-                    this.logDebug(`Transcript rejected: ${validation.reason}`);
-                    this.handleSilentTurn();  // Count as silent turn
-                    return;
-                }
-
-                // Confidence check
-                if (confidence !== undefined && confidence < CONFIG.MIN_CONFIDENCE) {
-                    this.logDebug(`Transcript rejected: low confidence (${confidence})`);
-                    this.handleSilentTurn();
-                    return;
-                }
-
-                // Success! Reset silent turn counter
-                this.consecutiveSilentTurns = 0;
-                this.metrics.turnCount++;
-
-                console.log(`[VoiceRuntime] Final: "${normalized}"`);
-                this.emit({ type: "VOICE_TRANSCRIPT_READY", transcript: normalized });
-            }
+        WebSpeechClient.onSpeechStarted(handleSpeechStarted);
+        WebSpeechClient.onInterim((transcript) => {
+            handleInterimTranscript(transcript);
+        });
+        WebSpeechClient.onEndOfTurn(handleFinalTranscript);
+        WebSpeechClient.onError((error) => {
+            console.error("[VoiceRuntime] Web Speech STT error:", error.message);
+            this.emit({ type: "VOICE_SESSION_ERROR" });
         });
 
         // TTS lifecycle events
@@ -171,6 +198,70 @@ class VoiceRuntimeService {
                 this.emit({ type: "VOICE_SESSION_ERROR" });
             }
         });
+    }
+
+    private async startActiveStt(): Promise<void> {
+        if (this.activeSttProvider === "deepgram") {
+            await AudioCapture.start();
+
+            // Important: connect AFTER AudioCapture.start() so we forward the real native sample rate.
+            if (!DeepgramClient.getIsConnected()) {
+                DeepgramClient.connect(AudioCapture.getSampleRate());
+            }
+            return;
+        }
+
+        if (!WebSpeechClient.isSupported()) {
+            throw new Error("Web Speech API is not supported in this browser.");
+        }
+
+        WebSpeechClient.connect();
+    }
+
+    private stopActiveStt(reason: StopReason): void {
+        if (this.activeSttProvider === "deepgram") {
+            if (AudioCapture.getIsCapturing()) {
+                AudioCapture.stop();
+            }
+            // Keep websocket alive during TTS pause to avoid close/reconnect churn.
+            if (reason === "user") {
+                DeepgramClient.close();
+            }
+            return;
+        }
+
+        WebSpeechClient.close();
+    }
+
+    private handleDeepgramFailure(error: Error): void {
+        if (this.activeSttProvider !== "deepgram") {
+            return;
+        }
+
+        console.error("[VoiceRuntime] Deepgram STT failed:", error.message);
+
+        if (CONFIG.ENABLE_WEBSPEECH_FALLBACK && WebSpeechClient.isSupported()) {
+            console.warn("[VoiceRuntime] Switching STT provider: Deepgram -> Web Speech fallback");
+            this.activeSttProvider = "webspeech";
+
+            if (AudioCapture.getIsCapturing()) {
+                AudioCapture.stop();
+            }
+            DeepgramClient.close();
+
+            if (this.isListeningActive) {
+                try {
+                    WebSpeechClient.connect();
+                    return;
+                } catch (fallbackError) {
+                    console.error("[VoiceRuntime] Web Speech fallback failed:", fallbackError);
+                }
+            } else {
+                return;
+            }
+        }
+
+        this.emit({ type: "VOICE_SESSION_ERROR" });
     }
 
     // === Phase 10: Silence Loop Protection ===
@@ -305,8 +396,12 @@ class VoiceRuntimeService {
             return;
         }
 
-        // Apply reconnect protection only when we actually need to reconnect socket.
-        if (!DeepgramClient.getIsConnected() && this.isReconnectLooping()) {
+        // Reconnect protection applies to Deepgram websocket reconnects only.
+        if (
+            this.activeSttProvider === "deepgram" &&
+            !DeepgramClient.getIsConnected() &&
+            this.isReconnectLooping()
+        ) {
             return;
         }
 
@@ -317,10 +412,7 @@ class VoiceRuntimeService {
             this.hasReceivedFinalTranscript = false;
             this.sessionStartTime = Date.now();
 
-            if (!DeepgramClient.getIsConnected()) {
-                DeepgramClient.connect();
-            }
-            await AudioCapture.start();
+            await this.startActiveStt();
 
             this.startNoSpeechTimer();
             this.startNoResultTimer();
@@ -351,11 +443,7 @@ class VoiceRuntimeService {
         this.isListeningActive = false;
         this.clearAllTimers();
         this.clearWatchdog();
-        AudioCapture.stop();
-        // Keep websocket alive during TTS pause to avoid close/reconnect churn.
-        if (reason === "user") {
-            DeepgramClient.close();
-        }
+        this.stopActiveStt(reason);
 
         this.setMode("idle");
         this.emit({ type: "VOICE_SESSION_ENDED" });
@@ -412,8 +500,13 @@ class VoiceRuntimeService {
         if (this.isListeningActive) {
             this.isListeningActive = false;
             this.clearAllTimers();
-            AudioCapture.stop();
+            this.stopActiveStt("user");
+        } else {
+            if (AudioCapture.getIsCapturing()) {
+                AudioCapture.stop();
+            }
             DeepgramClient.close();
+            WebSpeechClient.close();
         }
 
         this.clearWatchdog();
@@ -432,6 +525,11 @@ class VoiceRuntimeService {
             return { valid: false, reason: "filler_only" };
         }
         return { valid: true };
+    }
+
+    private isCommandLikeTranscript(text: string): boolean {
+        const t = text.toLowerCase();
+        return /\b(book|booking|room|check ?in|pay|payment|confirm|cancel|back|go back|help|yes|no|continue|proceed|modify|change|amenit|price)\b/.test(t);
     }
 
     // === Timeouts ===

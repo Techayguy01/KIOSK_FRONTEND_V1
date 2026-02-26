@@ -1,30 +1,26 @@
-/**
- * Voice Relay Client (Phase 8.3)
- * 
- * Connects to Backend Voice Relay instead of directly to Deepgram.
- * Deepgram API key is now 100% server-side.
- * 
- * Architecture:
- *   Browser AudioWorklet → Backend Relay (ws://localhost:3001) → Deepgram Nova-2
- *   Deepgram Transcripts → Backend Relay → This Client → VoiceRuntime
- * 
- * SECURITY: No Deepgram credentials in browser bundle.
+﻿/**
+ * Voice Relay Client
+ *
+ * Browser AudioWorklet -> Backend Relay -> Deepgram
+ * Deepgram transcripts -> Backend Relay -> Browser
  */
 
 type InterimCallback = (transcript: string, isFinal: boolean) => void;
 type EndOfTurnCallback = (accumulatedTranscript: string, confidence?: number) => void;
-type SpeechStartedCallback = () => void;  // Phase 9.4: Barge-in trigger
-type ErrorCallback = (error: Error) => void;  // Phase 10: Network failure
+type SpeechStartedCallback = () => void;
+type ErrorCallback = (error: Error) => void;
 
 import { AudioCapture } from "./audioCapture";
 
-// Backend relay URL (configurable via env for production)
-const RELAY_URL = import.meta.env.VITE_VOICE_RELAY_URL || 'ws://localhost:3001';
-const INTERIM_COMMIT_MS = Number(import.meta.env.VITE_INTERIM_COMMIT_MS || 3500);
-const MIN_INTERIM_COMMIT_CONFIDENCE = Number(import.meta.env.VITE_INTERIM_COMMIT_CONFIDENCE || 0.65);
-const MIN_INTERIM_COMMIT_CHARS = Number(import.meta.env.VITE_INTERIM_COMMIT_CHARS || 8);
+const RELAY_URL = import.meta.env.VITE_VOICE_RELAY_URL || "ws://localhost:3001";
+const STT_LANGUAGE = (import.meta.env.VITE_STT_LANGUAGE || "").trim();
+const ENABLE_INTERIM_COMMIT = import.meta.env.VITE_ENABLE_INTERIM_COMMIT === "true";
+const INTERIM_COMMIT_MS = Number(import.meta.env.VITE_INTERIM_COMMIT_MS || 5000);
+const MIN_INTERIM_COMMIT_CONFIDENCE = Number(import.meta.env.VITE_INTERIM_COMMIT_CONFIDENCE || 0.8);
+const MIN_INTERIM_COMMIT_CHARS = Number(import.meta.env.VITE_INTERIM_COMMIT_CHARS || 12);
+const FINAL_COMMIT_GRACE_MS = Number(import.meta.env.VITE_FINAL_COMMIT_GRACE_MS || 250);
+const MAX_PENDING_AUDIO_CHUNKS = Number(import.meta.env.VITE_MAX_PENDING_AUDIO_CHUNKS || 64);
 
-// Phase 10: Network failure codes
 const RECOVERABLE_CLOSE_CODES = [1006, 1011, 1012, 1013];
 const RETRY_DELAY_MS = 1000;
 
@@ -32,22 +28,23 @@ class VoiceRelayClient {
     private socket: WebSocket | null = null;
     private interimCallback: InterimCallback | null = null;
     private endOfTurnCallback: EndOfTurnCallback | null = null;
-    private speechStartedCallback: SpeechStartedCallback | null = null;  // Phase 9.4
-    private errorCallback: ErrorCallback | null = null;  // Phase 10
-    private isConnected: boolean = false;
+    private speechStartedCallback: SpeechStartedCallback | null = null;
+    private errorCallback: ErrorCallback | null = null;
+    private isConnected = false;
 
-    // Phase 9.9: Aggressive Finalization state
     private interimTimer: ReturnType<typeof setTimeout> | null = null;
-    private accumulatedTranscript: string = "";
-    private lastInterimTranscript: string = "";
-    private lastConfidence: number = 0;
+    private finalCommitTimer: ReturnType<typeof setTimeout> | null = null;
+    private accumulatedTranscript = "";
+    private finalTranscriptParts: string[] = [];
+    private lastInterimTranscript = "";
+    private lastConfidence = 0;
+    private pendingAudioChunks: ArrayBuffer[] = [];
 
-    // Phase 10: Retry state
-    private hasRetriedOnce: boolean = false;
-    private lastSampleRate: number = 48000;
+    private hasRetriedOnce = false;
+    private lastSampleRate = 48000;
 
     constructor() {
-        console.log("[VoiceRelay] Client initialized (Phase 10 - Production Hardening)");
+        console.log("[VoiceRelay] Client initialized");
     }
 
     public onInterim(callback: InterimCallback) {
@@ -58,52 +55,47 @@ class VoiceRelayClient {
         this.endOfTurnCallback = callback;
     }
 
-    // Phase 9.4: Barge-in trigger
     public onSpeechStarted(callback: SpeechStartedCallback) {
         this.speechStartedCallback = callback;
     }
 
-    // Phase 10: Error callback for network failures
     public onError(callback: ErrorCallback) {
         this.errorCallback = callback;
     }
 
-    public connect(): void {
+    public connect(sampleRateOverride?: number): void {
         if (this.isConnected) {
             console.warn("[VoiceRelay] Already connected.");
             return;
         }
 
-        // Get native sample rate from AudioCapture
-        const sampleRate = AudioCapture.getSampleRate();
-
-        // Build URL with sample_rate query param (forwarded to backend → Deepgram)
-        const relayUrl = `${RELAY_URL}?sample_rate=${sampleRate}`;
+        const sampleRate = sampleRateOverride || AudioCapture.getSampleRate();
+        const relayUrl = `${RELAY_URL}?sample_rate=${sampleRate}${STT_LANGUAGE ? `&language=${encodeURIComponent(STT_LANGUAGE)}` : ""}`;
         this.lastSampleRate = sampleRate;
 
         console.log(`[VoiceRelay] Connecting to backend relay at ${relayUrl}...`);
 
-        // Connect to backend relay (not directly to Deepgram)
         this.socket = new WebSocket(relayUrl);
         this.accumulatedTranscript = "";
+        this.finalTranscriptParts = [];
+        this.lastInterimTranscript = "";
+        this.lastConfidence = 0;
 
         this.socket.onopen = () => {
-            console.log(`[VoiceRelay] Connected to backend relay (sample_rate=${sampleRate})`);
+            console.log(`[VoiceRelay] Connected (sample_rate=${sampleRate})`);
             this.isConnected = true;
-            this.hasRetriedOnce = false;  // Reset retry flag on successful connect
+            this.hasRetriedOnce = false;
+            this.flushPendingAudio();
         };
 
         this.socket.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
-
-                // Check for relay errors
                 if (data.error) {
                     console.error("[VoiceRelay] Backend error:", data.error);
                     this.errorCallback?.(new Error(data.error));
                     return;
                 }
-
                 this.handleNovaMessage(data);
             } catch (error) {
                 console.error("[VoiceRelay] Failed to parse message:", error);
@@ -119,102 +111,106 @@ class VoiceRelayClient {
             console.log(`[VoiceRelay] WebSocket closed: ${event.code} ${event.reason}`);
             this.isConnected = false;
 
-            // Phase 10: Auto-retry on recoverable disconnect
-            if (RECOVERABLE_CLOSE_CODES.includes(event.code) && !this.hasRetriedOnce) {
+            const isRecoverable = RECOVERABLE_CLOSE_CODES.includes(event.code);
+            const isClientStop = event.code === 1000 && event.reason === "client_stop";
+
+            if (isRecoverable && !this.hasRetriedOnce) {
                 console.log("[VoiceRelay] Recoverable disconnect, retrying once...");
                 this.hasRetriedOnce = true;
                 setTimeout(() => {
-                    this.connect();
+                    this.connect(this.lastSampleRate);
                 }, RETRY_DELAY_MS);
+                return;
+            }
+
+            if (!isClientStop) {
+                this.errorCallback?.(
+                    new Error(`Voice relay disconnected (code=${event.code}, reason=${event.reason || "none"})`)
+                );
             }
         };
     }
 
-    /**
-     * Handle Nova-2 message format (passed through from backend).
-     * Nova-2 uses: type="Results", channel.alternatives[0].transcript, speech_final
-     */
     private handleNovaMessage(data: any) {
-        // === DIAGNOSTIC: Raw Truth Probe ===
-        if (data.type === "Results" || data.channel) {
-            console.log("[RawProbe] RAW DEEPGRAM JSON:", JSON.stringify(data));
-        }
-        // === END DIAGNOSTIC ===
-
         const msgType = data.type;
 
         switch (msgType) {
-            case "Results":
-                const channel = data.channel;
-                const alternative = channel?.alternatives?.[0];
+            case "Results": {
+                const alternative = data.channel?.alternatives?.[0];
                 const transcript = alternative?.transcript || "";
                 const confidence = alternative?.confidence ?? 0;
                 const isFinal = data.is_final === true;
+                const isSpeechFinal = data.speech_final === true;
 
-                // Note: We ignore speech_final. If text is final, we go.
+                if (!transcript) {
+                    return;
+                }
 
-                if (transcript) {
-                    // 1. Emit Interim Results (Visuals)
-                    if (this.interimCallback) {
-                        this.interimCallback(transcript, isFinal);
+                this.interimCallback?.(transcript, isFinal);
+
+                if (isFinal) {
+                    this.clearInterimTimer();
+                    const cleaned = transcript.trim();
+                    if (cleaned) {
+                        this.finalTranscriptParts.push(cleaned);
+                        this.accumulatedTranscript = cleaned;
                     }
-
-                    // 2. AGGRESSIVE FINALIZATION 🚀
-                    if (isFinal) {
-                        this.clearInterimTimer();
-                        this.accumulatedTranscript = transcript.trim();
-                        this.lastConfidence = confidence;
-
-                        // FIRE IMMEDIATELY. Do not wait.
+                    this.lastConfidence = Math.max(this.lastConfidence, confidence);
+                    this.scheduleFinalCommit();
+                    if (isSpeechFinal) {
                         this.triggerEndOfTurn();
                     }
-                    // 3. Handle Partial Text (Interim Commit Fallback)
-                    else {
-                        this.lastInterimTranscript = transcript.trim();
-                        this.lastConfidence = confidence;
+                } else {
+                    this.lastInterimTranscript = transcript.trim();
+                    this.lastConfidence = confidence;
+                    if (ENABLE_INTERIM_COMMIT) {
                         this.startInterimTimer();
                     }
                 }
                 break;
+            }
 
             case "SpeechStarted":
                 this.clearInterimTimer();
+                this.clearFinalCommitTimer();
                 this.accumulatedTranscript = "";
+                this.finalTranscriptParts = [];
                 this.lastInterimTranscript = "";
-                if (this.speechStartedCallback) this.speechStartedCallback();
+                this.speechStartedCallback?.();
                 break;
 
             case "UtteranceEnd":
-                // Backup only. Usually isFinal handles it first.
                 this.triggerEndOfTurn();
                 break;
 
             case "Metadata":
-                // Ignore metadata messages
                 break;
 
             default:
-                // console.log("[VoiceRelay] Unknown message type:", msgType);
                 break;
         }
     }
 
+    private scheduleFinalCommit(): void {
+        this.clearFinalCommitTimer();
+        this.finalCommitTimer = setTimeout(() => {
+            this.triggerEndOfTurn();
+        }, FINAL_COMMIT_GRACE_MS);
+    }
+
     private triggerEndOfTurn() {
         this.clearInterimTimer();
+        this.clearFinalCommitTimer();
 
-        // Prefer finalized text, fall back to interim
-        const finalValidText = this.accumulatedTranscript || this.lastInterimTranscript;
+        const joinedFinal = this.finalTranscriptParts.join(" ").trim();
+        const finalValidText = joinedFinal || this.accumulatedTranscript || this.lastInterimTranscript;
 
-        // CRITICAL: Check if we actually have text to send
         if (finalValidText && finalValidText.trim().length > 0) {
-            console.log(`[VoiceRelay] EndOfTurn Triggered: "${finalValidText}"`);
+            console.log(`[VoiceRelay] EndOfTurn: "${finalValidText}"`);
+            this.endOfTurnCallback?.(finalValidText.trim(), this.lastConfidence);
 
-            if (this.endOfTurnCallback) {
-                this.endOfTurnCallback(finalValidText.trim(), this.lastConfidence);
-            }
-
-            // RESET IMMEDIATELY to prevent double-sends
             this.accumulatedTranscript = "";
+            this.finalTranscriptParts = [];
             this.lastInterimTranscript = "";
             this.lastConfidence = 0;
         }
@@ -222,18 +218,15 @@ class VoiceRelayClient {
 
     private startInterimTimer() {
         this.clearInterimTimer();
-        // If we get stuck on a partial for 2.0s, force it through.
         this.interimTimer = setTimeout(() => {
             const candidate = this.lastInterimTranscript.trim();
             if (
                 candidate.length < MIN_INTERIM_COMMIT_CHARS ||
                 this.lastConfidence < MIN_INTERIM_COMMIT_CONFIDENCE
             ) {
-                console.warn(`[VoiceRelay] Interim Commit skipped: low quality "${candidate}" (confidence=${this.lastConfidence})`);
                 return;
             }
 
-            console.warn(`[VoiceRelay] Interim Commit: Forcing finalize on "${candidate}"`);
             this.accumulatedTranscript = candidate;
             this.triggerEndOfTurn();
         }, INTERIM_COMMIT_MS);
@@ -246,38 +239,63 @@ class VoiceRelayClient {
         }
     }
 
-    /**
-     * Send audio chunk to backend relay.
-     * Backend forwards to Deepgram.
-     */
+    private clearFinalCommitTimer() {
+        if (this.finalCommitTimer) {
+            clearTimeout(this.finalCommitTimer);
+            this.finalCommitTimer = null;
+        }
+    }
+
     public send(audioChunk: Int16Array): void {
-        if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+        if (!this.socket) {
             return;
         }
 
-        // === DIAGNOSTIC: Data Type Probe ===
-        if (Math.random() < 0.01) {
-            const sample = audioChunk[0];
-            const isFloat = Math.abs(sample) < 1.0 && sample !== 0;
-            console.log(`[SocketProbe] Sample: ${sample} | Type: ${isFloat ? "FLOAT (BAD ❌)" : "INT (GOOD ✅)"}`);
+        if (this.socket.readyState !== WebSocket.OPEN) {
+            if (this.socket.readyState === WebSocket.CONNECTING) {
+                if (this.pendingAudioChunks.length >= MAX_PENDING_AUDIO_CHUNKS) {
+                    this.pendingAudioChunks.shift();
+                }
+                this.pendingAudioChunks.push(audioChunk.slice().buffer);
+            }
+            return;
         }
-        // === END DIAGNOSTIC ===
 
-        // Send raw Int16 PCM buffer to backend relay
         this.socket.send(audioChunk.buffer);
     }
 
+    private flushPendingAudio(): void {
+        if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+            return;
+        }
+        if (this.pendingAudioChunks.length === 0) {
+            return;
+        }
+
+        console.log(`[VoiceRelay] Flushing ${this.pendingAudioChunks.length} buffered chunks`);
+        for (const chunk of this.pendingAudioChunks) {
+            this.socket.send(chunk);
+        }
+        this.pendingAudioChunks = [];
+    }
+
     public close(): string {
-        const transcript = this.accumulatedTranscript;
+        const transcript = this.finalTranscriptParts.join(" ").trim() || this.accumulatedTranscript;
+
+        this.clearInterimTimer();
+        this.clearFinalCommitTimer();
 
         if (this.socket) {
-            // Use explicit normal close code to avoid ambiguous 1005 closes.
             this.socket.close(1000, "client_stop");
             this.socket = null;
         }
 
         this.isConnected = false;
         this.accumulatedTranscript = "";
+        this.finalTranscriptParts = [];
+        this.lastInterimTranscript = "";
+        this.lastConfidence = 0;
+        this.pendingAudioChunks = [];
 
         return transcript;
     }
@@ -287,5 +305,4 @@ class VoiceRelayClient {
     }
 }
 
-// Export as DeepgramClient for backwards compatibility with VoiceRuntime
 export const DeepgramClient = new VoiceRelayClient();

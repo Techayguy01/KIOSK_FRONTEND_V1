@@ -14,11 +14,21 @@ import WebSocket from 'ws';
 
 const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY || '';
 const DEEPGRAM_MODEL = process.env.DEEPGRAM_MODEL || "nova-2";
-const DEEPGRAM_LANGUAGE = process.env.DEEPGRAM_LANGUAGE || "en-IN";
-const DEEPGRAM_ENDPOINTING_MS = process.env.DEEPGRAM_ENDPOINTING_MS || "1500";
+// Indian-local default; override via DEEPGRAM_LANGUAGE in backend/.env if needed.
+const DEEPGRAM_LANGUAGE = process.env.DEEPGRAM_LANGUAGE || "hi";
+const parseLatencyMs = (value: string | undefined, fallback: number): number => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    const rounded = Math.round(parsed);
+    if (rounded < 200 || rounded > 3000) return fallback;
+    return rounded;
+};
+const DEEPGRAM_ENDPOINTING_MS = parseLatencyMs(process.env.DEEPGRAM_ENDPOINTING_MS, 500);
+const DEEPGRAM_UTTERANCE_END_MS = parseLatencyMs(process.env.DEEPGRAM_UTTERANCE_END_MS, 700);
 
 export interface DeepgramRelayOptions {
     sampleRate: number;  // Forwarded from frontend
+    language?: string;
     onTranscript: (data: any) => void;
     onError: (error: Error) => void;
     onClose: () => void;
@@ -40,20 +50,22 @@ export class DeepgramRelay {
         }
 
         const sampleRate = this.options.sampleRate;
+        const language = this.options.language || DEEPGRAM_LANGUAGE;
 
         // Nova-2 configuration with forwarded sample_rate
         const url =
             `wss://api.deepgram.com/v1/listen` +
             `?model=${encodeURIComponent(DEEPGRAM_MODEL)}` +
-            `&language=${encodeURIComponent(DEEPGRAM_LANGUAGE)}` +
+            `&language=${encodeURIComponent(language)}` +
             `&encoding=linear16` +
             `&sample_rate=${sampleRate}` +
             `&interim_results=true` +
             `&smart_format=true` +
-            `&endpointing=${encodeURIComponent(DEEPGRAM_ENDPOINTING_MS)}` +
+            `&endpointing=${encodeURIComponent(String(DEEPGRAM_ENDPOINTING_MS))}` +
+            `&utterance_end_ms=${encodeURIComponent(String(DEEPGRAM_UTTERANCE_END_MS))}` +
             `&vad_events=true`;
 
-        console.log(`[DeepgramRelay] Connecting to ${DEEPGRAM_MODEL} (${DEEPGRAM_LANGUAGE}) at ${sampleRate}Hz...`);
+        console.log(`[DeepgramRelay] Connecting to ${DEEPGRAM_MODEL} (${language}) at ${sampleRate}Hz...`);
 
         this.ws = new WebSocket(url, {
             headers: {

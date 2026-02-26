@@ -20,6 +20,15 @@
 
 import { TtsEvent, TtsState } from "./tts.types";
 
+const TTS_LANG_PRIORITY = (
+    import.meta.env.VITE_TTS_LANG_PRIORITY || "hi-IN,hi,en-IN,en-US,en"
+)
+    .split(",")
+    .map((lang: string) => lang.trim().toLowerCase())
+    .filter(Boolean);
+
+const VOICE_QUALITY_HINTS = ["google", "microsoft", "samantha", "hindi", "india"];
+
 type TTSQueueItem = {
     text: string;
     resolve: () => void;
@@ -40,7 +49,7 @@ class TTSControllerService {
     }
 
     /**
-     * Select a stable English voice.
+     * Select a stable Indian-local voice first, then fallback.
      */
     private initVoice(): void {
         const synth = window.speechSynthesis;
@@ -48,14 +57,31 @@ class TTSControllerService {
         const loadVoices = () => {
             const voices = synth.getVoices();
 
-            // Prefer high-quality voices
-            this.selectedVoice = voices.find(v =>
-                v.lang.startsWith('en') &&
-                (v.name.includes('Google') || v.name.includes('Microsoft') || v.name.includes('Samantha'))
-            ) || voices.find(v => v.lang.startsWith('en')) || voices[0];
+            if (voices.length === 0) {
+                return;
+            }
+
+            const byQuality = voices.filter((voice) => {
+                const lowerName = voice.name.toLowerCase();
+                return VOICE_QUALITY_HINTS.some((hint) => lowerName.includes(hint));
+            });
+            const candidatePool = byQuality.length > 0 ? byQuality : voices;
+
+            const exactLangMatch = TTS_LANG_PRIORITY
+                .map((lang) => candidatePool.find((voice) => voice.lang.toLowerCase() === lang))
+                .find(Boolean);
+
+            const prefixLangMatch = TTS_LANG_PRIORITY
+                .map((lang) => {
+                    const prefix = lang.split("-")[0];
+                    return candidatePool.find((voice) => voice.lang.toLowerCase().startsWith(prefix));
+                })
+                .find(Boolean);
+
+            this.selectedVoice = exactLangMatch || prefixLangMatch || candidatePool[0] || voices[0];
 
             if (this.selectedVoice) {
-                console.log(`[TTSController] Voice: ${this.selectedVoice.name}`);
+                console.log(`[TTSController] Voice: ${this.selectedVoice.name} (${this.selectedVoice.lang})`);
             }
         };
 
@@ -78,6 +104,9 @@ class TTSControllerService {
 
         return new Promise((resolve, reject) => {
             const synth = window.speechSynthesis;
+            if (synth.paused) {
+                synth.resume();
+            }
 
             const utterance = new SpeechSynthesisUtterance(text.trim());
 
@@ -85,7 +114,7 @@ class TTSControllerService {
                 utterance.voice = this.selectedVoice;
             }
 
-            utterance.lang = this.selectedVoice?.lang || "en-US";
+            utterance.lang = this.selectedVoice?.lang || TTS_LANG_PRIORITY[0] || "hi-IN";
             utterance.rate = 0.95;
             utterance.pitch = 1.0;
             utterance.volume = 1.0;

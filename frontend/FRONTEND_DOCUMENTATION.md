@@ -33,6 +33,8 @@ KIOSK_FRONTEND_V1/frontend/
 │   ├── WelcomePage.tsx           # Welcome screen (voice + manual modes)
 │   ├── ScanIdPage.tsx            # ID scanning screen
 │   ├── RoomSelectPage.tsx        # Room selection screen
+│   ├── BookingCollectPage.tsx    # [NEW] Conversational booking form
+│   ├── BookingSummaryPage.tsx    # [NEW] Booking confirmation for review
 │   ├── PaymentPage.tsx           # Payment processing screen
 │   └── CompletePage.tsx          # Completion/success screen
 │
@@ -70,7 +72,9 @@ KIOSK_FRONTEND_V1/frontend/
 │   ├── voice.service.ts          # Voice service
 │   ├── session.service.ts        # Session management service
 │   ├── room.service.ts           # Room data service
-│   └── payment.service.ts        # Payment processing service
+│   ├── payment.service.ts        # Payment processing service
+│   ├── brain.service.ts          # [NEW] Voice transcript to Agent intent bridge
+│   └── tenantContext.ts          # [NEW] Tenant slug & headers management
 │
 ├── mocks/                        # Mock data (SAFE TO MODIFY for testing)
 │   ├── rooms.mock.json           # Room data JSON
@@ -82,7 +86,8 @@ KIOSK_FRONTEND_V1/frontend/
 │
 ├── hooks/                        # React hooks (SAFE TO MODIFY)
 │   ├── useAnimation.ts           # Animation utilities
-│   └── useIdleTimeout.ts         # Idle timeout detection
+│   ├── useIdleTimeout.ts         # Idle timeout detection
+│   └── useBrain.ts               # [NEW] Hook for conversational booking states
 │
 ├── lib/                          # Utility libraries (SAFE TO MODIFY)
 │   └── utils.ts                  # Utility functions (cn helper)
@@ -90,7 +95,7 @@ KIOSK_FRONTEND_V1/frontend/
 └── src/
     └── vite-env.d.ts             # Vite environment types
 
-Total: 61 files across 13 directories
+Total: 66 files across 13 directories
 ```
 
 ---
@@ -284,7 +289,9 @@ if (!rootElement) {
 const root = ReactDOM.createRoot(rootElement);
 root.render(
   <React.StrictMode>
-    <App />
+    <BrowserRouter>
+      <App />
+    </BrowserRouter>
   </React.StrictMode>
 );
 ```
@@ -297,6 +304,7 @@ root.render(
 
 ```typescript
 import React, { useState, useEffect } from 'react';
+import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { UIContext } from '../state/uiContext';
 // Agent Authority
 import { AgentAdapter } from '../agent/adapter';
@@ -307,6 +315,8 @@ import { IdlePage } from '../pages/IdlePage';
 import { WelcomePage } from '../pages/WelcomePage';
 import { ScanIdPage } from '../pages/ScanIdPage';
 import { RoomSelectPage } from '../pages/RoomSelectPage';
+import { BookingCollectPage } from '../pages/BookingCollectPage';
+import { BookingSummaryPage } from '../pages/BookingSummaryPage';
 import { PaymentPage } from '../pages/PaymentPage';
 import { CompletePage } from '../pages/CompletePage';
 
@@ -315,8 +325,22 @@ import { ErrorBanner } from '../components/ErrorBanner';
 import { BackButton } from '../components/BackButton';
 import { CaptionsOverlay } from '../components/CaptionsOverlay';
 import { DevToolbar } from '../components/DevToolbar';
+import { setTenantContext, TenantPayload } from '../services/tenantContext';
 
-const App: React.FC = () => {
+const DEFAULT_TENANT_SLUG = 'grand-hotel';
+
+const STATE_TO_ROUTE: Record<UiState, string> = {
+  IDLE: 'idle', WELCOME: 'welcome', AI_CHAT: 'ai-chat', MANUAL_MENU: 'manual-menu',
+  SCAN_ID: 'scan-id', ROOM_SELECT: 'room-select', BOOKING_COLLECT: 'booking-collect',
+  BOOKING_SUMMARY: 'booking-summary', PAYMENT: 'payment', KEY_DISPENSING: 'key-dispensing',
+  COMPLETE: 'complete', ERROR: 'error',
+};
+
+const TenantKioskApp: React.FC = () => {
+  const { tenantSlug } = useParams<{ tenantSlug: string }>();
+  const location = useLocation();
+  const navigate = useNavigate();
+
   // Local UI State (Renderer only)
   const [state, setState] = useState<UiState>('IDLE');
   const [data, setData] = useState<any>({});
@@ -326,9 +350,10 @@ const App: React.FC = () => {
   // 1. CONNECT TO AGENT BRAIN
   useEffect(() => {
     // Subscribe to the Agent Adapter
-    const unsubscribe = AgentAdapter.subscribe((newState) => {
+    const unsubscribe = AgentAdapter.subscribe((newState, newData) => {
       console.log(`[APP RENDERER] Received State Update from Agent: ${newState}`);
       setState(newState);
+      setData(newData || {});
       // In a real app, 'data' would come from a View Model or State/Store mapped to the UiState.
       // For now, we keep data empty or static as we focus on Navigation Authority.
       setLoading(false);
@@ -357,7 +382,7 @@ const App: React.FC = () => {
 
     try {
       // Send to Authority
-      AgentAdapter.dispatch(type as any, payload);
+      AgentAdapter.handleIntent(type as any, payload);
     } catch (e) {
       console.error("Agent Error", e);
       setError("System Error");
@@ -366,6 +391,7 @@ const App: React.FC = () => {
 
   // 3. DUMB ROUTER (State -> Component)
   // CRITICAL: This is a pure switch on Agent State. No logic allowed.
+  // ... (useEffect for URL sync and Tenant resolution)
   const renderPage = () => {
     switch (state) {
       case 'IDLE': return <IdlePage />;
@@ -377,6 +403,8 @@ const App: React.FC = () => {
 
       case 'SCAN_ID': return <ScanIdPage />;
       case 'ROOM_SELECT': return <RoomSelectPage />;
+      case 'BOOKING_COLLECT': return <BookingCollectPage />;
+      case 'BOOKING_SUMMARY': return <BookingSummaryPage />;
       case 'PAYMENT': return <PaymentPage />;
 
       case 'KEY_DISPENSING': return (
@@ -432,6 +460,15 @@ const App: React.FC = () => {
   );
 };
 
+const App: React.FC = () => {
+  return (
+    <Routes>
+      <Route path="/:tenantSlug/*" element={<TenantKioskApp />} />
+      <Route path="*" element={<Navigate to={`/${DEFAULT_TENANT_SLUG}/welcome`} replace />} />
+    </Routes>
+  );
+};
+
 export default App;
 ```
 
@@ -483,114 +520,35 @@ export const useUIState = () => useContext(UIContext);
 
 ### c) Location: `KIOSK_FRONTEND_V1/frontend/state/uiState.machine.ts`
 
-> **Note**: This file is DEPRECATED. The Agent (`agent/index.ts`) is now the single source of truth for state transitions.
+> **Note**: This file is **DEPRECATED**. The Agent (`agent/index.ts`) is now the single source of truth for state transitions and intent logic.
 
 ```typescript
-import { UIState } from '@contracts/backend.contract';
+// Refer to agent/index.ts for the current state transition table.
+```
 
-type TransitionMap = Record<string, UIState>;
-type StateConfig = Record<UIState, { on: TransitionMap; canGoBack: boolean }>;
+---
 
-// DEFINITION OF TRUTH
-const MACHINE_CONFIG: StateConfig = {
-  IDLE: {
-    on: { PROXIMITY_DETECTED: 'WELCOME', TOUCH_SELECTED: 'WELCOME' },
-    canGoBack: false
-  },
-  WELCOME: {
-    on: {
-      CHECK_IN_SELECTED: 'SCAN_ID',
-      BOOK_ROOM_SELECTED: 'ROOM_SELECT',
-      HELP_SELECTED: 'WELCOME', // Stay on page, show notification
-      TOUCH_SELECTED: 'MANUAL_MENU',
-      EXPLAIN_CAPABILITIES: 'WELCOME',
-      GENERAL_QUERY: 'WELCOME'
-    },
-    canGoBack: true
-  },
-  AI_CHAT: {
-    on: {
-      CHECK_IN_SELECTED: 'SCAN_ID',
-      BOOK_ROOM_SELECTED: 'ROOM_SELECT',
-      HELP_SELECTED: 'IDLE' // or HELP state if exists
-    },
-    canGoBack: true
-  },
-  MANUAL_MENU: {
-    on: {
-      CHECK_IN_SELECTED: 'SCAN_ID',
-      BOOK_ROOM_SELECTED: 'ROOM_SELECT',
-      HELP_SELECTED: 'IDLE'
-    },
-    canGoBack: true
-  },
-  SCAN_ID: {
-    on: { SCAN_COMPLETED: 'ROOM_SELECT' },
-    canGoBack: true
-  },
-  ROOM_SELECT: {
-    on: { ROOM_SELECTED: 'PAYMENT' },
-    canGoBack: true
-  },
-  PAYMENT: {
-    on: { CONFIRM_PAYMENT: 'KEY_DISPENSING' },
-    canGoBack: true
-  },
-  KEY_DISPENSING: {
-    on: { DISPENSE_COMPLETE: 'COMPLETE' },
-    canGoBack: false // Hardware lock
-  },
-  COMPLETE: {
-    on: { RESET: 'IDLE', PROXIMITY_DETECTED: 'WELCOME' },
-    canGoBack: false
-  },
-  ERROR: {
-    on: { RESET: 'IDLE', BACK_REQUESTED: 'WELCOME' },
-    canGoBack: true
-  }
-};
+## 5. Voice & AI Integration
 
-export const StateMachine = {
-  /**
-   * pure function to determine next state
-   */
-  transition: (currentState: UIState, event: string): UIState => {
-    const rules = MACHINE_CONFIG[currentState];
-    if (!rules || !rules.on[event]) {
-      // console.warn(`[StateMachine] No transition for ${currentState} -> ${event}`);
-      return currentState; // Stay put if invalid
-    }
-    return rules.on[event];
-  },
+### a) Location: `KIOSK_FRONTEND_V1/frontend/hooks/useBrain.ts`
 
-  /**
-   * pure function to determine metadata
-   */
-  getMetadata: (state: UIState) => {
-    const config = MACHINE_CONFIG[state];
-    return {
-      canGoBack: config ? config.canGoBack : false
-    };
-  },
+This hook provides components with reactive access to the "Brain" (LLM) state, including conversation history, accumulated booking slots, and processing status.
 
-  /**
-   * helper to find "previous" logical state for Back button
-   * (Simple stack logic for linear flows)
-   */
-  getPreviousState: (current: UIState): UIState => {
-    // Phase 11.7: Simple Linear Flow for Demo
-    const flow: UIState[] = ['IDLE', 'WELCOME', 'SCAN_ID', 'ROOM_SELECT', 'PAYMENT'];
-    const idx = flow.indexOf(current);
-    if (idx > 0) return flow[idx - 1];
+```typescript
+export function useBrain() {
+    return { conversationHistory, bookingSlots, isProcessing, sendTranscript, resetBrainSession };
+}
+```
 
-    // Fallback for non-linear states
-    if (current === 'MANUAL_MENU') return 'WELCOME';
-    if (current === 'AI_CHAT') return 'WELCOME';
-    if (current === 'ERROR') return 'WELCOME';
+### b) Location: `KIOSK_FRONTEND_V1/frontend/services/brain.service.ts`
 
-    return 'IDLE';
-  }
-};
+The bridge between raw voice transcripts and the backend AI. It handles endpoint selection (chat vs. booking) and dispatches intents to the `AgentAdapter` based on confidence scores.
+
+```typescript
+export async function sendToBrain(transcript: string, currentState: string) {
+    // 1. Fetch from backend /chat or /chat/booking
+    // 2. Dispatch high-confidence intents to AgentAdapter
+}
 ```
 
 ---
@@ -628,73 +586,99 @@ export const ApiClient = {
 
 **CRITICAL RULES** (from `rules-for-antigravity.md`):
 
-1. **Frontend Is a Renderer, Not a Brain**
-   - Improve layout, visuals, animations, accessibility, responsiveness
-   - NEVER decide flow, infer intent, auto-navigate, or simulate backend intelligence
+1.  **Frontend Is a Renderer, Not a Brain**
+    -   Improve layout, visuals, animations, accessibility, responsiveness
+    -   NEVER decide flow, infer intent, auto-navigate, or simulate backend intelligence
 
-2. **Never Change Flow Logic**
-   - All screen changes happen ONLY when `ui_state` changes
-   - No timers, no chaining, no assumptions
+2.  **Never Change Flow Logic**
+    -   All screen changes happen ONLY when `ui_state` changes
+    -   No timers, no chaining, no assumptions
 
-3. **`ui_state` Is Read-Only**
-   - Read and render based on it
-   - NEVER mutate, derive, or replace it
+3.  **`ui_state` Is Read-Only**
+    -   Read and render based on it
+    -   NEVER mutate, derive, or replace it
 
-4. **Emit Intents, Never Outcomes**
-   - Frontend emits: `CHECK_IN_SELECTED`, `VOICE_INPUT_STARTED`, `BACK_REQUESTED`
-   - Frontend NEVER emits: `ID_VERIFIED`, `PAYMENT_SUCCESS`, `ROOM_ASSIGNED`
+4.  **Emit Intents, Never Outcomes**
+    -   Frontend emits: `CHECK_IN_SELECTED`, `VOICE_INPUT_STARTED`, `BACK_REQUESTED`
+    -   Frontend NEVER emits: `ID_VERIFIED`, `PAYMENT_SUCCESS`, `ROOM_ASSIGNED`
 
-5. **Pages Must Be Dumb**
-   - Pages don't know what comes next
-   - Pages don't know where they came from
-   - Pages only render UI and forward user actions
+5.  **Pages Must Be Dumb**
+    -   Pages don't know what comes next or where they came from
+    -   Pages only render UI and forward user actions via `emit()`
 
 ### Directory Ownership
 
 **SAFE TO MODIFY** (Frontend-owned):
-- `/pages` - Page components
-- `/components` - UI components
-- `/mocks` - Mock data for testing
-- `/hooks` - React hooks
-- `/lib` - Utilities
+-   `/pages` - Page components (Dumb Renderers)
+-   `/components` - UI components
+-   `/mocks` - Mock data for testing
+-   `/hooks` - UI-related hooks
+-   `/lib` - Pure utilities
 
 **DO NOT MODIFY** (Backend integration):
-- `/agent` - Agent FSM authority
-- `/services` - Service layer
-- `/voice` - Voice runtime (complex integration)
-- `/api` - API contracts
+-   `/agent` - Agent FSM authority (The "Brain")
+-   `/services` - Service layer & AI integration
+-   `/voice` - Voice runtime (complex integration)
+-   `/api` - API contracts
 
 ### Data Flow
 
+```mermaid
+graph TD
+    User([User Action]) --> Intent[Emit Intent]
+    Intent --> Adapter[AgentAdapter]
+    Adapter --> Agent[Agent FSM]
+    Agent --> State[New ui_state]
+    App --> Render[Render Dumb Page]
+
+    Voice([Voice Input]) --> VR[Voice Runtime]
+    VR --> Brain[brain.service]
+    Brain --> LLM[LLM Brain]
+    LLM --> Brain
+    Brain --> Adapter
 ```
-User Action → Page emits Intent → AgentAdapter → Agent FSM → New ui_state → App.tsx renders new Page
-```
-
-### Key Components
-
-1. **App.tsx** - Main application router
-   - Subscribes to AgentAdapter for state updates
-   - Provides `emit()` function to pages
-   - Routes `ui_state` to appropriate page component
-
-2. **AgentAdapter** - Bridge between UI and Agent
-   - Receives intents from UI
-   - Dispatches to Agent FSM
-   - Publishes state updates to subscribers
-
-3. **Pages** - Dumb renderers
-   - Receive `ui_state` via context
-   - Emit intents via `emit()` function
-   - No business logic, no flow control
-
-4. **VoiceRuntime** - Voice interaction system
-   - Manages audio capture and STT
-   - Handles TTS playback
-   - Emits voice-related intents
 
 ---
 
-## 7. File Count Summary
+## 7. Communication Protocols (Intents)
+
+Intents are the only way the frontend can request a state change. Current major intents in `agent/index.ts`:
+
+| Category | Intents |
+|----------|---------|
+| **Navigation** | `BACK_REQUESTED`, `CANCEL_REQUESTED`, `RESET` |
+| **Core Flow** | `PROXIMITY_DETECTED`, `TOUCH_SELECTED`, `VOICE_STARTED` |
+| **Booking** | `BOOK_ROOM_SELECTED`, `ROOM_SELECTED`, `CONFIRM_BOOKING`, `CANCEL_BOOKING`, `MODIFY_BOOKING` |
+| **Data Collection** | `PROVIDE_GUESTS`, `PROVIDE_DATES`, `PROVIDE_NAME` |
+| **Payment** | `CONFIRM_PAYMENT` |
+
+---
+
+### Key Components
+
+1.  **App.tsx** - Main application router
+    -   Subscribes to AgentAdapter for state updates
+    -   Provides `emit()` function to pages
+    -   Routes `ui_state` to appropriate page component
+
+2.  **AgentAdapter** - Bridge between UI and Agent
+    -   Receives intents from UI
+    -   Dispatches to Agent FSM
+    -   Publishes state updates to subscribers
+
+3.  **Pages** - Dumb renderers
+    -   Receive `ui_state` via context
+    -   Emit intents via `emit()` function
+    -   No business logic, no flow control
+
+4.  **VoiceRuntime** - Voice interaction system
+    -   Manages audio capture and STT
+    -   Handles TTS playback
+    -   Emits voice-related intents
+
+---
+
+## 8. File Count Summary
 
 | Directory | Files | Purpose |
 |-----------|-------|---------|
@@ -703,18 +687,18 @@ User Action → Page emits Intent → AgentAdapter → Agent FSM → New ui_stat
 | agent/ | 5 | State machine authority (DO NOT MODIFY) |
 | api/ | 1 | API client placeholder |
 | state/ | 3 | UI state management |
-| pages/ | 6 | Page components (SAFE TO MODIFY) |
+| pages/ | 8 | Page components (SAFE TO MODIFY) |
 | components/ | 15 | Reusable UI components (SAFE TO MODIFY) |
-| voice/ | 9 | Voice/audio runtime (DO NOT MODIFY) |
-| services/ | 5 | Service layer (DO NOT MODIFY) |
+| voice/ | 10 | Voice/audio runtime (DO NOT MODIFY) |
+| services/ | 7 | Service layer (DO NOT MODIFY) |
 | mocks/ | 6 | Mock data (SAFE TO MODIFY) |
-| hooks/ | 2 | React hooks (SAFE TO MODIFY) |
+| hooks/ | 3 | React hooks (SAFE TO MODIFY) |
 | lib/ | 1 | Utilities (SAFE TO MODIFY) |
-| **Total** | **61** | **Complete frontend codebase** |
+| **Total** | **66** | **Complete frontend codebase** |
 
 ---
 
-## 8. Running the Frontend
+## 9. Running the Frontend
 
 ### Development Mode
 ```bash
@@ -737,7 +721,7 @@ npm run preview
 
 ---
 
-## 9. Important Notes
+## 10. Important Notes
 
 ### Merge-Safety Rule
 
@@ -748,10 +732,10 @@ If the answer is NO → reject the change.
 ### Testing Without Backend
 
 Delete backend logic entirely. Expected result:
-- ✅ UI renders
-- ✅ Buttons work
-- ✅ Chat shows
-- ❌ **Flow does NOT complete**
+-   ✅ UI renders
+-   ✅ Buttons work
+-   ✅ Chat shows
+-   ❌ **Flow does NOT complete**
 
 If flow still completes → frontend crossed the line.
 
@@ -767,14 +751,14 @@ If flow still completes → frontend crossed the line.
 
 ---
 
-## 10. Additional Resources
+## 11. Additional Resources
 
 For detailed code of individual files, please refer to:
-- **Pages**: See `/pages` directory for all 6 page components
+- **Pages**: See `/pages` directory for all 8 page components
 - **Components**: See `/components` directory for all 15 UI components
-- **Voice System**: See `/voice` directory for all 9 voice-related files
+- **Voice System**: See `/voice` directory for all 10 voice-related files
 - **Agent System**: See `/agent` directory for FSM implementation
-- **Services**: See `/services` directory for all 5 service files
+- **Services**: See `/services` directory for all 7 service files
 - **Mocks**: See `/mocks` directory for all 6 mock data files
 
 Each file is well-documented with inline comments explaining its purpose and usage.

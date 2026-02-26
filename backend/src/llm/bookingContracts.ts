@@ -9,7 +9,7 @@ import { z } from "zod";
  */
 
 export const BookingSlotsSchema = z.object({
-    roomType: z.enum(["STANDARD", "DELUXE", "PRESIDENTIAL"]).nullable().optional(),
+    roomType: z.string().min(1).nullable().optional(),
     adults: z.number().min(1).max(4).nullable().optional(),
     children: z.number().min(0).max(3).nullable().optional(),
     checkInDate: z.string().nullable().optional(),

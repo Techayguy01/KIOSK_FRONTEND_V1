@@ -1,4 +1,4 @@
-import { Intent } from "@contracts/intents";
+﻿import { Intent } from "@contracts/intents";
 import { UiState, VOICE_COMMAND_MAP, STATE_INPUT_MODES, STATE_SPEECH_MAP } from "./index";
 import { VoiceRuntime } from "../voice/VoiceRuntime";
 import { VoiceEvent } from "../voice/voice.types";
@@ -6,8 +6,7 @@ import { SpeechOutputController } from "../voice/SpeechOutputController";
 import { TTSController } from "../voice/TTSController";
 import { StateMachine } from "../state/uiState.machine";
 import { UIState } from "@contracts/backend.contract";
-import { buildTenantApiUrl, getTenantHeaders } from "../services/tenantContext";
-import { getTenant } from "../services/tenantContext";
+import { buildTenantApiUrl, getTenantHeaders, getTenant, getTenantSlug } from "../services/tenantContext";
 
 /**
  * AgentAdapter (Singleton) - Phase 9.4: TTS UX, Barge-In & Audio Authority
@@ -35,7 +34,7 @@ const VOICE_AUTHORITY_MATRIX: Record<UiState, boolean> = {
     ROOM_SELECT: true,
     BOOKING_COLLECT: true,
     BOOKING_SUMMARY: true,
-    PAYMENT: false,     // Security - no voice during payment
+    PAYMENT: true,
     KEY_DISPENSING: false,
     COMPLETE: false,
     ERROR: false,       // No voice during error states
@@ -65,11 +64,11 @@ class AgentAdapterService {
 
     // Phase 8.6: Rate limiting
     private intentTimestamps: number[] = [];
-    private readonly RATE_LIMIT_COOLDOWN_MS = 2000;  // Max 1 intent per 2s
-    private readonly RATE_LIMIT_BURST_MAX = 3;       // Max 3 intents per 10s
-    private readonly RATE_LIMIT_BURST_WINDOW_MS = 10000;
+    private readonly RATE_LIMIT_COOLDOWN_MS = 600;   // Keep abuse protection, allow natural dialog pace
+    private readonly RATE_LIMIT_BURST_MAX = 6;       // Allow short back-and-forth without blocking
+    private readonly RATE_LIMIT_BURST_WINDOW_MS = 12000;
 
-    // Phase 13: Emotion Engine 🧠
+    // Phase 13: Emotion Engine ðŸ§ 
     private frustrationScore = 0;
     private frustrationThreshold = 2; // Escalate after 2 bad turns
 
@@ -78,6 +77,11 @@ class AgentAdapterService {
     private inactivityTimer: ReturnType<typeof setTimeout> | null = null;
     private readonly INACTIVITY_TIMEOUT_MS = 2 * 60 * 1000;
     private pendingCancelConfirmation = false;
+    private hasAnnouncedRoomOptions = false;
+    private suppressFinalTranscriptUntil = 0;
+    private lastRealtimeIntent: Intent | null = null;
+    private lastRealtimeIntentAt = 0;
+    private readonly REALTIME_INTENT_DEDUP_MS = 1500;
 
     constructor() {
         console.log("[AgentAdapter] Initialized (Phase 9.4 - LLM Confidence Gating)");
@@ -93,7 +97,7 @@ class AgentAdapterService {
         });
     }
 
-    // 1. THE SENTIMENT ENGINE 🧠
+    // 1. THE SENTIMENT ENGINE ðŸ§ 
     // Quick, local analysis to catch anger instantly
     private analyzeSentiment(text: string): Sentiment {
         const lower = text.toLowerCase();
@@ -116,9 +120,9 @@ class AgentAdapterService {
         return 'NEUTRAL';
     }
 
-    // 3. ESCALATION ROUTINE 🚨
+    // 3. ESCALATION ROUTINE ðŸš¨
     private async escalateToHuman(message: string) {
-        console.warn("[Agent] 🚨 AUTO-ESCALATION TRIGGERED");
+        console.warn("[Agent] ðŸš¨ AUTO-ESCALATION TRIGGERED");
 
         // 1. Speak the reassurance (using this.speak for Captions)
         this.speak(message);
@@ -250,6 +254,10 @@ class AgentAdapterService {
                 break;
 
             case "VOICE_TRANSCRIPT_READY":
+                if (Date.now() < this.suppressFinalTranscriptUntil) {
+                    console.debug("[AgentAdapter] Final transcript ignored (realtime command already handled)");
+                    return;
+                }
                 this.hasProcessedTranscript = true;
 
                 // Phase 8.6: Authority check before processing
@@ -264,6 +272,12 @@ class AgentAdapterService {
 
                 // Phase 12: Emit Final Transcript
                 this.emitTranscript(event.transcript, true, 'user');
+
+                // Always try deterministic command handling first on final transcript.
+                // This keeps navigation fast even when interim packets were delayed.
+                if (this.maybeHandleRealtimeCommand(event.transcript, "final")) {
+                    return;
+                }
 
                 // Phase 8.6: Rate limiting check
                 if (this.isRateLimited()) {
@@ -329,7 +343,7 @@ class AgentAdapterService {
 
                 // Silence Recovery
                 if (!this.hasProcessedTranscript) {
-                    console.log("[Agent] 🔇 Silence Detected. Attempting Re-engagement.");
+                    console.log("[Agent] ðŸ”‡ Silence Detected. Attempting Re-engagement.");
                     this.handleSilence();
                 }
                 this.hasProcessedTranscript = false;
@@ -358,6 +372,7 @@ class AgentAdapterService {
                 // Phase 12: Emit Partial Transcript
                 this.resetInactivityTimer();
                 this.emitTranscript(event.transcript, false, 'user');
+                this.maybeHandleRealtimeCommand(event.transcript, "partial");
                 break;
         }
     }
@@ -391,6 +406,265 @@ class AgentAdapterService {
         return stateCommands[transcript] || null;
     }
 
+    /**
+     * Deterministic high-priority routing for critical commands.
+     * Used as a fallback when STT text is noisy or LLM confidence is unstable.
+     */
+    private getFastPathIntent(rawTranscript: string): Intent | null {
+        const transcript = (rawTranscript || "").toLowerCase().trim();
+        if (!transcript) return null;
+
+        // Exact phrase match from state command map first.
+        const exact = this.mapTranscriptToIntent(transcript);
+        if (exact) return exact;
+
+        if (/\b(go back|back|previous page|one page back|previous)\b/.test(transcript)) {
+            return "BACK_REQUESTED";
+        }
+        if (this.state !== "IDLE" && /\b(cancel|cancel booking|stop booking|start over|abort)\b/.test(transcript)) {
+            return "CANCEL_REQUESTED";
+        }
+        if (this.state === "BOOKING_SUMMARY") {
+            if (/\b(confirm|yes|proceed|continue|pay|looks good|done)\b/.test(transcript)) {
+                return "CONFIRM_PAYMENT";
+            }
+            if (/\b(modify|change|edit)\b/.test(transcript)) {
+                return "MODIFY_BOOKING";
+            }
+        }
+        if (this.state === "PAYMENT") {
+            if (/\b(pay|confirm payment|process payment|continue|proceed|card)\b/.test(transcript)) {
+                return "CONFIRM_PAYMENT";
+            }
+        }
+
+        const voiceEntryStates: UiState[] = ["WELCOME", "AI_CHAT", "MANUAL_MENU"];
+        if (voiceEntryStates.includes(this.state)) {
+            const roomBookingSignal =
+                /(book|booking|reserve|reservation)\b/.test(transcript) ||
+                /room\s*book|book\s*room/.test(transcript) ||
+                (/\b(room|kamra)\b/.test(transcript) && /(want|need|looking|find|take|new|chahiye|chaiye)/.test(transcript)) ||
+                /\b(kamra|book karna|booking karna|room chahiye)\b/.test(transcript);
+
+            if (roomBookingSignal) {
+                return "BOOK_ROOM_SELECTED";
+            }
+            if (/(check\s*in|checkin|reservation\s*check|booking\s*check)/.test(transcript)) {
+                return "CHECK_IN_SELECTED";
+            }
+            if (/(help|support|staff|human|manager|madad|sahayata)/.test(transcript)) {
+                return "HELP_SELECTED";
+            }
+        }
+
+        if (this.state === "ROOM_SELECT") {
+            if (this.isRoomInfoQuery(transcript)) {
+                return null;
+            }
+            const inferredRoom = this.inferRoomFromTranscript(transcript) || this.resolveRoomFromHint(transcript);
+            if (inferredRoom) {
+                return "ROOM_SELECTED";
+            }
+        }
+
+        return null;
+    }
+
+    private buildRoomSelectionPrompt(rooms: any[]): string {
+        const names = rooms
+            .map((room: any) => String(room?.name || "").trim())
+            .filter(Boolean)
+            .slice(0, 4);
+        if (names.length === 0) {
+            return "Please tell me which room you would like to book.";
+        }
+        if (names.length === 1) {
+            return `I found ${names[0]}. Would you like to book it?`;
+        }
+        const readable = `${names.slice(0, -1).join(", ")}, or ${names[names.length - 1]}`;
+        return `Available rooms are ${readable}. Which room would you like to book?`;
+    }
+
+    private buildBookingCollectPrompt(): string {
+        const slots = (this.viewData.bookingSlots || {}) as Record<string, any>;
+        const selectedRoomName = this.viewData.selectedRoom?.name;
+
+        if (slots.adults == null) {
+            return selectedRoomName
+                ? `Great choice. ${selectedRoomName} is selected. How many adults will be staying?`
+                : "Great. How many adults will be staying?";
+        }
+
+        if (!slots.checkInDate || !slots.checkOutDate) {
+            return "Please tell me your check in and check out dates.";
+        }
+
+        if (!slots.guestName) {
+            return "What name should I use for this booking?";
+        }
+
+        return "Please review the details. Say confirm booking when you are ready.";
+    }
+
+    private isRoomInfoQuery(rawTranscript: string): boolean {
+        const transcript = (rawTranscript || "").toLowerCase().trim();
+        if (!transcript) return false;
+        const asksAmenities = /(amenit|facility|feature|include|what.*have|what.*get|suvidha)/.test(transcript);
+        const asksPrice = /(price|cost|rate|tariff|how much|per night|kimat)/.test(transcript);
+        const asksCompare = /(compare|difference|each room|every room|all rooms|which room)/.test(transcript);
+        return asksAmenities || asksPrice || asksCompare;
+    }
+
+    private maybeHandleRealtimeCommand(rawTranscript: string, source: "partial" | "final" = "partial"): boolean {
+        const transcript = (rawTranscript || "").trim();
+        if (transcript.length < 2) return false;
+
+        if (this.state === "ROOM_SELECT" && this.isRoomInfoQuery(transcript)) {
+            return false;
+        }
+
+        const fastIntent = this.getFastPathIntent(transcript);
+        if (!fastIntent) return false;
+
+        const inferredRoom = this.state === "ROOM_SELECT"
+            ? this.inferRoomFromTranscript(transcript) || this.resolveRoomFromHint(transcript)
+            : null;
+
+        if (fastIntent === "ROOM_SELECTED" && !inferredRoom) {
+            return false;
+        }
+
+        const now = Date.now();
+        if (
+            this.lastRealtimeIntent === fastIntent &&
+            now - this.lastRealtimeIntentAt < this.REALTIME_INTENT_DEDUP_MS
+        ) {
+            return true;
+        }
+
+        this.lastRealtimeIntent = fastIntent;
+        this.lastRealtimeIntentAt = now;
+        if (source === "partial") {
+            this.suppressFinalTranscriptUntil = now + 1400;
+        }
+
+        if (fastIntent === "CANCEL_REQUESTED" || fastIntent === "CANCEL_BOOKING") {
+            if (!this.pendingCancelConfirmation) {
+                this.pendingCancelConfirmation = true;
+                this.speak("Are you sure you want to cancel? Please say yes or no.");
+            }
+            this.hasProcessedTranscript = true;
+            return true;
+        }
+
+        this.dispatch(fastIntent, { transcript, room: inferredRoom });
+        this.hasProcessedTranscript = true;
+        return true;
+    }
+
+    private resolveRoomFromHint(hint: unknown): any | null {
+        if (!hint) return null;
+        const rooms = Array.isArray(this.viewData.rooms) ? this.viewData.rooms : [];
+        if (rooms.length === 0) return null;
+
+        const normalized = String(hint).toLowerCase().trim();
+        if (!normalized) return null;
+
+        const roomText = (room: any) => `${String(room?.name || "")} ${String(room?.code || "")}`.toLowerCase();
+
+        const byExactCode = rooms.find((room: any) => String(room?.code || "").toLowerCase() === normalized);
+        if (byExactCode) return byExactCode;
+
+        const byCode = rooms.find((room: any) => {
+            const code = String(room?.code || "").toLowerCase();
+            return Boolean(code) && (code.includes(normalized) || normalized.includes(code));
+        });
+        if (byCode) return byCode;
+
+        const byName = rooms.find((room: any) => {
+            const name = String(room?.name || "").toLowerCase();
+            return Boolean(name) && (name.includes(normalized) || normalized.includes(name));
+        });
+        if (byName) return byName;
+
+        const ignoredTokens = new Set([
+            "room", "rooms", "suite", "type", "please", "book", "booking",
+            "want", "need", "for", "the", "and", "with", "a", "an"
+        ]);
+        const tokens = normalized
+            .split(/[^a-z0-9]+/g)
+            .map((token) => token.trim())
+            .filter((token) => token.length >= 3 && !ignoredTokens.has(token));
+
+        if (tokens.length > 0) {
+            let bestRoom: any | null = null;
+            let bestScore = 0;
+            for (const room of rooms) {
+                const text = roomText(room);
+                const score = tokens.reduce((acc, token) => acc + (text.includes(token) ? 1 : 0), 0);
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestRoom = room;
+                }
+            }
+            if (bestRoom && bestScore >= Math.max(1, Math.ceil(tokens.length / 2))) {
+                return bestRoom;
+            }
+        }
+
+        const keywordChecks: Array<{ pattern: RegExp; pick: (text: string) => boolean }> = [
+            { pattern: /(deluxe|ocean)/, pick: (text) => text.includes("deluxe") || text.includes("ocean") },
+            { pattern: /(presidential|premium|luxury)/, pick: (text) => text.includes("presidential") || text.includes("premium") || text.includes("luxury") },
+            { pattern: /(standard|single|queen|classic)/, pick: (text) => text.includes("standard") || text.includes("single") || text.includes("queen") || text.includes("classic") },
+            { pattern: /(bunk|dorm|shared)/, pick: (text) => text.includes("bunk") || text.includes("dorm") || text.includes("shared") },
+            { pattern: /(executive|business)/, pick: (text) => text.includes("executive") || text.includes("business") },
+            { pattern: /(suite)/, pick: (text) => text.includes("suite") },
+        ];
+
+        for (const rule of keywordChecks) {
+            if (rule.pattern.test(normalized)) {
+                const match = rooms.find((room: any) => rule.pick(roomText(room)));
+                if (match) return match;
+            }
+        }
+
+        return null;
+    }
+
+    private maybeHandleRoomInfoQuery(rawTranscript: string): boolean {
+        if (this.state !== "ROOM_SELECT") {
+            return false;
+        }
+
+        const rooms = Array.isArray(this.viewData.rooms) ? this.viewData.rooms : [];
+        if (rooms.length === 0) {
+            return false;
+        }
+
+        const transcript = (rawTranscript || "").toLowerCase().trim();
+        if (!this.isRoomInfoQuery(transcript)) {
+            return false;
+        }
+
+        const specificRoom = this.inferRoomFromTranscript(transcript) || this.resolveRoomFromHint(transcript);
+        const formatRoomLine = (room: any) => {
+            const name = String(room?.name || "Room");
+            const price = room?.price != null ? `${room.currency || "USD"} ${room.price}` : "price on request";
+            const features = Array.isArray(room?.features) ? room.features.slice(0, 4).join(", ") : "standard amenities";
+            return `${name} is ${price} per night with ${features}.`;
+        };
+
+        if (specificRoom) {
+            this.speak(formatRoomLine(specificRoom));
+            return true;
+        }
+
+        const topRooms = rooms.slice(0, 4);
+        const summary = topRooms.map((room: any) => formatRoomLine(room)).join(" ");
+        this.speak(`${summary} Which room would you like to book?`);
+        return true;
+    }
+
     // HELPER: Map LLM "fuzzy" intents to Strict Machine Events
     private mapIntentToEvent(llmIntent: string): string {
         const upper = (llmIntent || '').toUpperCase().trim();
@@ -412,9 +686,12 @@ class AgentAdapterService {
             case 'PAYMENT':
                 return 'CONFIRM_PAYMENT';
             case 'WELCOME':
-                return 'CANCEL_REQUESTED';
+                return 'GENERAL_QUERY';
             case 'IDLE':
                 return 'RESET';
+            case 'BACK':
+            case 'BACK_REQUESTED':
+                return 'BACK_REQUESTED';
             case 'SELECT_ROOM':
                 return this.state === 'ROOM_SELECT' ? 'ROOM_SELECTED' : 'SELECT_ROOM';
             case 'PROVIDE_GUESTS':
@@ -425,6 +702,7 @@ class AgentAdapterService {
             case 'CANCEL_BOOKING':
             case 'ASK_ROOM_DETAIL':
             case 'ASK_PRICE':
+            case 'COMPARE_ROOMS':
                 return upper;
             case 'REPEAT':
             case 'GENERAL_QUERY':
@@ -438,7 +716,7 @@ class AgentAdapterService {
         if (upper.includes('HELP') || upper.includes('SUPPORT')) return 'HELP_SELECTED';
         if (upper.includes('SCAN')) return 'SCAN_COMPLETED';
         if (upper.includes('PAYMENT') || upper.includes('PAY')) return 'CONFIRM_PAYMENT';
-        if (upper.includes('WELCOME') || upper.includes('HOME') || upper.includes('START')) return 'CANCEL_REQUESTED';
+        if (upper.includes('BACK') || upper.includes('PREVIOUS')) return 'BACK_REQUESTED';
         if (upper.includes('CANCEL')) return 'CANCEL_BOOKING';
         if (upper.includes('MODIFY') || upper.includes('CHANGE')) return 'MODIFY_BOOKING';
         if (upper.includes('DATE')) return 'PROVIDE_DATES';
@@ -459,16 +737,34 @@ class AgentAdapterService {
             if (this.pendingCancelConfirmation) {
                 if (this.isAffirmative(transcript)) {
                     this.pendingCancelConfirmation = false;
-                    this.speak("Okay, cancelling the booking and returning to the main screen.");
-                    this.transitionTo("WELCOME", "CANCEL_REQUESTED", { transcript });
+                    this.transitionTo("IDLE", "RESET", { transcript });
                     return;
                 }
                 if (this.isNegative(transcript)) {
                     this.pendingCancelConfirmation = false;
-                    this.speak("Okay, continuing your booking.");
+                    this.speak("Okay, continuing.");
                     return;
                 }
                 this.speak("Please say yes to confirm cancellation, or no to continue.");
+                return;
+            }
+
+            if (this.maybeHandleRoomInfoQuery(transcript)) {
+                return;
+            }
+
+            const fastPathIntent = this.getFastPathIntent(transcript);
+            if (fastPathIntent) {
+                if (fastPathIntent === "CANCEL_REQUESTED" || fastPathIntent === "CANCEL_BOOKING") {
+                    this.pendingCancelConfirmation = true;
+                    this.speak("Are you sure you want to cancel? Please say yes or no.");
+                    return;
+                }
+                const inferredRoom = this.state === "ROOM_SELECT" ? this.inferRoomFromTranscript(transcript) : null;
+                this.dispatch(fastPathIntent, {
+                    transcript,
+                    room: inferredRoom
+                });
                 return;
             }
 
@@ -498,13 +794,32 @@ class AgentAdapterService {
             // 2. Map Fuzzy Intent -> Strict Event
             const rawIntent = decision.intent;
             let strictEvent = this.mapIntentToEvent(rawIntent);
-            const inferredRoom = this.state === "ROOM_SELECT" ? this.inferRoomFromTranscript(transcript) : null;
-            if (this.state === "ROOM_SELECT" && inferredRoom) {
+            const slotRoomHint = decision?.accumulatedSlots?.roomType || decision?.extractedSlots?.roomType;
+            let inferredRoom = this.state === "ROOM_SELECT"
+                ? this.inferRoomFromTranscript(transcript)
+                    || this.resolveRoomFromHint(slotRoomHint)
+                    || this.viewData.selectedRoom
+                    || null
+                : null;
+
+            if (
+                this.state === "ROOM_SELECT" &&
+                inferredRoom &&
+                (strictEvent === "ROOM_SELECTED" || strictEvent === "BOOK_ROOM_SELECTED" || strictEvent === "GENERAL_QUERY")
+            ) {
                 strictEvent = "ROOM_SELECTED";
+            }
+            if (
+                this.state === "BOOKING_COLLECT" &&
+                decision?.isComplete === true &&
+                strictEvent !== "CANCEL_BOOKING" &&
+                strictEvent !== "CANCEL_REQUESTED"
+            ) {
+                strictEvent = "CONFIRM_BOOKING";
             }
             if (strictEvent === "CANCEL_BOOKING" || strictEvent === "CANCEL_REQUESTED") {
                 this.pendingCancelConfirmation = true;
-                this.speak("Do you want to cancel this booking? Please say yes or no.");
+                this.speak("Are you sure you want to cancel? Please say yes or no.");
                 return;
             }
             if (this.state === "ROOM_SELECT" && strictEvent === "ROOM_SELECTED" && !inferredRoom) {
@@ -514,8 +829,13 @@ class AgentAdapterService {
 
             console.log(`[Agent] Mapping Intent: ${rawIntent} -> ${strictEvent}`);
 
+            const willTransition =
+                strictEvent !== "GENERAL_QUERY" &&
+                this.resolveNextStateFromIntent(this.state, strictEvent) !== this.state;
+
             // 3. Handle "Talking" (TTS)
-            if (decision.speech) {
+            // Avoid speaking text that will be immediately cancelled by a state transition.
+            if (decision.speech && !willTransition) {
                 this.speak(decision.speech);
             }
 
@@ -615,6 +935,15 @@ class AgentAdapterService {
 
         if (payload?.slots) {
             merged.bookingSlots = { ...(merged.bookingSlots || {}), ...payload.slots };
+
+            if (!merged.selectedRoom && payload.slots.roomType && Array.isArray(merged.rooms)) {
+                merged.selectedRoom =
+                    this.resolveRoomFromHint(payload.slots.roomType) ||
+                    merged.rooms.find((room: any) =>
+                        String(room?.name || "").toLowerCase().includes(String(payload.slots.roomType).toLowerCase())
+                    ) ||
+                    null;
+            }
         }
 
         if (payload?.missingSlots) {
@@ -659,36 +988,31 @@ class AgentAdapterService {
 
         const rooms = Array.isArray(this.viewData.rooms) ? this.viewData.rooms : [];
         if (rooms.length === 0) return null;
-        const byName = rooms.find((r: any) => t.includes(String(r.name).toLowerCase()));
-        if (byName) return byName;
 
-        if (t.includes("deluxe") || t.includes("ocean")) {
-            return rooms.find((r: any) => String(r.name).toLowerCase().includes("deluxe")) || null;
-        }
-        if (t.includes("executive") || t.includes("suite")) {
-            return rooms.find((r: any) => String(r.name).toLowerCase().includes("executive")) || null;
-        }
-        if (t.includes("standard") || t.includes("queen")) {
-            return rooms.find((r: any) => String(r.name).toLowerCase().includes("standard")) || null;
+        if (/\b(first|1st)\b/.test(t) && rooms[0]) return rooms[0];
+        if (/\b(second|2nd)\b/.test(t) && rooms[1]) return rooms[1];
+        if (/\b(third|3rd)\b/.test(t) && rooms[2]) return rooms[2];
+
+        if ((/\b(this room|that room|this one|that one)\b/.test(t)) && this.viewData.selectedRoom) {
+            return this.viewData.selectedRoom;
         }
 
-        return null;
+        return this.resolveRoomFromHint(t);
     }
-
     private isAffirmative(text: string): boolean {
         const t = (text || "").toLowerCase();
-        return /\b(yes|yeah|yep|confirm|sure|ok|okay|proceed|cancel it|do it)\b/.test(t);
+        return /\b(yes|yeah|yep|confirm|sure|ok|okay|proceed|cancel it|do it|haan|han|ji|correct)\b/.test(t);
     }
 
     private isNegative(text: string): boolean {
         const t = (text || "").toLowerCase();
-        return /\b(no|nope|dont|don't|not now|continue|resume|go on)\b/.test(t);
+        return /\b(no|nope|dont|don't|not now|continue|resume|go on|nah|nahi|mat)\b/.test(t);
     }
 
     private resolveNextStateFromIntent(currentState: UiState, intent: string): UiState {
         // ROOM_SELECT must not auto-advance on generic queries/amenity questions.
         if (currentState === "ROOM_SELECT") {
-            if (intent === "ASK_ROOM_DETAIL" || intent === "ASK_PRICE" || intent === "GENERAL_QUERY" || intent === "HELP_SELECTED") {
+            if (intent === "ASK_ROOM_DETAIL" || intent === "ASK_PRICE" || intent === "COMPARE_ROOMS" || intent === "GENERAL_QUERY" || intent === "HELP_SELECTED") {
                 return "ROOM_SELECT";
             }
             if (intent === "PROVIDE_GUESTS" || intent === "PROVIDE_DATES" || intent === "PROVIDE_NAME" || intent === "CONFIRM_BOOKING" || intent === "MODIFY_BOOKING") {
@@ -706,6 +1030,7 @@ class AgentAdapterService {
             "CANCEL_BOOKING",
             "ASK_ROOM_DETAIL",
             "ASK_PRICE",
+            "COMPARE_ROOMS",
             "GENERAL_QUERY",
             "HELP_SELECTED",
         ]);
@@ -733,10 +1058,10 @@ class AgentAdapterService {
      * This acts as a "Super Dispatch" that ensures Touch interrupts Voice.
      */
     public handleIntent(intent: string, payload?: any) {
-        console.log(`[AgentAdapter] 👆 Handle Intent (Touch Authority): ${intent}`, payload || '');
+        console.log(`[AgentAdapter] ðŸ‘† Handle Intent (Touch Authority): ${intent}`, payload || '');
         this.resetInactivityTimer();
 
-        // 1. TOUCH AUTHORITY CHECK 🛡️
+        // 1. TOUCH AUTHORITY CHECK ðŸ›¡ï¸
         const INTERRUPT_INTENTS = [
             "CHECK_IN_SELECTED", "BOOK_ROOM_SELECTED",
             "HELP_SELECTED", "SCAN_COMPLETED",
@@ -747,7 +1072,7 @@ class AgentAdapterService {
         ];
 
         if (INTERRUPT_INTENTS.includes(intent)) {
-            console.log("[AgentAdapter] 👆 Touch Interrupt detected. Killing Audio.");
+            console.log("[AgentAdapter] ðŸ‘† Touch Interrupt detected. Killing Audio.");
             TTSController.hardStop();
             VoiceRuntime.stopListening();
 
@@ -770,6 +1095,16 @@ class AgentAdapterService {
         } else {
             this.applyPayloadData(intent, payload, nextState);
             this.notifyListeners();
+            if (
+                this.state === "ROOM_SELECT" &&
+                intent === "GENERAL_QUERY" &&
+                Array.isArray(payload?.rooms) &&
+                payload.rooms.length > 0 &&
+                !this.hasAnnouncedRoomOptions
+            ) {
+                this.hasAnnouncedRoomOptions = true;
+                this.speak(this.buildRoomSelectionPrompt(payload.rooms));
+            }
             console.log(`[AgentAdapter] No Transition: ${this.state} + ${intent} -> ${nextState}`);
         }
     }
@@ -802,7 +1137,7 @@ class AgentAdapterService {
         // ENTERPRISE RULE #1: Recursive Transitions are Valid
         // If the AI wants to stay on the same page to chat, LET IT.
         if (nextState === this.state) {
-            console.log(`[Mediator] 🗣️ Conversational Turn (Staying on ${this.state})`);
+            console.log(`[Mediator] ðŸ—£ï¸ Conversational Turn (Staying on ${this.state})`);
             // We don't update this.state, but we ALLOW the flow to continue 
             // so the TTS can play the AI's response.
 
@@ -826,6 +1161,7 @@ class AgentAdapterService {
         this.state = nextState;
         this.applyPayloadData(intent || 'UNKNOWN', payload, nextState);
         this.resetInactivityTimer();
+        this.hasAnnouncedRoomOptions = false;
 
         console.log(`[AgentAdapter] State Transition: ${previousState} -> ${this.state}`);
 
@@ -837,7 +1173,13 @@ class AgentAdapterService {
         this.notifyListeners();
 
         // Speak Agent response (lookup from legacy map)
-        const speech = STATE_SPEECH_MAP[nextState];
+        let speech = STATE_SPEECH_MAP[nextState];
+        if (nextState === "ROOM_SELECT") {
+            speech = "Sure. I am fetching available rooms for this hotel.";
+        }
+        if (nextState === "BOOKING_COLLECT") {
+            speech = this.buildBookingCollectPrompt();
+        }
         if (speech) {
             const resolvedSpeech = this.withTenantName(speech);
             console.log(`[AgentAdapter] Speaking: "${resolvedSpeech}"`);
@@ -852,6 +1194,15 @@ class AgentAdapterService {
                     }
                 }, 100);
             }
+        }
+
+        // Demo-complete flow: advance key dispensing to completion.
+        if (nextState === "KEY_DISPENSING") {
+            setTimeout(() => {
+                if (this.state === "KEY_DISPENSING") {
+                    this.dispatch("DISPENSE_COMPLETE" as Intent);
+                }
+            }, 2000);
         }
     }
 
@@ -902,8 +1253,18 @@ class AgentAdapterService {
     }
 
     private withTenantName(text: string): string {
-        const tenantName = getTenant()?.name || "our hotel";
-        return text.replace(/\{\{TENANT_NAME\}\}/g, tenantName);
+        const resolvedName = getTenant()?.name?.trim();
+        const slugName = getTenantSlug()
+            .split("-")
+            .filter(Boolean)
+            .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+            .join(" ");
+        const tenantName = resolvedName || slugName || "our hotel";
+
+        return text.replace(
+            /\{\{TENANT_NAME\}\}|\{TENANT_NAME\}|\{\{HOTEL_NAME\}\}|\{HOTEL_NAME\}|\{Hotel name\}|\{hotel name\}/g,
+            tenantName
+        );
     }
 
     /**
@@ -952,3 +1313,4 @@ class AgentAdapterService {
 }
 
 export const AgentAdapter = new AgentAdapterService();
+

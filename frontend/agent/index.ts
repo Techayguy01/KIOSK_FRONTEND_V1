@@ -52,7 +52,7 @@ export const STATE_INPUT_MODES: Record<UiState, InputMode[]> = {
     ROOM_SELECT: ["VOICE", "TOUCH"], // Voice allowed for nav commands
     BOOKING_COLLECT: ["VOICE", "TOUCH"], // Conversational booking - Voice primary
     BOOKING_SUMMARY: ["VOICE", "TOUCH"], // Confirmation - Both allowed
-    PAYMENT: ["TOUCH"], // Security/Privacy - Voice ignored
+    PAYMENT: ["VOICE", "TOUCH"],
     KEY_DISPENSING: [], // Hardware lock - No input
     COMPLETE: ["TOUCH"], // Tap to finish/restart
     ERROR: ["TOUCH"], // Tap to dismiss

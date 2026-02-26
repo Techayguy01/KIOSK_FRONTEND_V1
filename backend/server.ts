@@ -146,12 +146,20 @@ wss.on('connection', (clientWs: WebSocket, req) => {
     // Extract sample_rate from query params (forwarded from frontend)
     const url = new URL(req.url || '', `http://localhost:${PORT}`);
     const sampleRate = parseInt(url.searchParams.get('sample_rate') || String(DEFAULT_SAMPLE_RATE), 10);
+    const requestedLanguageRaw = (url.searchParams.get('language') || '').trim();
+    const requestedLanguage = /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$/.test(requestedLanguageRaw)
+        ? requestedLanguageRaw
+        : undefined;
 
     console.log(`[VoiceRelay] Client requested sample_rate=${sampleRate}Hz`);
+    if (requestedLanguage) {
+        console.log(`[VoiceRelay] Client requested language=${requestedLanguage}`);
+    }
 
     // Create Deepgram relay for this session with forwarded sample_rate
     const deepgram = new DeepgramRelay({
         sampleRate,  // Forward to Deepgram
+        language: requestedLanguage,
         onTranscript: (data) => {
             // Forward Deepgram response to browser (no modification)
             if (clientWs.readyState === WebSocket.OPEN) {
