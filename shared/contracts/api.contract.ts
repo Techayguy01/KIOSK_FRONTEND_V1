@@ -114,3 +114,49 @@ export interface CreateKioskSessionRequest {
 export interface UpdateKioskSessionRequest {
   finalState: 'COMPLETE' | 'IDLE' | 'ERROR';
 }
+
+// --- Guest & Booking Services Contracts ---
+
+export interface GuestRegistrationRequest {
+  fullName: string;
+  email?: string;
+  phone?: string;
+  idType?: 'passport' | 'aadhar' | 'driving_license';
+  idNumber?: string;
+}
+
+export interface GuestDTO {
+  id: string;
+  tenantId: string;
+  fullName: string;
+  email?: string;
+  phone?: string;
+  idType?: string;
+}
+
+export interface BookingLookupRequest {
+  bookingReference?: string;
+  guestName?: string;
+}
+
+export interface BookingDTO {
+  id: string;
+  tenantId: string;
+  sessionId?: string;
+  guestId?: string;
+  roomTypeId: string;
+  status: 'draft' | 'confirmed' | 'cancelled';
+  adults: number;
+  children: number;
+  checkInDate: string;
+  checkOutDate: string;
+  nights: number;
+  totalPrice?: number;
+  currency: string;
+  guestName?: string;
+}
+
+export interface UpdateBookingStatusRequest {
+  status: 'draft' | 'confirmed' | 'cancelled';
+  paymentReference?: string;
+}
