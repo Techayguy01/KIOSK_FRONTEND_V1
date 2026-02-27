@@ -20,6 +20,7 @@ import { ErrorBanner } from '../components/ErrorBanner';
 import { BackButton } from '../components/BackButton';
 import { CaptionsOverlay } from '../components/CaptionsOverlay';
 import { DevToolbar } from '../components/DevToolbar';
+import { DevMockTester } from '../components/DevMockTester';
 import AnimatedGradientBackground from '../components/ui/animated-gradient-background';
 import { setTenantContext, TenantPayload } from '../services/tenantContext';
 
@@ -217,6 +218,9 @@ const TenantKioskApp: React.FC = () => {
           isUnlocked={Boolean(forcedState)}
           currentState={effectiveState as any}
         />
+
+        {/* Global Mock Tester */}
+        <DevMockTester />
       </div>
     </UIContext.Provider>
   );
