@@ -82,3 +82,35 @@ export interface ChatTurnDTO {
   role: "user" | "assistant";
   content: string;
 }
+
+// --- Kiosk Runtime Contracts ---
+
+export interface KioskDeviceDTO {
+  id: string;
+  tenantId: string;
+  deviceCode: string;
+  name?: string;
+  location?: string;
+  status: 'online' | 'offline' | 'maintenance';
+  lastHeartbeat?: string;
+}
+
+export interface KioskSessionDTO {
+  id: string;
+  tenantId: string;
+  deviceId?: string;
+  sessionToken: string;
+  language: string;
+  startedAt: string;
+  endedAt?: string;
+  finalState?: 'COMPLETE' | 'IDLE' | 'ERROR';
+}
+
+export interface CreateKioskSessionRequest {
+  deviceId?: string;
+  language?: string;
+}
+
+export interface UpdateKioskSessionRequest {
+  finalState: 'COMPLETE' | 'IDLE' | 'ERROR';
+}
