@@ -7,10 +7,150 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum Plan {
-  FREE
-  PRO
-  ENTERPRISE
+model Tenant {
+  id                                               String            @id @default(uuid()) @db.Uuid
+  hotel_name                                       String            @db.VarChar
+  address                                          String?
+  owner_user_id                                    String?           @db.Uuid
+  plan_id                                          String?           @db.Uuid
+  gstin                                            String?           @db.VarChar
+  pan                                              String?           @db.VarChar
+  createdAt                                        DateTime          @map("created_at") @db.Timestamp(6)
+  updatedAt                                        DateTime?         @updatedAt @map("updated_at") @db.Timestamp(6)
+  image_url_1                                      String?           @db.VarChar
+  image_url_2                                      String?           @db.VarChar
+  image_url_3                                      String?           @db.VarChar
+  subscriptions                                    subscriptions[]
+  support_tickets                                  support_tickets[]
+  bookings                                         Booking[]
+  room_types                                       RoomType[]
+  tenant_roles                                     tenant_roles[]
+  tenant_users_tenant_users_tenant_idTotenants     tenant_users[]    @relation("tenant_users_tenant_idTotenants")
+  tenant_users_tenants_owner_user_idTotenant_users tenant_users?     @relation("tenants_owner_user_idTotenant_users", fields: [owner_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_tenants_owner_user_id")
+  plans                                            plans?            @relation(fields: [plan_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@map("tenants")
+}
+
+model alembic_version {
+  version_num String @id(map: "alembic_version_pkc") @db.VarChar(32)
+}
+
+model permissions {
+  id                        String                      @id @db.Uuid
+  key                       String                      @unique @db.VarChar
+  description               String?
+  platform_role_permissions platform_role_permissions[]
+  tenant_role_permissions   tenant_role_permissions[]
+}
+
+model plans {
+  id            String   @id @db.Uuid
+  name          String   @db.VarChar
+  period_months Int
+  max_users     Int?
+  max_roles     Int?
+  max_rooms     Int?
+  created_at    DateTime @db.Timestamp(6)
+  price         Float    @default(0)
+  is_archived   Boolean  @default(false)
+  tenants       Tenant[]
+}
+
+model platform_role_permissions {
+  role_id        String         @db.Uuid
+  permission_id  String         @db.Uuid
+  permissions    permissions    @relation(fields: [permission_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  platform_roles platform_roles @relation(fields: [role_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([role_id, permission_id])
+}
+
+model platform_roles {
+  id                        String                      @id @db.Uuid
+  name                      String                      @unique @db.VarChar
+  status                    Boolean
+  created_at                DateTime                    @db.Timestamp(6)
+  platform_role_permissions platform_role_permissions[]
+  platform_users            platform_users[]
+}
+
+model platform_users {
+  id             String         @id @db.Uuid
+  email          String         @unique @db.VarChar
+  phone          String?        @db.VarChar
+  name           String?        @db.VarChar
+  password_hash  String
+  role_id        String         @db.Uuid
+  created_at     DateTime       @db.Timestamp(6)
+  platform_roles platform_roles @relation(fields: [role_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+}
+
+model subscriptions {
+  id         String   @id @db.Uuid
+  tenant_id  String   @db.Uuid
+  start_date DateTime @db.Timestamp(6)
+  end_date   DateTime @db.Timestamp(6)
+  status     String   @db.VarChar
+  tenants    Tenant   @relation(fields: [tenant_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+}
+
+model support_messages {
+  id              String          @id @db.Uuid
+  ticket_id       String          @db.Uuid
+  sender_id       String?         @db.Uuid
+  message         String
+  created_at      DateTime        @db.Timestamp(6)
+  is_internal     Boolean
+  support_tickets support_tickets @relation(fields: [ticket_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+}
+
+model support_tickets {
+  id               String             @id @db.Uuid
+  tenant_id        String             @db.Uuid
+  title            String             @db.VarChar
+  description      String?
+  category         String?            @db.VarChar
+  priority         String?            @db.VarChar
+  status           String?            @db.VarChar
+  created_at       DateTime           @db.Timestamp(6)
+  support_messages support_messages[]
+  tenants          Tenant             @relation(fields: [tenant_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+}
+
+model tenant_role_permissions {
+  role_id       String       @db.Uuid
+  permission_id String       @db.Uuid
+  permissions   permissions  @relation(fields: [permission_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  tenant_roles  tenant_roles @relation(fields: [role_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([role_id, permission_id])
+}
+
+model tenant_roles {
+  id                      String                    @id @db.Uuid
+  tenant_id               String                    @db.Uuid
+  name                    String                    @db.VarChar
+  status                  Boolean
+  created_at              DateTime                  @db.Timestamp(6)
+  tenant_role_permissions tenant_role_permissions[]
+  tenants                 Tenant                    @relation(fields: [tenant_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  tenant_users            tenant_users[]
+}
+
+model tenant_users {
+  id                                          String       @id @db.Uuid
+  tenant_id                                   String       @db.Uuid
+  email                                       String       @db.VarChar
+  phone                                       String?      @db.VarChar
+  name                                        String?      @db.VarChar
+  password_hash                               String
+  role_id                                     String       @db.Uuid
+  created_at                                  DateTime     @db.Timestamp(6)
+  updated_at                                  DateTime?    @db.Timestamp(6)
+  tenant_roles                                tenant_roles @relation(fields: [role_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  tenants_tenant_users_tenant_idTotenants     Tenant       @relation("tenant_users_tenant_idTotenants", fields: [tenant_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  tenants_tenants_owner_user_idTotenant_users Tenant[]     @relation("tenants_owner_user_idTotenant_users")
 }
 
 enum BookingStatus {
@@ -18,96 +158,47 @@ enum BookingStatus {
   CONFIRMED
 }
 
-enum UserRole {
-  SUPER_ADMIN
-  TENANT_OWNER
-  FRONT_DESK
-  KIOSK_MACHINE
-}
-
-model Tenant {
-  id          String       @id @default(uuid()) @db.Uuid
-  name        String       @db.VarChar(255)
-  slug        String       @unique @db.VarChar(120)
-  plan        Plan         @default(FREE)
-  createdAt   DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt   DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
-  hotelConfig HotelConfig?
-  roomTypes   RoomType[]
-  bookings    Booking[]
-  users       User[]
-
-  @@map("tenants")
-}
-
-model HotelConfig {
-  id           String   @id @default(uuid()) @db.Uuid
-  tenantId     String   @unique @map("tenant_id") @db.Uuid
-  timezone     String   @db.VarChar(100)
-  supportPhone String   @map("support_phone") @db.VarChar(40)
-  checkInTime  DateTime @map("check_in_time") @db.Time(6)
-  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
-  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-
-  @@index([tenantId])
-  @@map("hotel_configs")
-}
-
 model RoomType {
   id         String    @id @default(uuid()) @db.Uuid
-  tenantId   String    @map("tenant_id") @db.Uuid
+  tenant_id  String    @db.Uuid
   name       String    @db.VarChar(255)
   code       String    @db.VarChar(60)
   price      Decimal   @db.Decimal(10, 2)
   amenities  String[]
-  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt  DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
-  tenant     Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  created_at DateTime  @default(now()) @db.Timestamp(6)
+  updated_at DateTime? @updatedAt @db.Timestamp(6)
+
+  tenant     Tenant    @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
   bookings   Booking[]
 
-  @@unique([tenantId, code])
-  @@index([tenantId])
+  @@unique([tenant_id, code])
+  @@index([tenant_id])
   @@map("room_types")
 }
 
 model Booking {
-  id          String        @id @default(uuid()) @db.Uuid
-  tenantId    String        @map("tenant_id") @db.Uuid
-  guestName   String        @map("guest_name") @db.VarChar(255)
-  checkInDate DateTime      @map("check_in_date") @db.Date
-  checkOutDate DateTime     @map("check_out_date") @db.Date
-  adults      Int
-  children    Int?
-  nights      Int
-  totalPrice  Decimal?      @map("total_price") @db.Decimal(10, 2)
-  sessionId   String?       @map("session_id") @db.VarChar(120)
-  idempotencyKey String?    @map("idempotency_key") @db.VarChar(190)
-  paymentRef  String?       @map("payment_ref") @db.VarChar(120)
-  status      BookingStatus @default(DRAFT)
-  roomTypeId  String        @map("room_type_id") @db.Uuid
-  createdAt   DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt   DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
-  tenant      Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  roomType    RoomType      @relation(fields: [roomTypeId], references: [id], onDelete: Restrict)
+  id              String        @id @default(uuid()) @db.Uuid
+  tenant_id       String        @db.Uuid
+  guest_name      String        @db.VarChar(255)
+  check_in_date   DateTime      @db.Date
+  check_out_date  DateTime      @db.Date
+  adults          Int
+  children        Int?
+  nights          Int
+  total_price     Decimal?      @db.Decimal(10, 2)
+  idempotency_key String?       @db.VarChar(190)
+  payment_ref     String?       @db.VarChar(120)
+  status          BookingStatus @default(DRAFT)
+  room_type_id    String        @db.Uuid
+  created_at      DateTime      @default(now()) @db.Timestamp(6)
+  updated_at      DateTime?     @updatedAt @db.Timestamp(6)
 
-  @@unique([tenantId, idempotencyKey])
-  @@index([tenantId])
-  @@index([tenantId, status])
-  @@index([roomTypeId])
+  tenant          Tenant        @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  room_type       RoomType      @relation(fields: [room_type_id], references: [id], onDelete: Restrict)
+
+  @@unique([tenant_id, idempotency_key])
+  @@index([tenant_id])
+  @@index([tenant_id, status])
+  @@index([room_type_id])
   @@map("bookings")
-}
-
-model User {
-  id        String   @id @default(uuid()) @db.Uuid
-  tenantId  String   @map("tenant_id") @db.Uuid
-  email     String   @db.VarChar(255)
-  role      UserRole
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
-  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-
-  @@unique([tenantId, email])
-  @@index([tenantId])
-  @@map("users")
 }
