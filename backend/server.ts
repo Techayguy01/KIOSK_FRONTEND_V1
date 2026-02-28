@@ -118,6 +118,63 @@ app.get('/api/:tenantSlug/rooms', resolveTenant, async (req, res) => {
     }
 });
 
+// Tenant config endpoint
+app.get('/api/:tenantSlug/config', resolveTenant, async (req, res) => {
+    try {
+        const tenant = req.tenant;
+        if (!tenant) {
+            sendApiError(res, 404, "TENANT_NOT_FOUND", "Tenant not found", req.requestId);
+            return;
+        }
+
+        const config = await prisma.tenant_configs.findUnique({
+            where: { tenant_id: tenant.id }
+        });
+
+        res.json({ config, requestId: req.requestId });
+    } catch (error) {
+        logWithContext(req, "ERROR", "Failed to fetch tenant config", {
+            error: error instanceof Error ? error.message : String(error),
+        });
+        sendApiError(res, 500, "CONFIG_FETCH_FAILED", "Failed to fetch config", req.requestId);
+    }
+});
+
+// Booking lookup endpoint
+app.get('/api/:tenantSlug/bookings/lookup', resolveTenant, async (req, res) => {
+    try {
+        const tenant = req.tenant;
+        if (!tenant) {
+            sendApiError(res, 404, "TENANT_NOT_FOUND", "Tenant not found", req.requestId);
+            return;
+        }
+
+        const { confirmationNumber, guestName } = req.query;
+        if (!confirmationNumber && !guestName) {
+            sendApiError(res, 400, "MISSING_LOOKUP_PARAMS", "Provide confirmationNumber or guestName", req.requestId);
+            return;
+        }
+
+        const bookings = await prisma.booking.findMany({
+            where: {
+                tenant_id: tenant.id,
+                ...(confirmationNumber ? { id: String(confirmationNumber) } : {}),
+                ...(guestName ? { guest_name: { contains: String(guestName), mode: 'insensitive' } } : {})
+            },
+            include: {
+                room_type: true
+            }
+        });
+
+        res.json({ bookings, requestId: req.requestId });
+    } catch (error) {
+        logWithContext(req, "ERROR", "Failed to lookup booking", {
+            error: error instanceof Error ? error.message : String(error),
+        });
+        sendApiError(res, 500, "BOOKING_LOOKUP_FAILED", "Failed to lookup booking", req.requestId);
+    }
+});
+
 // LLM Chat endpoint
 app.use('/api/chat', resolveTenant, chatRouter);
 app.use('/api/chat/booking', resolveTenant, bookingChatRouter);
