@@ -564,6 +564,7 @@ router.post("/", validateBody(BookingChatRequestSchema), async (req: Request, re
                                 totalPrice: Number.isFinite(totalPrice) ? totalPrice : null,
                                 idempotencyKey,
                                 status,
+                                updatedAt: new Date(),
                             },
                             select: { id: true },
                         });
@@ -595,6 +596,8 @@ router.post("/", validateBody(BookingChatRequestSchema), async (req: Request, re
                             totalPrice: Number.isFinite(totalPrice) ? totalPrice : null,
                             idempotencyKey,
                             status,
+                            createdAt: new Date(),
+                            updatedAt: new Date(),
                         },
                         select: { id: true },
                     });
