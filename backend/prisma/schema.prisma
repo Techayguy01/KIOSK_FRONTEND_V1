@@ -9,27 +9,27 @@ datasource db {
 
 model Tenant {
   id                                               String            @id @default(uuid()) @db.Uuid
-  hotel_name                                       String            @db.VarChar
+  name                                             String            @map("hotel_name") @db.VarChar
   address                                          String?
-  owner_user_id                                    String?           @db.Uuid
-  plan_id                                          String?           @db.Uuid
+  ownerUserId                                      String?           @map("owner_user_id") @db.Uuid
+  planId                                           String?           @map("plan_id") @db.Uuid
   gstin                                            String?           @db.VarChar
   pan                                              String?           @db.VarChar
   createdAt                                        DateTime          @map("created_at") @db.Timestamptz(6)
   updatedAt                                        DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
-  image_url_1                                      String?
-  image_url_2                                      String?
-  image_url_3                                      String?
+  imageUrl1                                        String?           @map("image_url_1")
+  imageUrl2                                        String?           @map("image_url_2")
+  imageUrl3                                        String?           @map("image_url_3")
   slug                                             String            @unique @db.VarChar(100)
   bookings                                         Booking[]
-  room_types                                       RoomType[]
+  roomTypes                                        RoomType[]
   subscriptions                                    subscriptions[]
   support_tickets                                  support_tickets[]
-  tenant_configs                                   tenant_configs?
+  hotelConfig                                      tenant_configs?
   tenant_roles                                     tenant_roles[]
   tenant_users_tenant_users_tenant_idTotenants     tenant_users[]    @relation("tenant_users_tenant_idTotenants")
-  tenant_users_tenants_owner_user_idTotenant_users tenant_users?     @relation("tenants_owner_user_idTotenant_users", fields: [owner_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_tenants_owner_user_id")
-  plans                                            plans?            @relation(fields: [plan_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  tenant_users_tenants_owner_user_idTotenant_users tenant_users?     @relation("tenants_owner_user_idTotenant_users", fields: [ownerUserId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_tenants_owner_user_id")
+  plans                                            plans?            @relation(fields: [planId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@map("tenants")
 }
@@ -149,54 +149,54 @@ model tenant_users {
 
 model RoomType {
   id         String    @id @default(uuid()) @db.Uuid
-  tenant_id  String    @db.Uuid
+  tenantId   String    @map("tenant_id") @db.Uuid
   name       String    @db.VarChar(255)
   code       String    @db.VarChar(60)
   price      Decimal   @db.Decimal
   amenities  String[]  @default([]) @db.VarChar
-  created_at DateTime  @db.Timestamptz(6)
-  updated_at DateTime? @updatedAt @db.Timestamptz(6)
+  createdAt  DateTime  @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime? @updatedAt @map("updated_at") @db.Timestamptz(6)
   bookings   Booking[]
-  tenant     Tenant    @relation(fields: [tenant_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  tenant     Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@map("room_types")
 }
 
 model Booking {
   id              String    @id @default(uuid()) @db.Uuid
-  tenant_id       String    @db.Uuid
-  room_type_id    String    @db.Uuid
-  guest_name      String    @db.VarChar(255)
-  check_in_date   DateTime  @db.Date
-  check_out_date  DateTime  @db.Date
+  tenantId        String    @map("tenant_id") @db.Uuid
+  roomTypeId      String    @map("room_type_id") @db.Uuid
+  guestName       String    @map("guest_name") @db.VarChar(255)
+  checkInDate     DateTime  @map("check_in_date") @db.Date
+  checkOutDate    DateTime  @map("check_out_date") @db.Date
   adults          Int
   children        Int?
   nights          Int
-  total_price     Decimal?  @db.Decimal
+  totalPrice      Decimal?  @map("total_price") @db.Decimal
   status          String    @db.VarChar(20)
-  idempotency_key String?   @db.VarChar(190)
-  payment_ref     String?   @db.VarChar(120)
-  created_at      DateTime  @db.Timestamptz(6)
-  updated_at      DateTime? @updatedAt @db.Timestamptz(6)
-  room_type       RoomType  @relation(fields: [room_type_id], references: [id], onUpdate: NoAction)
-  tenant          Tenant    @relation(fields: [tenant_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  idempotencyKey  String?   @map("idempotency_key") @db.VarChar(190)
+  paymentRef      String?   @map("payment_ref") @db.VarChar(120)
+  createdAt       DateTime  @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime? @updatedAt @map("updated_at") @db.Timestamptz(6)
+  roomType        RoomType  @relation(fields: [roomTypeId], references: [id], onUpdate: NoAction)
+  tenant          Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@map("bookings")
 }
 
 model tenant_configs {
   id              String   @id @db.Uuid
-  tenant_id       String   @unique @db.Uuid
+  tenantId        String   @unique @map("tenant_id") @db.Uuid
   timezone        String   @db.VarChar(50)
-  check_in_time   String   @db.VarChar(10)
-  check_out_time  String   @db.VarChar(10)
-  default_lang    String   @db.VarChar(10)
-  welcome_message String?
-  logo_url        String?
-  support_phone   String?  @db.VarChar(20)
-  support_email   String?  @db.VarChar(255)
+  checkInTime     String   @map("check_in_time") @db.VarChar(10)
+  checkOutTime    String   @map("check_out_time") @db.VarChar(10)
+  defaultLang     String   @map("default_lang") @db.VarChar(10)
+  welcomeMessage  String?  @map("welcome_message")
+  logoUrl         String?  @map("logo_url")
+  supportPhone    String?  @map("support_phone") @db.VarChar(20)
+  supportEmail    String?  @map("support_email") @db.VarChar(255)
   extra           Json     @default("{}")
-  created_at      DateTime @db.Timestamptz(6)
-  updated_at      DateTime @db.Timestamptz(6)
-  tenants         Tenant   @relation(fields: [tenant_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  createdAt       DateTime @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @map("updated_at") @db.Timestamptz(6)
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 }

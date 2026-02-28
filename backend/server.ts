@@ -128,7 +128,7 @@ app.get('/api/:tenantSlug/config', resolveTenant, async (req, res) => {
         }
 
         const config = await prisma.tenant_configs.findUnique({
-            where: { tenant_id: tenant.id }
+            where: { tenantId: tenant.id }
         });
 
         res.json({ config, requestId: req.requestId });
@@ -157,12 +157,12 @@ app.get('/api/:tenantSlug/bookings/lookup', resolveTenant, async (req, res) => {
 
         const bookings = await prisma.booking.findMany({
             where: {
-                tenant_id: tenant.id,
+                tenantId: tenant.id,
                 ...(confirmationNumber ? { id: String(confirmationNumber) } : {}),
-                ...(guestName ? { guest_name: { contains: String(guestName), mode: 'insensitive' } } : {})
+                ...(guestName ? { guestName: { contains: String(guestName), mode: 'insensitive' } } : {})
             },
             include: {
-                room_type: true
+                roomType: true
             }
         });
 
