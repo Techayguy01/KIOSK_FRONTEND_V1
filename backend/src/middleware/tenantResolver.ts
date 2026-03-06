@@ -1,3 +1,20 @@
+/*
+ * File: src/middleware/tenantResolver.ts
+ * Purpose: Express middleware that resolves the active tenant from the request.
+ *          Reads tenant slug from URL path param (:tenantSlug) or request headers
+ *          (x-tenant-slug, x-kiosk-tenant). Attaches `req.tenant` and `req.tenantSlug`.
+ *          All tenant-scoped API handlers require this middleware to run first.
+ *
+ * Used by:
+ *   - backend/server.ts (applied before all /api/rooms, /api/chat, /api/tenant routes)
+ *   - backend/src/routes/chat.ts
+ *   - backend/src/routes/bookingChat.ts
+ *
+ * Dependencies:
+ *   - prisma   (tenant lookup by slug, includes hotelConfig)
+ *   - http     (sendApiError for 400/404/500)
+ *   - logger   (logWithContext)
+ */
 import { NextFunction, Request, Response } from "express";
 import { prisma } from "../db/prisma.js";
 import { sendApiError } from "../utils/http.js";

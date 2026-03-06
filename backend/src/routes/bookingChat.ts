@@ -1,3 +1,22 @@
+/*
+ * File: src/routes/bookingChat.ts
+ * Purpose: Booking-specific conversational LLM endpoint.
+ *          Drives multi-turn slot-filling for: roomType, adults, checkInDate, checkOutDate, guestName.
+ *          Persists DRAFT/CONFIRMED bookings to Prisma on completion.
+ *          Handles date conflict detection (409 BOOKING_DATE_CONFLICT).
+ *
+ * Used by:
+ *   - backend/server.ts (mounted at POST /api/chat/booking and POST /api/:tenantSlug/chat/booking)
+ *   - frontend/services/brain.service.ts (BOOKING_STATES only)
+ *
+ * Dependencies:
+ *   - groqClient           (LLM invocation)
+ *   - bookingContracts     (BookingLLMResponseSchema, slot schemas)
+ *   - contextBuilder       (system prompt + slot context assembly)
+ *   - prisma               (booking persistence + room inventory)
+ *   - normalize            (extractNormalizedNumber, normalizeForSlot)
+ *   - tenantResolver middleware (req.tenant injection)
+ */
 import { Router, Request, Response } from "express";
 import { z } from "zod";
 import { llm } from "../llm/groqClient.js";

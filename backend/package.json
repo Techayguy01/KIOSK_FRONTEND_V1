@@ -19,7 +19,6 @@
     "dependencies": {
         "@langchain/core": "^1.1.19",
         "@langchain/groq": "^1.0.4",
-        "@prisma/client": "^6.19.2",
         "cors": "^2.8.6",
         "dotenv": "^16.4.1",
         "express": "^5.2.1",
@@ -27,10 +26,11 @@
         "zod": "^4.3.6"
     },
     "devDependencies": {
+        "@prisma/client": "^5.22.0",
         "@types/cors": "^2.8.19",
         "@types/express": "^5.0.6",
         "@types/ws": "^8.5.10",
-        "prisma": "^7.4.0",
+        "prisma": "^5.22.0",
         "tsx": "^4.7.0",
         "typescript": "^5.3.3"
     }

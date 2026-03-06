@@ -1,0 +1,154 @@
+PROJECT: KIOSK_FRONTEND_V1
+
+PROJECT SUMMARY
+- AI-assisted hotel kiosk system with frontend UI flow, backend API/LLM routing, shared contracts, and Prisma-backed multi-tenant data.
+- Supports kiosk journeys such as welcome, ID scan, room selection, booking summary, payment, and completion.
+- Includes voice runtime components and conversational route handling.
+
+TECH STACK
+- Language: TypeScript
+- Frontend: React + Vite
+- Backend: Node.js + Express
+- Database: PostgreSQL + Prisma ORM
+- Validation/Contracts: Zod + shared TypeScript contracts
+
+ARCHITECTURE
+User/Kiosk Interaction
+  ->
+Frontend Pages (`frontend/pages/*`)
+  ->
+Frontend State Machine + Agent (`frontend/state/*`, `frontend/agent/adapter.ts`)
+  ->
+Frontend Services (`frontend/services/*`)
+  ->
+Backend API + Middleware (`backend/server.ts`, `backend/src/routes/*`, `backend/src/middleware/*`)
+  ->
+LLM/Context + Database (`backend/src/llm/*`, `backend/src/context/*`, `backend/src/db/prisma.ts`)
+  ->
+Tenant-scoped data + typed response
+
+DIRECTORY STRUCTURE
+frontend/
+  app/App.tsx
+  pages/
+  components/
+  services/
+  state/
+  voice/
+  agent/
+
+backend/
+  server.ts
+  src/
+    routes/
+    middleware/
+    llm/
+    context/
+    db/
+    utils/
+  prisma/
+    schema.prisma
+    migrations/
+    seed.ts
+
+shared/
+  contracts/   ← Zod-validated cross-layer contracts
+  types/       ← Pure TypeScript types (no Zod), importable anywhere
+
+docs/
+  architecture.md
+  api.md
+  database.md
+  analysis/
+
+.ai/
+  repo-map.md
+  symbol-map.md
+  important-files.md
+  coding-rules.md
+
+docs/
+  architecture.md
+  api.md
+  database.md
+  backend.md
+  INTEGRATION_PLAN.md
+  KIOSK_INTEGRATION_SOURCE.md
+  MANUAL_TEST_CHECKLIST.md
+  analysis/
+  archive/   ← restore scripts and one-off backups
+
+IMPORTANT FILES
+- frontend/app/App.tsx
+  Main frontend orchestration and flow wiring.
+
+- frontend/state/uiState.machine.ts
+  Source of truth for UI state transitions.
+
+- frontend/agent/adapter.ts
+  Frontend orchestration bridge between intents, state, and backend calls.
+
+- frontend/services/tenantContext.ts
+  Tenant context and tenant-aware request helpers.
+
+- backend/server.ts
+  Backend entrypoint and route mounting.
+
+- backend/src/routes/chat.ts
+  General conversational endpoint.
+
+- backend/src/routes/bookingChat.ts
+  Booking-focused conversational endpoint.
+
+- backend/src/middleware/tenantResolver.ts
+  Tenant resolution/enforcement for requests.
+
+- backend/src/db/prisma.ts
+  Prisma client singleton.
+
+- backend/prisma/schema.prisma
+  Authoritative database schema.
+
+- shared/contracts/intents.ts
+  Shared intent definitions used across frontend/backend.
+
+CODING CONVENTIONS
+- Keep frontend logic in `frontend/`, backend logic in `backend/`, shared contracts in `shared/contracts/`.
+- Follow explicit, typed contracts for payloads and events.
+- Use Prisma client (`backend/src/db/prisma.ts`) for database access.
+- Keep UI flow changes aligned with `frontend/state/uiState.machine.ts`.
+- Keep route/middleware concerns separated by folder responsibility.
+- Prefer focused modules over very large multi-purpose files.
+- Prefer explicit imports over wildcard imports.
+
+COMMON WORKFLOWS
+
+Add/Update Frontend Flow Step
+1. Update state transitions in `frontend/state/uiState.machine.ts`.
+2. Implement/update page in `frontend/pages/*`.
+3. Wire behavior in `frontend/app/App.tsx` and/or `frontend/agent/adapter.ts`.
+4. Update shared contracts if payload or intent shape changes.
+
+Add/Update API Behavior
+1. Add or modify route handler in `backend/src/routes/*` or `backend/server.ts`.
+2. Add middleware validation/tenant handling in `backend/src/middleware/*` as needed.
+3. Update contracts in `shared/contracts/*`.
+4. Validate frontend service usage in `frontend/services/*`.
+
+Add/Update Database Model
+1. Edit `backend/prisma/schema.prisma`.
+2. Run Prisma migration (from `backend/`): `npm run prisma:migrate`.
+3. Update seed data if required: `npm run prisma:seed`.
+4. Update backend route/context logic and shared contracts.
+
+Run Manual Test Scripts
+1. See `backend/tests/README.md` for available scripts.
+2. Run from `backend/` directory: `node tests/test-booking.mjs`
+3. DB check: `npx tsx tests/check-db.ts`
+
+AI QUICK START
+1. Read `.ai/repo-map.md` for navigation.
+2. Read `.ai/symbol-map.md` for file-to-symbol lookup.
+3. Read `.ai/important-files.md` for likely touchpoints.
+4. Read `.ai/coding-rules.md` and this `LLM.txt` before edits.
+5. Open only the files relevant to the requested change.

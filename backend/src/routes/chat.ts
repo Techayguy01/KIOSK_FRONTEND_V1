@@ -1,3 +1,19 @@
+/*
+ * File: src/routes/chat.ts
+ * Purpose: General conversational LLM endpoint for the kiosk AI concierge.
+ *          Handles free-form guest speech → intent classification → spoken response.
+ *          Maintains per-session conversation history (in-memory, privacy-wiped on WELCOME/IDLE).
+ *
+ * Used by:
+ *   - backend/server.ts (mounted at POST /api/chat and POST /api/:tenantSlug/chat)
+ *   - frontend/services/brain.service.ts (non-booking states only)
+ *
+ * Dependencies:
+ *   - groqClient  (LLM invocation)
+ *   - contracts   (LLMResponseSchema, FALLBACK_RESPONSE)
+ *   - contextBuilder (system prompt context assembly)
+ *   - tenantResolver middleware (req.tenant injection)
+ */
 import { Router, Request, Response } from 'express';
 import { z } from "zod";
 import { llm } from '../llm/groqClient';
