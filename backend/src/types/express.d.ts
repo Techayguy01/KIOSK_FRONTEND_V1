@@ -7,7 +7,7 @@ declare global {
       startTimeMs?: number;
       tenant?: Prisma.TenantGetPayload<{
         include: {
-          hotelConfig: true;
+          tenant_configs: true;
         };
       }>;
       tenantSlug?: string;

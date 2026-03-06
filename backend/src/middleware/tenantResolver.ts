@@ -45,7 +45,7 @@ export async function resolveTenant(req: Request, res: Response, next: NextFunct
     const tenant = await prisma.tenant.findUnique({
       where: { slug: tenantSlug },
       include: {
-        hotelConfig: true,
+        tenant_configs: true,
       },
     });
 

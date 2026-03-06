@@ -21,6 +21,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { DeepgramRelay } from './deepgramRelay.js';
 import chatRouter from './src/routes/chat.js';
 import bookingChatRouter from './src/routes/bookingChat.js';
+import ocrRouter from './src/routes/ocr.js';
 import { resolveTenant } from './src/middleware/tenantResolver.js';
 import { prisma } from './src/db/prisma.js';
 import { attachRequestContext, requestAccessLogger } from './src/middleware/requestContext.js';
@@ -36,7 +37,7 @@ const DEFAULT_SAMPLE_RATE = 48000;
 // ============================================
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
 app.use(attachRequestContext);
 app.use(requestAccessLogger);
 
@@ -71,7 +72,7 @@ app.get('/api/rooms', resolveTenant, async (req, res) => {
             id: room.id,
             name: room.name,
             price: Number(room.price),
-            currency: "USD",
+            currency: "INR",
             image: `https://picsum.photos/400/300?random=${idx + 1}`,
             features: room.amenities,
             code: room.code,
@@ -103,7 +104,7 @@ app.get('/api/:tenantSlug/rooms', resolveTenant, async (req, res) => {
             id: room.id,
             name: room.name,
             price: Number(room.price),
-            currency: "USD",
+            currency: "INR",
             image: `https://picsum.photos/400/300?random=${idx + 1}`,
             features: room.amenities,
             code: room.code,
@@ -121,10 +122,12 @@ app.get('/api/:tenantSlug/rooms', resolveTenant, async (req, res) => {
 // LLM Chat endpoint
 app.use('/api/chat', resolveTenant, chatRouter);
 app.use('/api/chat/booking', resolveTenant, bookingChatRouter);
+app.use('/api/ocr', resolveTenant, ocrRouter);
 
 // URL path-based tenant routing support
 app.use('/api/:tenantSlug/chat', resolveTenant, chatRouter);
 app.use('/api/:tenantSlug/chat/booking', resolveTenant, bookingChatRouter);
+app.use('/api/:tenantSlug/ocr', resolveTenant, ocrRouter);
 
 const httpServer = createServer(app);
 httpServer.listen(HTTP_PORT, () => {

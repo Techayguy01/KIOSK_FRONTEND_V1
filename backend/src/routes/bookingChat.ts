@@ -413,15 +413,15 @@ router.post("/", validateBody(BookingChatRequestSchema), async (req: Request, re
         const recentHistory = session.history.slice(-MAX_HISTORY_TURNS);
 
         // Build context
-        const hotelConfig = tenant.hotelConfig;
+        const hotelConfig = tenant.tenant_configs;
         const fallbackConfig = ENABLE_STATIC_CONTEXT_FALLBACK ? HOTEL_CONFIG : null;
         const contextJson = buildSystemContext(
             { currentState: currentState || "BOOKING", transcript: normalizedTranscript },
             {
-                hotelName: tenant.name,
+                hotelName: tenant.hotel_name,
                 timezone: hotelConfig?.timezone ?? fallbackConfig?.timezone,
-                checkIn: hotelConfig?.checkInTime ?? fallbackConfig?.checkInStart,
-                checkOut: fallbackConfig?.checkOutEnd ?? "11:00",
+                checkIn: hotelConfig?.check_in_time ?? fallbackConfig?.checkInStart,
+                checkOut: hotelConfig?.check_out_time ?? fallbackConfig?.checkOutEnd ?? "11:00",
                 amenities: fallbackConfig?.amenities ?? [],
                 location: fallbackConfig?.location ?? "Lobby Kiosk",
             }
@@ -444,7 +444,7 @@ router.post("/", validateBody(BookingChatRequestSchema), async (req: Request, re
 
         // Build prompt
         const filledPrompt = BOOKING_SYSTEM_PROMPT
-            .replace("{{HOTEL_NAME}}", tenant.name)
+            .replace("{{HOTEL_NAME}}", tenant.hotel_name)
             .replace("{{CONTEXT_JSON}}", contextJson)
             .replace("{{ROOM_INVENTORY}}", formatInventoryForPrompt(roomTypes))
             .replace("{{BOOKING_SLOTS}}", slotsDisplay)
@@ -533,14 +533,14 @@ router.post("/", validateBody(BookingChatRequestSchema), async (req: Request, re
 
             if (room && isUuid(room.id) && checkInDate && checkOutDate && Number.isFinite(adults) && Number.isFinite(nights) && session.slots.guestName) {
                 const idempotencyKey = `${tenant.id}:${sid}:${room.id}:${checkInDate.toISOString().slice(0, 10)}:${checkOutDate.toISOString().slice(0, 10)}:${String(session.slots.guestName).trim().toLowerCase()}`;
-                const status = validated.intent === "CONFIRM_BOOKING" ? "CONFIRMED" : "DRAFT";
+                const status = validated.intent === "CONFIRM_BOOKING" ? "confirmed" : "draft";
 
                 const persisted = await prisma.$transaction(async (tx) => {
                     const conflictingConfirmed = await tx.booking.findMany({
                         where: {
                             tenantId: tenant.id,
                             roomTypeId: room.id,
-                            status: "CONFIRMED",
+                            status: "confirmed",
                             NOT: session.bookingId ? { id: session.bookingId } : undefined,
                         },
                         select: {

@@ -143,24 +143,24 @@ ${recentHistory.map(m => `${m.role === 'user' ? 'Guest' : 'Concierge'}: ${m.cont
         }
 
         // 4. Build the Dynamic Context
-        const hotelConfig = tenant.hotelConfig;
+        const hotelConfig = tenant.tenant_configs;
         const fallbackConfig = ENABLE_STATIC_CONTEXT_FALLBACK ? HOTEL_CONFIG : null;
 
         const contextJson = buildSystemContext({
             currentState: currentState || "IDLE",
             transcript
         }, {
-            hotelName: tenant.name,
+            hotelName: tenant.hotel_name,
             timezone: hotelConfig?.timezone ?? fallbackConfig?.timezone,
-            checkIn: hotelConfig?.checkInTime ?? fallbackConfig?.checkInStart,
-            checkOut: fallbackConfig?.checkOutEnd ?? "11:00",
+            checkIn: hotelConfig?.check_in_time ?? fallbackConfig?.checkInStart,
+            checkOut: hotelConfig?.check_out_time ?? fallbackConfig?.checkOutEnd ?? "11:00",
             amenities: fallbackConfig?.amenities ?? [],
             location: fallbackConfig?.location ?? "Lobby Kiosk",
         });
 
         // 5. Inject into Prompt Template
         const filledPrompt = SYSTEM_PROMPT_TEMPLATE
-            .replace('{{HOTEL_NAME}}', tenant.name)
+            .replace('{{HOTEL_NAME}}', tenant.hotel_name)
             .replace('{{CONTEXT_JSON}}', contextJson)
             .replace('{{CURRENT_STATE}}', currentState || "IDLE")
             .replace('{{CONVERSATION_HISTORY}}', historySection);

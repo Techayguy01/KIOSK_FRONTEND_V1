@@ -20,7 +20,7 @@ export function getTenant(): TenantPayload | null {
   return currentTenant;
 }
 
-export function buildTenantApiUrl(route: "chat" | "chat/booking" | "tenant" | "rooms"): string {
+export function buildTenantApiUrl(route: "chat" | "chat/booking" | "tenant" | "rooms" | "ocr"): string {
   return `${API_BASE_URL}/api/${currentTenantSlug}/${route}`;
 }
 

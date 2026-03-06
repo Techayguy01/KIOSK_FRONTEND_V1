@@ -1,27 +1,39 @@
 import React, { useState } from 'react';
 import { useUIState } from '../state/uiContext';
 import { WebcamScanner } from '../components/WebcamScanner'; // Import it
-import { ShieldCheck, User } from 'lucide-react';
+import { ShieldCheck } from 'lucide-react';
 import AnimatedGradientBackground from '../components/ui/animated-gradient-background';
+import { scanIdWithOcr } from '../services/ocr.service';
 
 export const ScanIdPage: React.FC = () => {
   const { emit } = useUIState();
-  const [status, setStatus] = useState<'IDLE' | 'ANALYZING' | 'APPROVED'>('IDLE');
+  const [status, setStatus] = useState<'IDLE' | 'ANALYZING' | 'APPROVED' | 'ERROR'>('IDLE');
+  const [scannerVersion, setScannerVersion] = useState(0);
+  const [guestName, setGuestName] = useState('Guest');
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const handleCapture = (imageSrc: string) => {
-    // 1. Image Captured
+  const handleCapture = async (imageSrc: string) => {
     setStatus('ANALYZING');
-    console.log("[ScanPage] Image captured (simulated upload)");
+    setErrorMessage(null);
 
-    // 2. Simulate Backend Verification (1.5s delay)
-    setTimeout(() => {
+    try {
+      const result = await scanIdWithOcr(imageSrc);
+      const extractedName = result?.ocr?.fields?.fullName?.trim();
+      if (extractedName) {
+        setGuestName(extractedName);
+      }
       setStatus('APPROVED');
 
-      // 3. Move to Next Screen
       setTimeout(() => {
         emit('SCAN_COMPLETED');
       }, 800);
-    }, 1500);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not process ID image.';
+      console.error('[ScanPage] OCR failed:', error);
+      setErrorMessage(message);
+      setStatus('ERROR');
+      setScannerVersion((prev) => prev + 1);
+    }
   };
 
   return (
@@ -41,10 +53,10 @@ export const ScanIdPage: React.FC = () => {
             <div className="bg-emerald-900/30 border-2 border-emerald-500/50 p-12 rounded-2xl text-emerald-100 flex flex-col items-center animate-in zoom-in">
               <ShieldCheck size={64} className="mb-4 text-emerald-400" />
               <h2 className="text-2xl font-bold">Verification Successful</h2>
-              <p className="text-emerald-200/80">Welcome back, Alex.</p>
+              <p className="text-emerald-200/80">Welcome back, {guestName}.</p>
             </div>
           ) : (
-            <WebcamScanner onCapture={handleCapture} />
+            <WebcamScanner key={scannerVersion} onCapture={handleCapture} />
           )}
         </div>
 
@@ -52,6 +64,12 @@ export const ScanIdPage: React.FC = () => {
         {status === 'ANALYZING' && (
           <p className="text-blue-400 font-mono animate-pulse">
             Extracting Data... verifying hologram...
+          </p>
+        )}
+
+        {status === 'ERROR' && (
+          <p className="text-red-400 font-mono max-w-xl">
+            OCR failed: {errorMessage || 'Unable to read ID. Please retry with better lighting.'}
           </p>
         )}
 

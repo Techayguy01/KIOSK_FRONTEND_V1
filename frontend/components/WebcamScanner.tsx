@@ -18,11 +18,7 @@ export const WebcamScanner: React.FC<WebcamScannerProps> = ({ onCapture }) => {
             setFlash(true);
             setIsScanning(false);
             setTimeout(() => setFlash(false), 200); // Flash effect
-
-            // Simulate "Analysis" delay before finishing
-            setTimeout(() => {
-                onCapture(imageSrc);
-            }, 1500);
+            onCapture(imageSrc);
         }
     }, [webcamRef, onCapture]);
 

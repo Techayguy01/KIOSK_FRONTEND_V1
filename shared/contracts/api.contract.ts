@@ -41,6 +41,28 @@ export interface RoomsResponseDTO {
   requestId?: string;
 }
 
+export interface OcrRequestDTO {
+  imageDataUrl: string;
+  language?: string;
+}
+
+export interface OcrFieldsDTO {
+  fullName?: string;
+  documentNumber?: string;
+  dateOfBirth?: string;
+}
+
+export interface OcrResultDTO {
+  text: string;
+  confidence: number;
+  fields: OcrFieldsDTO;
+}
+
+export interface OcrResponseDTO {
+  ocr: OcrResultDTO;
+  requestId?: string;
+}
+
 export interface ChatRequestDTO {
   transcript?: string;
   currentState?: string;
