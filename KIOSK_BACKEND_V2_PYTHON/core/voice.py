@@ -97,26 +97,44 @@ class VoiceProvider:
     @staticmethod
     def generate_speech(text: str, language: str = "hi") -> bytes:
         """
-        Converts text to speech using Sarvam TTS.
+        Converts text to speech using Sarvam TTS (Direct REST API).
         Returns the raw audio bytes (WAV format).
         """
-        if not sarvam_client:
-            raise ValueError("[Voice] SarvamAI client not initialized")
+        import urllib.request
+        import json
+
+        if not SARVAM_API_KEY:
+            raise ValueError("[Voice] SARVAM_API_KEY not found in environment")
             
         lang_code = "hi-IN" if language.startswith("hi") else "en-IN"
+        url = "https://api.sarvam.ai/text-to-speech"
+        
+        payload = {
+            "text": text,
+            "target_language_code": lang_code,
+            "speaker": "anushka",
+            "model": "bulbul:v2"
+        }
+        
+        headers = {
+            "api-subscription-key": SARVAM_API_KEY,
+            "Content-Type": "application/json"
+        }
 
         try:
-            response = sarvam_client.text_to_speech.convert(
-                text=text,
-                target_language_code=lang_code,
-                model="bulbul:v2",
-                speaker="anushka", # From the test script that worked
+            print(f"[Voice] Requesting Premium TTS (REST) for: \"{text[:30]}...\"")
+            req = urllib.request.Request(
+                url, 
+                data=json.dumps(payload).encode("utf-8"), 
+                headers=headers, 
+                method="POST"
             )
             
-            # The client returns an iterator of chunks. Need to convert correctly.
-            audio_bytes = b"".join(_chunk_to_bytes(chunk) for chunk in response)
-            return audio_bytes
-            
+            with urllib.request.urlopen(req, timeout=15) as response:
+                if response.status != 200:
+                    raise Exception(f"Sarvam API error: {response.status}")
+                return response.read()
+                
         except Exception as e:
-            print(f"[Voice] Sarvam TTS failed: {e}")
+            print(f"[Voice] Direct Sarvam TTS failed: {e}")
             raise e

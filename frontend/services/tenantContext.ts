@@ -21,18 +21,22 @@ export function getTenant(): TenantPayload | null {
   return currentTenant;
 }
 
-export function buildTenantApiUrl(route: "chat" | "chat/booking" | "tenant" | "rooms" | "ocr"): string {
-  // V2: Python backend handles chat and rooms.
+export function buildTenantApiUrl(route: "chat" | "chat/booking" | "tenant" | "rooms" | "ocr" | "voice/tts" | "voice/stt"): string {
+  // V2: Python backend handles chat, rooms, and voice.
   if (route === "chat" || route === "chat/booking") {
     return `${API_BASE_URL}/api/chat`;
   }
   if (route === "rooms") {
-    // V2 Python rooms endpoint — looks up rooms by slug
     return `${API_BASE_URL}/api/rooms?slug=${currentTenantSlug}`;
   }
   if (route === "tenant") {
-    // V2 Python tenant endpoint
     return `${API_BASE_URL}/api/tenant?slug=${currentTenantSlug}`;
+  }
+  if (route === "voice/tts") {
+    return `${API_BASE_URL}/api/voice/tts`;
+  }
+  if (route === "voice/stt") {
+    return `${API_BASE_URL}/api/voice/stt`;
   }
   // OCR still hits the old Node backend for now
   return `http://localhost:3002/api/${currentTenantSlug}/${route}`;

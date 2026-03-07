@@ -137,6 +137,7 @@ class AgentAdapterService {
     private state: UiState = "IDLE";
     private viewData: Record<string, any> = {};
     private listeners: ((state: UiState, data?: any) => void)[] = [];
+    private language: string = "en";
 
     // Intent de-duplication guard (Phase 8.4)
     private lastIntent: string | null = null; // Phase 8.6: De-duplication
@@ -955,6 +956,11 @@ class AgentAdapterService {
             const decision = await response.json();
             console.log(`[AgentAdapter] LLM Decision:`, decision);
 
+            // Sync language
+            if (decision.language) {
+                this.language = decision.language;
+            }
+
             // 2. Map Fuzzy Intent -> Strict Event
             const rawIntent = decision.intent;
             let strictEvent = this.mapIntentToEvent(rawIntent);
@@ -1450,7 +1456,7 @@ class AgentAdapterService {
     public speak(text: string): void {
         this.maybeTrackSlotFromPrompt(text);
         this.emitTranscript(text, true, 'ai');
-        VoiceRuntime.speak(text);
+        VoiceRuntime.speak(text, this.language);
     }
 
     private withTenantName(text: string): string {

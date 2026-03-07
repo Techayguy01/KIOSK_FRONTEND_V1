@@ -41,14 +41,17 @@ IntentType = Literal[
 
 class BookingSlots(BaseModel):
     """All slots the agent needs to complete a booking."""
-    room_type: Optional[str] = None       # e.g. "DELUXE_ROOM"
-    adults: Optional[int] = None
-    children: Optional[int] = None
-    check_in_date: Optional[str] = None   # ISO format: "2026-03-10"
-    check_out_date: Optional[str] = None
-    guest_name: Optional[str] = None
-    nights: Optional[int] = None
-    total_price: Optional[float] = None
+    room_type: Optional[str] = Field(default=None, alias="roomType")
+    adults: Optional[int] = Field(default=None)
+    children: Optional[int] = Field(default=None)
+    check_in_date: Optional[str] = Field(default=None, alias="checkInDate")
+    check_out_date: Optional[str] = Field(default=None, alias="checkOutDate")
+    guest_name: Optional[str] = Field(default=None, alias="guestName")
+    nights: Optional[int] = Field(default=None)
+    total_price: Optional[float] = Field(default=None, alias="totalPrice")
+
+    class Config:
+        populate_by_name = True
 
     def missing_required_slots(self) -> list[str]:
         """Returns the list of slots still needed to confirm a booking."""

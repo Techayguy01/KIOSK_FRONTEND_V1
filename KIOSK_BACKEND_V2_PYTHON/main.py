@@ -24,7 +24,7 @@ app.add_middleware(
 
 # Register routers
 app.include_router(chat_router, prefix="/api", tags=["Chat"])
-app.include_router(voice_router, prefix="/api", tags=["Voice"])
+app.include_router(voice_router, prefix="/api/voice", tags=["Voice"])
 app.include_router(rooms_router, prefix="/api", tags=["Rooms"])
 app.include_router(tenant_router, prefix="/api", tags=["Tenant"])
 

@@ -54,6 +54,7 @@ class ChatResponse(BaseModel):
     accumulatedSlots: dict
     isComplete: bool
     sessionId: str
+    language: str
 
     class Config:
         # Allow camelCase output for JSON serialization
@@ -131,9 +132,10 @@ async def chat(req: ChatRequest, session: AsyncSession = Depends(get_session)):
             intent=updated_state.resolved_intent or "GENERAL_QUERY",
             confidence=updated_state.confidence,
             nextUiScreen=updated_state.next_ui_screen or req.current_ui_screen,
-            accumulatedSlots=slots_dict,
+            accumulatedSlots=updated_state.booking_slots.model_dump(by_alias=True),
             isComplete=is_complete,
             sessionId=req.session_id,
+            language=updated_state.language,
         )
 
     except Exception as e:

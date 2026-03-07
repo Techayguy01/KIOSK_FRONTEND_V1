@@ -41,6 +41,7 @@ class BrowserWebSpeechClient {
     private isStarting = false;
     private shouldBeActive = false;
     private intentionalStop = false;
+    private nativeRunning = false;
 
     private finalCommitTimer: ReturnType<typeof setTimeout> | null = null;
     private finalTranscriptParts: string[] = [];
@@ -76,6 +77,7 @@ class BrowserWebSpeechClient {
             throw new Error("Web Speech API is not supported in this browser.");
         }
 
+        console.log("[WebSpeech] Connecting...");
         this.shouldBeActive = true;
         this.intentionalStop = false;
         this.ensureRecognition();
@@ -87,22 +89,24 @@ class BrowserWebSpeechClient {
     }
 
     public close(): string {
-        const transcript = this.finalTranscriptParts.join(" ").trim() || this.lastInterimTranscript.trim();
+        const transcript = this.assembleTranscript();
 
         this.shouldBeActive = false;
         this.intentionalStop = true;
         this.clearFinalCommitTimer();
 
-        if (this.recognition && (this.isConnected || this.isStarting)) {
+        if (this.recognition && this.nativeRunning) {
             try {
-                this.recognition.stop();
+                // Use abort() for immediate cutoff to allow fast restart
+                this.recognition.abort();
             } catch (error) {
-                console.warn("[WebSpeech] Stop failed:", error);
+                console.warn("[WebSpeech] Abort failed:", error);
             }
         }
 
         this.isConnected = false;
         this.isStarting = false;
+        this.nativeRunning = false;
         this.finalTranscriptParts = [];
         this.lastInterimTranscript = "";
         this.lastConfidence = 0;
@@ -146,39 +150,40 @@ class BrowserWebSpeechClient {
         recognition.onstart = () => {
             this.isStarting = false;
             this.isConnected = true;
+            this.nativeRunning = true;
             console.log(`[WebSpeech] Listening (${recognition.lang})`);
         };
 
         recognition.onspeechstart = () => {
             this.clearFinalCommitTimer();
-            this.finalTranscriptParts = [];
-            this.lastInterimTranscript = "";
             this.speechStartedCallback?.();
         };
 
         recognition.onresult = (event: any) => {
             let hasFinal = false;
+            let currentFullTranscript = "";
+            let bestConfidence = 0;
 
-            for (let i = event.resultIndex; i < event.results.length; i++) {
+            // Consolidate all results to prevent duplication from resultIndex shifting
+            for (let i = 0; i < event.results.length; i++) {
                 const result = event.results[i];
                 const alt = result?.[0];
-                const transcript = String(alt?.transcript || "").trim();
-                if (!transcript) {
-                    continue;
-                }
-
+                const text = String(alt?.transcript || "").trim();
                 const confidence = typeof alt?.confidence === "number" ? alt.confidence : 0;
-                const isFinal = result?.isFinal === true;
-                this.interimCallback?.(transcript, isFinal);
 
-                if (isFinal) {
-                    hasFinal = true;
-                    this.finalTranscriptParts.push(transcript);
-                    this.lastConfidence = Math.max(this.lastConfidence, confidence);
-                } else {
-                    this.lastInterimTranscript = transcript;
-                    this.lastConfidence = confidence || this.lastConfidence;
+                if (text) {
+                    currentFullTranscript += (currentFullTranscript ? " " : "") + text;
+                    if (result.isFinal) {
+                        hasFinal = true;
+                    }
+                    bestConfidence = Math.max(bestConfidence, confidence);
                 }
+            }
+
+            if (currentFullTranscript) {
+                this.lastInterimTranscript = currentFullTranscript;
+                this.lastConfidence = bestConfidence;
+                this.interimCallback?.(currentFullTranscript, hasFinal);
             }
 
             if (hasFinal) {
@@ -188,17 +193,23 @@ class BrowserWebSpeechClient {
 
         recognition.onerror = (event: any) => {
             const code = String(event?.error || "unknown_error");
-            if (code === "aborted" && this.intentionalStop) {
+            console.error(`[WebSpeech] Native Error: ${code}`, event);
+
+            if (code === "aborted" || (code === "no-speech" && this.intentionalStop)) {
+                this.nativeRunning = false;
                 return;
             }
+
             if (code === "no-speech") {
                 return;
             }
+
             this.errorCallback?.(new Error(`Web Speech error: ${code}`));
         };
 
         recognition.onend = () => {
-            this.triggerEndOfTurn();
+            console.log("[WebSpeech] Native connection closed");
+            this.nativeRunning = false;
             this.isConnected = false;
             this.isStarting = false;
 
@@ -206,6 +217,8 @@ class BrowserWebSpeechClient {
                 setTimeout(() => {
                     this.startRecognition();
                 }, RESTART_DELAY_MS);
+            } else {
+                this.triggerEndOfTurn();
             }
         };
 
@@ -213,17 +226,30 @@ class BrowserWebSpeechClient {
     }
 
     private startRecognition(): void {
-        if (!this.recognition || this.isConnected || this.isStarting) {
+        if (!this.recognition) return;
+
+        // If it's already running natively, don't try to start again
+        if (this.nativeRunning || this.isConnected || this.isStarting) {
             return;
         }
 
         try {
             this.isStarting = true;
             this.recognition.start();
-        } catch (error) {
+        } catch (error: any) {
             this.isStarting = false;
+            // Catch "already started" string errors even if flags were out of sync
+            if (error?.message?.includes("already started")) {
+                this.nativeRunning = true;
+                this.isConnected = true;
+                return;
+            }
             this.errorCallback?.(error instanceof Error ? error : new Error("Web Speech start failed"));
         }
+    }
+
+    private assembleTranscript(): string {
+        return this.lastInterimTranscript.trim();
     }
 
     private scheduleFinalCommit(): void {
@@ -236,13 +262,12 @@ class BrowserWebSpeechClient {
     private triggerEndOfTurn(): void {
         this.clearFinalCommitTimer();
 
-        const final = this.finalTranscriptParts.join(" ").trim() || this.lastInterimTranscript.trim();
+        const final = this.assembleTranscript();
         if (!final) {
             return;
         }
 
         this.endOfTurnCallback?.(final, this.lastConfidence || undefined);
-        this.finalTranscriptParts = [];
         this.lastInterimTranscript = "";
         this.lastConfidence = 0;
     }

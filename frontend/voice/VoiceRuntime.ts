@@ -380,7 +380,7 @@ class VoiceRuntimeService {
     /**
      * Speak text. Stops mic first (no overlap).
      */
-    public async speak(text: string): Promise<void> {
+    public async speak(text: string, language?: string): Promise<void> {
         if (!text || !text.trim()) return;
 
         // Stop listening before speaking (no overlap)
@@ -393,7 +393,7 @@ class VoiceRuntimeService {
         this.startWatchdog();  // Phase 10: Monitor TTS too
 
         try {
-            await TTSController.speak(text);
+            await TTSController.speak(text, language);
         } catch (error) {
             console.error("[VoiceRuntime] TTS error:", error);
             // Phase 10: TTS failure should not block - emit for text fallback

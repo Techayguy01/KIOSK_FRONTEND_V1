@@ -19,6 +19,7 @@
  */
 
 import { TtsEvent, TtsState } from "./tts.types";
+import { PremiumAudioPlayer } from "./premiumPlayer";
 
 const TTS_LANG_PRIORITY = (
     import.meta.env.VITE_TTS_LANG_PRIORITY || "hi-IN,hi,en-IN,en-US,en"
@@ -96,11 +97,29 @@ class TTSControllerService {
      * Speak text with audio authority.
      * Cancels any existing speech first. Promise-safe.
      */
-    public async speak(text: string): Promise<void> {
+    public async speak(text: string, language?: string): Promise<void> {
         if (!text || !text.trim()) return;
 
         // Cancel any existing speech immediately
         this.hardStop();
+
+        // Detect language — use passed language, then selected voice, then default
+        const currentLang = language || this.selectedVoice?.lang.split("-")[0] || "en";
+
+        // Phase 2: Try Premium AI Voice first
+        try {
+            this.state = "SPEAKING";
+            this.emit({ type: "TTS_STARTED", text });
+
+            await PremiumAudioPlayer.play(text, currentLang);
+
+            this.state = "IDLE";
+            this.emit({ type: "TTS_ENDED" });
+            return;
+        } catch (err) {
+            console.warn("[TTSController] Premium voice failed, falling back to Robot:", err);
+            // Fall through to native TTS
+        }
 
         return new Promise((resolve, reject) => {
             const synth = window.speechSynthesis;
@@ -122,8 +141,9 @@ class TTSControllerService {
             utterance.onstart = () => {
                 this.state = "SPEAKING";
                 this.isCancelling = false;
-                console.log(`[TTSController] Speaking: "${text.substring(0, 40)}..."`);
-                this.emit({ type: "TTS_STARTED", text });
+                console.log(`[TTSController] Native Speaking: "${text.substring(0, 40)}..."`);
+                // Already emitted TTS_STARTED above, but we can emit again if needed 
+                // or just rely on the first one. Let's keep it simple.
             };
 
             utterance.onend = () => {
@@ -131,7 +151,7 @@ class TTSControllerService {
                 this.currentUtterance = null;
 
                 if (!this.isCancelling) {
-                    console.log("[TTSController] Speech ended");
+                    console.log("[TTSController] Native speech ended");
                     this.emit({ type: "TTS_ENDED" });
                 }
 
@@ -149,7 +169,7 @@ class TTSControllerService {
 
                 this.state = "IDLE";
                 this.currentUtterance = null;
-                console.error(`[TTSController] Error: ${event.error}`);
+                console.error(`[TTSController] Native Error: ${event.error}`);
                 this.emit({ type: "TTS_ERROR", error: event.error });
                 reject(new Error(event.error));
             };
@@ -189,6 +209,9 @@ class TTSControllerService {
             synth.cancel();
         }
 
+        // Stop Premium Player
+        PremiumAudioPlayer.stop();
+
         // Clear queue
         this.pendingQueue.forEach(item => item.resolve());
         this.pendingQueue = [];
@@ -201,6 +224,7 @@ class TTSControllerService {
      * Check if currently speaking.
      */
     public isSpeaking(): boolean {
+        // Check both native synth and our premium player
         return this.state === "SPEAKING" || window.speechSynthesis.speaking;
     }
 

@@ -18,5 +18,5 @@ if isinstance(resp, (bytes, bytearray, str)):
 else:
     for i, chunk in enumerate(resp):
         print('idx', i, 'type', type(chunk), 'repr', repr(chunk)[:300])
-        if i >= 6:
+        if i >= 5:
             break
