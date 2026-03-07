@@ -1,7 +1,7 @@
 /**
  * Web Speech STT Client
  *
- * Browser-native fallback when Deepgram relay is unavailable.
+ * Browser-native Web Speech API — the sole STT provider.
  */
 
 type InterimCallback = (transcript: string, isFinal: boolean) => void;

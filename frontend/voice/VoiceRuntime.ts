@@ -1,6 +1,5 @@
 import { VoiceEvent } from "./voice.types";
 import { AudioCapture } from "./audioCapture";
-import { DeepgramClient } from "./deepgramClient";
 import { WebSpeechClient } from "./webSpeechClient";
 import { normalizeTranscript } from "./normalizeTranscript";
 import { TTSController } from "./TTSController";
@@ -25,7 +24,7 @@ import { TTSController } from "./TTSController";
 
 export type VoiceMode = "idle" | "listening" | "speaking";
 type StopReason = "user" | "pause";
-type SttProvider = "deepgram" | "webspeech";
+type SttProvider = "webspeech";
 export type VoiceTurnState = "IDLE" | "USER_SPEAKING" | "PROCESSING" | "SYSTEM_RESPONDING";
 
 // Configuration
@@ -45,8 +44,8 @@ const CONFIG = {
     WARN_SILENT_TURNS: 2,              // After 2 → play warning
     NETWORK_RETRY_DELAY_MS: 1000,      // Wait before retry
     DEBUG_MODE: import.meta.env.DEV,   // Only in dev
-    STT_PROVIDER: import.meta.env.VITE_STT_PROVIDER === "webspeech" ? "webspeech" : "deepgram",
-    ENABLE_WEBSPEECH_FALLBACK: import.meta.env.VITE_ENABLE_WEBSPEECH_FALLBACK !== "false",
+    STT_PROVIDER: "webspeech" as SttProvider,
+    ENABLE_WEBSPEECH_FALLBACK: true,
 };
 
 // Phase 10: Debug session tracking
@@ -97,13 +96,6 @@ class VoiceRuntimeService {
     constructor() {
         console.log("[VoiceRuntime] Initialized (Phase 10 - Production Hardening)");
         console.log(`[VoiceRuntime] STT provider: ${this.activeSttProvider}`);
-
-        // Wire audio chunks to Deepgram only when Deepgram is active.
-        AudioCapture.onAudioChunk((chunk) => {
-            if (this.mode === "listening" && this.activeSttProvider === "deepgram") {
-                DeepgramClient.send(chunk);
-            }
-        });
 
         const handleSpeechStarted = () => {
             if (TTSController.isSpeaking()) {
@@ -165,14 +157,7 @@ class VoiceRuntimeService {
             this.emit({ type: "VOICE_TRANSCRIPT_READY", transcript: normalized });
         };
 
-        DeepgramClient.onSpeechStarted(handleSpeechStarted);
-        DeepgramClient.onInterim((transcript) => {
-            handleInterimTranscript(transcript);
-        });
-        DeepgramClient.onEndOfTurn(handleFinalTranscript);
-        DeepgramClient.onError((error) => {
-            this.handleDeepgramFailure(error);
-        });
+
 
         WebSpeechClient.onSpeechStarted(handleSpeechStarted);
         WebSpeechClient.onInterim((transcript) => {
@@ -201,16 +186,6 @@ class VoiceRuntimeService {
     }
 
     private async startActiveStt(): Promise<void> {
-        if (this.activeSttProvider === "deepgram") {
-            await AudioCapture.start();
-
-            // Important: connect AFTER AudioCapture.start() so we forward the real native sample rate.
-            if (!DeepgramClient.getIsConnected()) {
-                DeepgramClient.connect(AudioCapture.getSampleRate());
-            }
-            return;
-        }
-
         if (!WebSpeechClient.isSupported()) {
             throw new Error("Web Speech API is not supported in this browser.");
         }
@@ -218,51 +193,11 @@ class VoiceRuntimeService {
         WebSpeechClient.connect();
     }
 
-    private stopActiveStt(reason: StopReason): void {
-        if (this.activeSttProvider === "deepgram") {
-            if (AudioCapture.getIsCapturing()) {
-                AudioCapture.stop();
-            }
-            // Keep websocket alive during TTS pause to avoid close/reconnect churn.
-            if (reason === "user") {
-                DeepgramClient.close();
-            }
-            return;
-        }
-
+    private stopActiveStt(_reason: StopReason): void {
         WebSpeechClient.close();
     }
 
-    private handleDeepgramFailure(error: Error): void {
-        if (this.activeSttProvider !== "deepgram") {
-            return;
-        }
 
-        console.error("[VoiceRuntime] Deepgram STT failed:", error.message);
-
-        if (CONFIG.ENABLE_WEBSPEECH_FALLBACK && WebSpeechClient.isSupported()) {
-            console.warn("[VoiceRuntime] Switching STT provider: Deepgram -> Web Speech fallback");
-            this.activeSttProvider = "webspeech";
-
-            if (AudioCapture.getIsCapturing()) {
-                AudioCapture.stop();
-            }
-            DeepgramClient.close();
-
-            if (this.isListeningActive) {
-                try {
-                    WebSpeechClient.connect();
-                    return;
-                } catch (fallbackError) {
-                    console.error("[VoiceRuntime] Web Speech fallback failed:", fallbackError);
-                }
-            } else {
-                return;
-            }
-        }
-
-        this.emit({ type: "VOICE_SESSION_ERROR" });
-    }
 
     // === Phase 10: Silence Loop Protection ===
 
@@ -396,14 +331,7 @@ class VoiceRuntimeService {
             return;
         }
 
-        // Reconnect protection applies to Deepgram websocket reconnects only.
-        if (
-            this.activeSttProvider === "deepgram" &&
-            !DeepgramClient.getIsConnected() &&
-            this.isReconnectLooping()
-        ) {
-            return;
-        }
+
 
         try {
             this.isListeningActive = true;
@@ -502,10 +430,6 @@ class VoiceRuntimeService {
             this.clearAllTimers();
             this.stopActiveStt("user");
         } else {
-            if (AudioCapture.getIsCapturing()) {
-                AudioCapture.stop();
-            }
-            DeepgramClient.close();
             WebSpeechClient.close();
         }
 

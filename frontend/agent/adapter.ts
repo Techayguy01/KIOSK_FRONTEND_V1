@@ -91,47 +91,47 @@ const SLOT_PROMPT_LOOKUP: Array<{
     expectedType: BookingSlotExpectedType;
     prompts: string[];
 }> = [
-    {
-        slot: "roomType",
-        expectedType: "string",
-        prompts: [
-            "which room would you like to book",
-            "please tell me which room you would like to book",
-            "would you like to book it"
-        ],
-    },
-    {
-        slot: "adults",
-        expectedType: "number",
-        prompts: ["how many adults will be staying"],
-    },
-    {
-        slot: "children",
-        expectedType: "number",
-        prompts: ["how many children will be staying"],
-    },
-    {
-        slot: "checkInDate",
-        expectedType: "date",
-        prompts: [
-            "please tell me your check in and check out dates",
-            "what is your check in date"
-        ],
-    },
-    {
-        slot: "checkOutDate",
-        expectedType: "date",
-        prompts: ["what is your check out date"],
-    },
-    {
-        slot: "guestName",
-        expectedType: "string",
-        prompts: [
-            "what name should i use for this booking",
-            "what name should i use for the booking"
-        ],
-    },
-];
+        {
+            slot: "roomType",
+            expectedType: "string",
+            prompts: [
+                "which room would you like to book",
+                "please tell me which room you would like to book",
+                "would you like to book it"
+            ],
+        },
+        {
+            slot: "adults",
+            expectedType: "number",
+            prompts: ["how many adults will be staying"],
+        },
+        {
+            slot: "children",
+            expectedType: "number",
+            prompts: ["how many children will be staying"],
+        },
+        {
+            slot: "checkInDate",
+            expectedType: "date",
+            prompts: [
+                "please tell me your check in and check out dates",
+                "what is your check in date"
+            ],
+        },
+        {
+            slot: "checkOutDate",
+            expectedType: "date",
+            prompts: ["what is your check out date"],
+        },
+        {
+            slot: "guestName",
+            expectedType: "string",
+            prompts: [
+                "what name should i use for this booking",
+                "what name should i use for the booking"
+            ],
+        },
+    ];
 
 class AgentAdapterService {
     private state: UiState = "IDLE";
@@ -962,9 +962,9 @@ class AgentAdapterService {
             const slotRoomHint = decision?.accumulatedSlots?.roomType || decision?.extractedSlots?.roomType;
             let inferredRoom = this.state === "ROOM_SELECT"
                 ? this.inferRoomFromTranscript(transcript)
-                    || this.resolveRoomFromHint(slotRoomHint)
-                    || this.viewData.selectedRoom
-                    || null
+                || this.resolveRoomFromHint(slotRoomHint)
+                || this.viewData.selectedRoom
+                || null
                 : null;
 
             if (
@@ -1403,15 +1403,28 @@ class AgentAdapterService {
         // Voice dispatch uses StateMachine too.
         // We can reuse the calculation logic from handleIntent, but skip the "Kill Audio" part.
 
+        // If the booking brain indicates the slots are complete, force the transition
+        // to CONFIRM_BOOKING so we don't get stuck on BOOKING_COLLECT if the intent
+        // was just a slot-reporting intent (e.g. PROVIDE_NAME).
+        let effectiveIntent = intent;
+        if (
+            payload?.isComplete === true &&
+            this.state === "BOOKING_COLLECT" &&
+            intent !== "CANCEL_BOOKING" &&
+            intent !== "BACK_REQUESTED"
+        ) {
+            effectiveIntent = "CONFIRM_BOOKING";
+        }
+
         // 2. CALCULATE TRANSITION (Centralized State Machine)
-        const nextState = this.resolveNextStateFromIntent(this.state, intent);
+        const nextState = this.resolveNextStateFromIntent(this.state, effectiveIntent);
 
         if (nextState !== this.state) {
             // We can check if we should speak here.
             // But for now, just transition.
-            this.transitionTo(nextState, intent, payload);
+            this.transitionTo(nextState, effectiveIntent, payload);
         } else {
-            this.applyPayloadData(intent, payload, nextState);
+            this.applyPayloadData(effectiveIntent, payload, nextState);
             this.notifyListeners();
         }
     }

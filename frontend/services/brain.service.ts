@@ -78,32 +78,22 @@ export async function sendToBrain(
         return null;
     }
 
-    // Decide which endpoint based on current state
-    const isBookingMode = BOOKING_STATES.includes(currentState);
-    const url = isBookingMode ? buildTenantApiUrl("chat/booking") : buildTenantApiUrl("chat");
+    // V2 Python backend: unified /api/chat handles all states
+    const url = buildTenantApiUrl("chat");
 
-    console.log(`[BrainService] Sending to ${isBookingMode ? "Booking" : "General"} Brain: "${transcript}" (State: ${currentState})`);
+    console.log(`[BrainService] Sending to V2 Brain: "${transcript}" (State: ${currentState})`);
 
-    const payload: ChatRequestDTO = {
+    // V2 Python backend payload — note snake_case fields to match FastAPI ChatRequest
+    const payload: any = {
         transcript,
-        currentState,
-        sessionId,
+        session_id: sessionId,
+        current_ui_screen: currentState, // V2 uses current_ui_screen, not currentState
+        tenant_id: "default",
     };
 
-    if (isBookingMode) {
-        const slotContext = options?.slotContext || AgentAdapter.getSlotContext();
-        const filledSlots = options?.filledSlots || AgentAdapter.getBookingSlots();
-        payload.activeSlot = slotContext.activeSlot;
-        payload.expectedType = slotContext.expectedType;
-        payload.lastSystemPrompt = slotContext.promptAsked || undefined;
-        payload.filledSlots = filledSlots;
-
-        if (Array.isArray(options?.conversationHistory) && options.conversationHistory.length > 0) {
-            payload.conversationHistory = options.conversationHistory.slice(-6).map((turn) => ({
-                role: turn.role,
-                content: turn.text,
-            }));
-        }
+    // Pass along extra context if available (V2 can use this for memory)
+    if (options?.filledSlots && Object.keys(options.filledSlots).length > 0) {
+        payload.filled_slots = options.filledSlots;
     }
 
     console.log("[BrainService] Outgoing payload:", payload);

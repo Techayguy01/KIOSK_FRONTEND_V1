@@ -116,7 +116,7 @@ const TenantKioskApp: React.FC = () => {
 
     (async () => {
       try {
-        const response = await fetch(`http://localhost:3002/api/${safeTenantSlug}/tenant`, {
+        const response = await fetch(`http://localhost:8000/api/tenant?slug=${safeTenantSlug}`, {
           headers: { 'x-tenant-slug': safeTenantSlug },
         });
 
