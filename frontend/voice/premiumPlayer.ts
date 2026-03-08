@@ -17,6 +17,12 @@ class PremiumAudioPlayerService {
     public async play(text: string, language: string): Promise<void> {
         this.stop();
 
+        // Timeout: Don't let the user wait in silence forever.
+        // 12s allows Sarvam to synthesize longer sentences without aborting.
+        const PREMIUM_TTS_TIMEOUT_MS = 12000;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), PREMIUM_TTS_TIMEOUT_MS);
+
         try {
             const url = buildTenantApiUrl("voice/tts");
             const response = await fetch(url, {
@@ -26,7 +32,10 @@ class PremiumAudioPlayerService {
                     ...getTenantHeaders(),
                 },
                 body: JSON.stringify({ text, language }),
+                signal: controller.signal,
             });
+
+            clearTimeout(timeout);
 
             if (!response.ok) {
                 throw new Error(`TTS API failed: ${response.status}`);
@@ -57,7 +66,9 @@ class PremiumAudioPlayerService {
                 audio.play().catch(reject);
             });
         } catch (error) {
-            console.error("[PremiumPlayer] Error:", error);
+            clearTimeout(timeout);
+            const isTimeout = error instanceof DOMException && error.name === 'AbortError';
+            console.error(`[PremiumPlayer] ${isTimeout ? 'Timeout' : 'Error'}:`, error);
             throw error;
         }
     }

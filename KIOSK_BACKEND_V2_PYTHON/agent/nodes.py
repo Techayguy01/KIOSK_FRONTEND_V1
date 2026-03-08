@@ -1,12 +1,6 @@
-﻿"""
-agent/nodes.py
-
-The individual "nodes" in the LangGraph agent graph.
-Each node receives the full KioskState, does one specific job, and returns
-updates to the conversation state.
-"""
-
-import json
+﻿import json
+import difflib
+from typing import Optional
 from agent.state import KioskState, BookingSlots, ConversationTurn
 from core.llm import get_llm_response
 
@@ -32,32 +26,49 @@ def _response_language_instruction(language: str) -> str:
     return f"Respond in {language_name} (language code: {code})."
 
 
-ROUTER_SYSTEM_PROMPT = """
-You are an intent classifier for a luxury hotel kiosk AI named "Siya".
-Given the user's message, classify their intent into ONE of these categories:
+def find_best_room_match(extracted: str, valid_options: list[str]) -> Optional[str]:
+    """Uses fuzzy matching to find the closest valid room type."""
+    if not extracted or not valid_options:
+        return None
+    
+    # Try exact match first (case-insensitive)
+    for opt in valid_options:
+        if extracted.lower() == opt.lower():
+            return opt
+            
+    # Try fuzzy match
+    matches = difflib.get_close_matches(extracted, valid_options, n=1, cutoff=0.6)
+    return matches[0] if matches else None
 
-- BOOK_ROOM: User wants to book a hotel room
-- GENERAL_QUERY: User is asking about hotel amenities, pricing, or just chatting
-- PROVIDE_GUESTS: User is providing the number of guests
-- PROVIDE_DATES: User is providing check-in or check-out dates
-- PROVIDE_NAME: User is providing their name
-- CONFIRM_BOOKING: User is confirming the booking
-- CANCEL_BOOKING: User wants to cancel
-- MODIFY_BOOKING: User wants to change booking details
-- IDLE: No meaningful input
+
+ROUTER_SYSTEM_PROMPT = """
+You are a highly critical intent classifier for a luxury hotel kiosk AI named "Siya".
+The user's text may contain mixed intentions, conversational filler, or mid-sentence corrections (e.g., "Wait, no, I mean check in").
+Your job is to read the ENTIRE message carefully before deciding the final intent.
+
+- BOOK_ROOM: User explicitly wants to start a NEW reservation.
+- CHECK_IN: User is at the kiosk to get their room key for an EXISTING booking.
+- GENERAL_QUERY: User is asking about amenities (pool, gym, etc.), prices, or just greeting.
+- PROVIDE_GUESTS: User is giving the number of people staying.
+- PROVIDE_DATES: User is giving check-in or check-out dates.
+- PROVIDE_NAME: User is giving the guest name for the booking.
+- CONFIRM_BOOKING: User is confirming the details shown.
+- CANCEL_BOOKING: User wants to stop the current process or cancel.
+- MODIFY_BOOKING: User wants to change something they just said.
+- IDLE: No meaningful input or silence.
 
 Rules:
-- Greetings like "hello", "hi", "namaste" are GENERAL_QUERY, NOT IDLE.
-- IDLE is ONLY for empty/silent input.
-- If the current screen is BOOKING_COLLECT and the user gives a name, it is PROVIDE_NAME.
-- If the current screen is BOOKING_COLLECT and the user gives numbers, it is PROVIDE_GUESTS.
+- If the user corrects themselves (e.g., "I want a room... no wait, check in"), prioritize the LAST clear intention.
+- Greetings are GENERAL_QUERY.
+- Do not be "eager". If the intent is ambiguous (e.g. just a partial word or silence), default to GENERAL_QUERY or IDLE.
+- If the user says "sorry" or "wait", they are likely correcting their previous thought. Ignore the part before the correction.
 
 Respond ONLY with a JSON object:
 {"intent": "<INTENT>", "confidence": <0.0-1.0>}
 """
 
 
-def route_intent(state: KioskState) -> dict:
+async def route_intent(state: KioskState) -> dict:
     """Node 1: Classify the user's intent."""
     print(f"[Router] Classifying: '{state.latest_transcript}'")
 
@@ -108,7 +119,7 @@ def build_general_chat_prompt(language: str) -> str:
     )
 
 
-def general_chat(state: KioskState) -> dict:
+async def general_chat(state: KioskState) -> dict:
     """Node 2: Handle general hotel questions and greetings."""
     print("[GeneralChat] Handling general query...")
 
@@ -182,7 +193,7 @@ Rules:
 """
 
 
-def booking_logic(state: KioskState) -> dict:
+async def booking_logic(state: KioskState) -> dict:
     """Node 3: Collect booking details slot by slot."""
     print("[BookingLogic] Running slot collection...")
 
@@ -203,13 +214,32 @@ def booking_logic(state: KioskState) -> dict:
         }
 
     extracted = result.get("extracted_slots", {})
+    speech = result.get("speech", "Let me note that down.")
+    
+    # VALIDATION LAYER: Fuzzy Room Check
+    # In a real app, we would fetch these from the DB based on state.tenant_id
+    VALID_ROOMS = ["Superior Room", "Deluxe Suite", "Executive Suite", "Presidential Suite"]
+    
+    if extracted.get("room_type"):
+        original_room = extracted["room_type"]
+        best_match = find_best_room_match(original_room, VALID_ROOMS)
+        
+        if best_match:
+            if best_match != original_room:
+                print(f"[Validation] Fuzzy match: '{original_room}' -> '{best_match}'")
+            extracted["room_type"] = best_match
+        else:
+            # Rejection: If the room doesn't exist, we don't save it and we ask for clarification.
+            print(f"[Validation] Rejected room type: '{original_room}'")
+            extracted["room_type"] = None
+            speech = f"I'm sorry, we don't have a '{original_room}' room. We have Superior, Deluxe, and Executive suites. Which would you prefer?"
+
     current_slots = state.booking_slots.model_dump()
     for key, value in extracted.items():
         if value is not None:
             current_slots[key] = value
 
     updated_slots = BookingSlots(**current_slots)
-    speech = result.get("speech", "Let me note that down.")
     is_complete = result.get("is_complete", False) or updated_slots.is_complete()
     next_slot = result.get("next_slot_to_ask")
 
@@ -218,9 +248,10 @@ def booking_logic(state: KioskState) -> dict:
         ConversationTurn(role="assistant", content=speech),
     ]
 
-    next_screen = "BOOKING_SUMMARY" if is_complete else "BOOKING_COLLECT"
+    # Determine next screen based on what's still missing
+    next_screen = _determine_next_screen(updated_slots, is_complete)
 
-    print(f"[BookingLogic] Slots: {updated_slots.model_dump()} | Complete: {is_complete}")
+    print(f"[BookingLogic] Slots: {updated_slots.model_dump()} | Complete: {is_complete} | Screen: {next_screen}")
 
     return {
         "speech_response": speech,
@@ -229,3 +260,19 @@ def booking_logic(state: KioskState) -> dict:
         "history": updated_history,
         "next_ui_screen": next_screen,
     }
+
+
+def _determine_next_screen(slots: BookingSlots, is_complete: bool) -> str:
+    """Map missing slots to the correct UI screen.
+    
+    Flow:  ROOM_SELECT  →  BOOKING_COLLECT  →  BOOKING_SUMMARY
+    """
+    if is_complete:
+        return "BOOKING_SUMMARY"
+
+    # If we don't know the room yet, show the room picker
+    if slots.room_type is None:
+        return "ROOM_SELECT"
+
+    # For all other missing info (dates, guests, name), use the conversational collector
+    return "BOOKING_COLLECT"

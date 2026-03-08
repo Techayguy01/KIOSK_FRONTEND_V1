@@ -71,6 +71,10 @@ class VoiceRuntimeService {
     private hasReceivedAnyTranscript: boolean = false;
     private hasReceivedFinalTranscript: boolean = false;
 
+    // Configuration (Mutable for Adaptive VAD)
+    private noSpeechTimeoutMs: number = CONFIG.NO_SPEECH_TIMEOUT_MS;
+    private noResultTimeoutMs: number = CONFIG.NO_RESULT_TIMEOUT_MS;
+
     // Timers
     private noSpeechTimer: ReturnType<typeof setTimeout> | null = null;
     private noResultTimer: ReturnType<typeof setTimeout> | null = null;
@@ -92,6 +96,9 @@ class VoiceRuntimeService {
     // Phase 10: Debug metrics (dev only)
     private metrics: SessionMetrics = this.createEmptyMetrics();
     private transcriptBuffer: string[] = [];  // For privacy clearing
+
+    // HMR cleanup: store unsubscribe functions so destroy() can remove ghost callbacks
+    private disposers: (() => void)[] = [];
 
     constructor() {
         console.log("[VoiceRuntime] Initialized (Phase 10 - Production Hardening)");
@@ -165,12 +172,17 @@ class VoiceRuntimeService {
         });
         WebSpeechClient.onEndOfTurn(handleFinalTranscript);
         WebSpeechClient.onError((error) => {
+            // [V2 DUMB FRONTEND] Ignore "aborted" errors that happen when we stop the mic to speak.
+            // These are expected and should not trigger an error state.
+            if (error.message?.includes("aborted") && this.mode === "speaking") {
+                return;
+            }
             console.error("[VoiceRuntime] Web Speech STT error:", error.message);
             this.emit({ type: "VOICE_SESSION_ERROR" });
         });
 
-        // TTS lifecycle events
-        TTSController.subscribe((event) => {
+        // TTS lifecycle events — store unsubscribe for HMR cleanup
+        const unsubTTS = TTSController.subscribe((event) => {
             if (event.type === "TTS_ENDED" || event.type === "TTS_CANCELLED") {
                 if (this.mode === "speaking") {
                     console.log("[VoiceRuntime] TTS ended, returning to idle");
@@ -183,6 +195,7 @@ class VoiceRuntimeService {
                 this.emit({ type: "VOICE_SESSION_ERROR" });
             }
         });
+        this.disposers.push(unsubTTS);
     }
 
     private async startActiveStt(): Promise<void> {
@@ -301,6 +314,13 @@ class VoiceRuntimeService {
         if (this.mode === newMode) return;
         console.log(`[VoiceRuntime] Mode: ${this.mode} → ${newMode}`);
         this.mode = newMode;
+
+        // Reset timeouts to defaults when returning to idle
+        if (newMode === "idle") {
+            this.noSpeechTimeoutMs = CONFIG.NO_SPEECH_TIMEOUT_MS;
+            this.noResultTimeoutMs = CONFIG.NO_RESULT_TIMEOUT_MS;
+        }
+
         this.modeListeners.forEach(cb => cb(newMode));
     }
 
@@ -315,12 +335,28 @@ class VoiceRuntimeService {
         };
     }
 
+    // === Adaptive Timeouts ===
+
+    /**
+     * Update the VAD timeouts for the current interaction phase.
+     */
+    public updateTimeouts(noSpeech: number, noResult: number): void {
+        console.log(`[VoiceRuntime] Updating timeouts: noSpeech=${noSpeech}ms, noResult=${noResult}ms`);
+        this.noSpeechTimeoutMs = noSpeech;
+        this.noResultTimeoutMs = noResult;
+    }
+
     // === Full Duplex API ===
 
     /**
      * Start listening. Stops TTS first (priority).
      */
-    public async startListening(): Promise<void> {
+    public async startListening(language?: string): Promise<void> {
+        // Update STT language if provided
+        if (language) {
+            WebSpeechClient.setLanguage(language);
+        }
+
         // Stop any active TTS (barge-in)
         if (TTSController.isSpeaking()) {
             console.log("[VoiceRuntime] Stopping TTS to start listening");
@@ -465,7 +501,7 @@ class VoiceRuntimeService {
                 this.handleSilentTurn();  // Phase 10: Count as silent
                 this.stopListening("pause");
             }
-        }, CONFIG.NO_SPEECH_TIMEOUT_MS);
+        }, this.noSpeechTimeoutMs);
     }
 
     private clearNoSpeechTimer(): void {
@@ -482,7 +518,7 @@ class VoiceRuntimeService {
                 this.handleSilentTurn();  // Phase 10
                 this.stopListening("pause");
             }
-        }, CONFIG.NO_RESULT_TIMEOUT_MS);
+        }, this.noResultTimeoutMs);
     }
 
     private clearNoResultTimer(): void {
@@ -544,8 +580,8 @@ class VoiceRuntimeService {
 
     // === Legacy Compatibility ===
 
-    public async startSession(): Promise<void> {
-        return this.startListening();
+    public async startSession(language?: string): Promise<void> {
+        return this.startListening(language);
     }
 
     public endSession(): void {
@@ -581,6 +617,33 @@ class VoiceRuntimeService {
             cb(this.getTurnState());
         });
     }
+    /**
+     * Destroy this instance — stop listening and clear all listeners.
+     * Called during HMR to prevent ghost instances.
+     */
+    public destroy(): void {
+        this.stopListening();
+        this.clearAllTimers();
+        // Unsubscribe from TTSController's listener array
+        this.disposers.forEach(unsub => unsub());
+        this.disposers = [];
+        // Clear own listener arrays
+        this.listeners = [];
+        this.modeListeners = [];
+        // Clear WebSpeechClient callbacks to prevent ghost voice sessions
+        WebSpeechClient.onSpeechStarted(() => { });
+        WebSpeechClient.onInterim(() => { });
+        WebSpeechClient.onEndOfTurn(() => { });
+        WebSpeechClient.onError(() => { });
+        console.log("[VoiceRuntime] Destroyed (HMR cleanup)");
+    }
 }
 
 export const VoiceRuntime = new VoiceRuntimeService();
+
+// Vite HMR: Clean up old instance before replacement
+if (import.meta.hot) {
+    import.meta.hot.dispose(() => {
+        VoiceRuntime.destroy();
+    });
+}

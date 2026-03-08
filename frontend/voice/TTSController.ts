@@ -62,27 +62,29 @@ class TTSControllerService {
                 return;
             }
 
-            const byQuality = voices.filter((voice) => {
-                const lowerName = voice.name.toLowerCase();
-                return VOICE_QUALITY_HINTS.some((hint) => lowerName.includes(hint));
-            });
-            const candidatePool = byQuality.length > 0 ? byQuality : voices;
+            // 1. Try to find an Indian Female voice first (Microsoft Neerja, Google's Indian female, etc.)
+            let selected = voices.find(v =>
+                (v.lang === 'en-IN' || v.lang === 'hi-IN') &&
+                (v.name.includes('Female') || v.name.includes('Neerja') || v.name.includes('Aditi'))
+            );
 
-            const exactLangMatch = TTS_LANG_PRIORITY
-                .map((lang) => candidatePool.find((voice) => voice.lang.toLowerCase() === lang))
-                .find(Boolean);
+            // 2. If not found, fall back to any standard female English voice
+            if (!selected) {
+                selected = voices.find(v => v.name.includes('Female') || v.name.includes('Samantha'));
+            }
 
-            const prefixLangMatch = TTS_LANG_PRIORITY
-                .map((lang) => {
-                    const prefix = lang.split("-")[0];
-                    return candidatePool.find((voice) => voice.lang.toLowerCase().startsWith(prefix));
-                })
-                .find(Boolean);
+            // 3. Fallback to quality hints (Google, Microsoft, etc.)
+            if (!selected) {
+                selected = voices.find(v => {
+                    const lowerName = v.name.toLowerCase();
+                    return VOICE_QUALITY_HINTS.some((hint) => lowerName.includes(hint));
+                });
+            }
 
-            this.selectedVoice = exactLangMatch || prefixLangMatch || candidatePool[0] || voices[0];
+            this.selectedVoice = selected || voices[0];
 
             if (this.selectedVoice) {
-                console.log(`[TTSController] Voice: ${this.selectedVoice.name} (${this.selectedVoice.lang})`);
+                console.log(`[TTSController] Selected Fallback Voice: ${this.selectedVoice.name} (${this.selectedVoice.lang})`);
             }
         };
 
@@ -106,7 +108,8 @@ class TTSControllerService {
         // Detect language — use passed language, then selected voice, then default
         const currentLang = language || this.selectedVoice?.lang.split("-")[0] || "en";
 
-        // Phase 2: Try Premium AI Voice first
+        // Try Premium AI Voice — the ONLY voice source.
+        // If it fails, we stay silent. The text is already visible in the CaptionsOverlay.
         try {
             this.state = "SPEAKING";
             this.emit({ type: "TTS_STARTED", text });
@@ -115,68 +118,12 @@ class TTSControllerService {
 
             this.state = "IDLE";
             this.emit({ type: "TTS_ENDED" });
-            return;
         } catch (err) {
-            console.warn("[TTSController] Premium voice failed, falling back to Robot:", err);
-            // Fall through to native TTS
+            console.warn("[TTSController] Premium voice failed. Text shown on screen instead:", err);
+            this.state = "IDLE";
+            // Emit TTS_ENDED so the system doesn't get stuck waiting for speech to finish.
+            this.emit({ type: "TTS_ENDED" });
         }
-
-        return new Promise((resolve, reject) => {
-            const synth = window.speechSynthesis;
-            if (synth.paused) {
-                synth.resume();
-            }
-
-            const utterance = new SpeechSynthesisUtterance(text.trim());
-
-            if (this.selectedVoice) {
-                utterance.voice = this.selectedVoice;
-            }
-
-            utterance.lang = this.selectedVoice?.lang || TTS_LANG_PRIORITY[0] || "hi-IN";
-            utterance.rate = 0.95;
-            utterance.pitch = 1.0;
-            utterance.volume = 1.0;
-
-            utterance.onstart = () => {
-                this.state = "SPEAKING";
-                this.isCancelling = false;
-                console.log(`[TTSController] Native Speaking: "${text.substring(0, 40)}..."`);
-                // Already emitted TTS_STARTED above, but we can emit again if needed 
-                // or just rely on the first one. Let's keep it simple.
-            };
-
-            utterance.onend = () => {
-                this.state = "IDLE";
-                this.currentUtterance = null;
-
-                if (!this.isCancelling) {
-                    console.log("[TTSController] Native speech ended");
-                    this.emit({ type: "TTS_ENDED" });
-                }
-
-                resolve();
-            };
-
-            utterance.onerror = (event) => {
-                // Ignore 'interrupted' and 'canceled' - expected during barge-in
-                if (event.error === 'interrupted' || event.error === 'canceled') {
-                    this.state = "IDLE";
-                    this.currentUtterance = null;
-                    resolve();
-                    return;
-                }
-
-                this.state = "IDLE";
-                this.currentUtterance = null;
-                console.error(`[TTSController] Native Error: ${event.error}`);
-                this.emit({ type: "TTS_ERROR", error: event.error });
-                reject(new Error(event.error));
-            };
-
-            this.currentUtterance = utterance;
-            synth.speak(utterance);
-        });
     }
 
     /**
@@ -248,6 +195,22 @@ class TTSControllerService {
     private emit(event: TtsEvent): void {
         this.listeners.forEach(cb => cb(event));
     }
+    /**
+     * Destroy this instance — clear all listeners and stop audio.
+     * Called during HMR to prevent ghost instances.
+     */
+    public destroy(): void {
+        this.hardStop();
+        this.listeners = [];
+        console.log("[TTSController] Destroyed (HMR cleanup)");
+    }
 }
 
 export const TTSController = new TTSControllerService();
+
+// Vite HMR: Clean up old instance before replacement
+if (import.meta.hot) {
+    import.meta.hot.dispose(() => {
+        TTSController.destroy();
+    });
+}

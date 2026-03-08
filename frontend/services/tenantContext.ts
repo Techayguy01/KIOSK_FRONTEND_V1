@@ -5,7 +5,7 @@ export type TenantPayload = TenantDTO;
 // V2: Python FastAPI backend
 const API_BASE_URL = "http://localhost:8000";
 
-let currentTenantSlug = "grand-hotel";
+let currentTenantSlug = "";
 let currentTenant: TenantPayload | null = null;
 
 export function setTenantContext(tenantSlug: string, tenant: TenantPayload | null): void {

@@ -118,6 +118,26 @@ class BrowserWebSpeechClient {
         return this.isConnected;
     }
 
+    /**
+     * Update the recognition language at runtime.
+     * Use "hi-IN" for Hindi, "en-IN" or "en-US" for English.
+     */
+    public setLanguage(lang: string): void {
+        const targetLang = lang.startsWith("hi") ? "hi-IN" : (lang.startsWith("en") ? "en-IN" : lang);
+
+        if (this.recognition && this.recognition.lang !== targetLang) {
+            console.log(`[WebSpeech] Updating language: ${this.recognition.lang} -> ${targetLang}`);
+            this.recognition.lang = targetLang;
+
+            // If we're already running, we might need to restart to apply immediately
+            if (this.nativeRunning && !this.intentionalStop) {
+                console.log("[WebSpeech] Restarting to apply language change");
+                this.close();
+                this.connect();
+            }
+        }
+    }
+
     private getRecognitionCtor(): SpeechRecognitionCtor | null {
         if (typeof window === "undefined") {
             return null;

@@ -23,7 +23,7 @@ import { DevToolbar } from '../components/DevToolbar';
 import AnimatedGradientBackground from '../components/ui/animated-gradient-background';
 import { setTenantContext, TenantPayload } from '../services/tenantContext';
 
-const DEFAULT_TENANT_SLUG = 'grand-hotel';
+// Tenant slug is derived from the URL route parameter only. No hardcoded default.
 
 const STATE_TO_ROUTE: Record<UiState, string> = {
   IDLE: 'idle',
@@ -99,7 +99,7 @@ const TenantKioskApp: React.FC = () => {
 
   // Keep URL in sync with rendered kiosk state under /:tenantSlug/<page>
   useEffect(() => {
-    const safeTenantSlug = tenantSlug || DEFAULT_TENANT_SLUG;
+    const safeTenantSlug = tenantSlug || '';
     const expectedPath = `/${safeTenantSlug}/${STATE_TO_ROUTE[effectiveState]}`;
 
     if (location.pathname !== expectedPath) {
@@ -109,7 +109,7 @@ const TenantKioskApp: React.FC = () => {
 
   // Resolve tenant object once slug is known and expose it globally
   useEffect(() => {
-    const safeTenantSlug = tenantSlug || DEFAULT_TENANT_SLUG;
+    const safeTenantSlug = tenantSlug || '';
     let alive = true;
 
     setTenantContext(safeTenantSlug, null);
@@ -187,7 +187,7 @@ const TenantKioskApp: React.FC = () => {
   };
 
   return (
-    <UIContext.Provider value={{ state, data, emit, loading, transcript: '', tenantSlug: tenantSlug || DEFAULT_TENANT_SLUG, tenant }}>
+    <UIContext.Provider value={{ state, data, emit, loading, transcript: '', tenantSlug: tenantSlug || '', tenant }}>
       <div className="antialiased w-full h-full relative">
 
         {/* Global Navigation Controls (Visibility controlled implicitly by page rendering, backing is Agent driven) */}
@@ -224,17 +224,26 @@ const TenantKioskApp: React.FC = () => {
 
 const TenantRootRedirect: React.FC = () => {
   const { tenantSlug } = useParams<{ tenantSlug: string }>();
-  const slug = tenantSlug || DEFAULT_TENANT_SLUG;
-  return <Navigate to={`/${slug}/welcome`} replace />;
+  if (!tenantSlug) return <MissingTenantPage />;
+  return <Navigate to={`/${tenantSlug}/welcome`} replace />;
 };
+
+/** Shown when no tenant slug is present in the URL (e.g. bare domain visit). */
+const MissingTenantPage: React.FC = () => (
+  <div className="h-screen w-full flex flex-col items-center justify-center bg-gray-950 text-white">
+    <h1 className="text-3xl font-bold mb-4">Kiosk Not Configured</h1>
+    <p className="text-gray-400 text-lg">Please access this kiosk via a valid tenant URL.</p>
+    <p className="text-gray-500 text-sm mt-2">Example: <code className="bg-gray-800 px-2 py-1 rounded">/your-hotel/welcome</code></p>
+  </div>
+);
 
 const App: React.FC = () => {
   return (
     <Routes>
-      <Route path="/" element={<Navigate to={`/${DEFAULT_TENANT_SLUG}/welcome`} replace />} />
+      <Route path="/" element={<MissingTenantPage />} />
       <Route path="/:tenantSlug" element={<TenantRootRedirect />} />
       <Route path="/:tenantSlug/*" element={<TenantKioskApp />} />
-      <Route path="*" element={<Navigate to={`/${DEFAULT_TENANT_SLUG}/welcome`} replace />} />
+      <Route path="*" element={<MissingTenantPage />} />
     </Routes>
   );
 };

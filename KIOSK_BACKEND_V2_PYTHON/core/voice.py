@@ -99,9 +99,11 @@ class VoiceProvider:
         """
         Converts text to speech using Sarvam TTS (Direct REST API).
         Returns the raw audio bytes (WAV format).
+        Uses Bulbul v3 for superior accent handling.
         """
         import urllib.request
         import json
+        import base64
 
         if not SARVAM_API_KEY:
             raise ValueError("[Voice] SARVAM_API_KEY not found in environment")
@@ -109,11 +111,12 @@ class VoiceProvider:
         lang_code = "hi-IN" if language.startswith("hi") else "en-IN"
         url = "https://api.sarvam.ai/text-to-speech"
         
+        # Phase 2 Upgrade: Use Bulbul v3 as suggested
         payload = {
             "text": text,
             "target_language_code": lang_code,
-            "speaker": "anushka",
-            "model": "bulbul:v2"
+            "speaker": "ritu", # Premium v3 female voice
+            "model": "bulbul:v3"
         }
         
         headers = {
@@ -122,7 +125,7 @@ class VoiceProvider:
         }
 
         try:
-            print(f"[Voice] Requesting Premium TTS (REST) for: \"{text[:30]}...\"")
+            print(f"[Voice] Requesting Premium (v3) TTS for: \"{text[:30]}...\"")
             req = urllib.request.Request(
                 url, 
                 data=json.dumps(payload).encode("utf-8"), 
@@ -133,7 +136,18 @@ class VoiceProvider:
             with urllib.request.urlopen(req, timeout=15) as response:
                 if response.status != 200:
                     raise Exception(f"Sarvam API error: {response.status}")
-                return response.read()
+                
+                # Direct REST returns JSON { "audios": ["base64...", ...] }
+                raw_resp = response.read().decode("utf-8")
+                resp_json = json.loads(raw_resp)
+                
+                if "audios" in resp_json and len(resp_json["audios"]) > 0:
+                    # Sarvam v3 returns a list of base64 strings
+                    b64_str = resp_json["audios"][0]
+                    return base64.b64decode(b64_str)
+                
+                # Fallback in case of raw stream (legacy)
+                return raw_resp.encode("latin-1")
                 
         except Exception as e:
             print(f"[Voice] Direct Sarvam TTS failed: {e}")

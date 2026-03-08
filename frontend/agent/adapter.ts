@@ -170,18 +170,23 @@ class AgentAdapterService {
         promptAsked: "",
     };
 
+    // HMR cleanup: store unsubscribe functions so destroy() can remove ghost callbacks
+    private disposers: (() => void)[] = [];
+
     constructor() {
         console.log("[AgentAdapter] Initialized (Phase 9.4 - LLM Confidence Gating)");
 
-        // Subscribe to Voice Runtime (Input Source)
-        VoiceRuntime.subscribe(this.handleVoiceEvent.bind(this));
+        // Subscribe to Voice Runtime (Input Source) — store unsubscribe for HMR cleanup
+        const unsubVoice = VoiceRuntime.subscribe(this.handleVoiceEvent.bind(this));
+        this.disposers.push(unsubVoice);
 
         // Phase 9.4.1: Subscribe to TTS events for polite turn-taking
-        TTSController.subscribe((event) => {
+        const unsubTTS = TTSController.subscribe((event) => {
             if (event.type === "TTS_ENDED") {
                 this.handleTTSEnded();
             }
         });
+        this.disposers.push(unsubTTS);
     }
 
     // 1. THE SENTIMENT ENGINE ðŸ§ 
@@ -231,14 +236,14 @@ class AgentAdapterService {
         const allowsVoice = this.hasVoiceAuthority();
 
         if (allowsVoice) {
-            console.log("[AgentAdapter] TTS ended, starting listening after 200ms");
-            // Wait 200ms to clear audio buffers, then start listening
+            console.log("[AgentAdapter] TTS ended, starting listening after 600ms (echo prevention)");
+            // Wait 600ms to clear audio buffers and room echo, then start listening
             setTimeout(() => {
                 // Double-check we're still in a voice-enabled state
                 if (this.hasVoiceAuthority()) {
-                    VoiceRuntime.startListening();
+                    VoiceRuntime.startListening(this.language);
                 }
-            }, 200);
+            }, 600);
         } else {
             console.log("[AgentAdapter] TTS ended, but state doesn't allow voice");
         }
@@ -456,10 +461,8 @@ class AgentAdapterService {
 
             case "VOICE_TRANSCRIPT_PARTIAL":
                 // Just for live display, no action needed
-                // Phase 12: Emit Partial Transcript
                 this.resetInactivityTimer();
                 this.emitTranscript(event.transcript, false, 'user');
-                this.maybeHandleRealtimeCommand(event.transcript, "partial");
                 break;
         }
     }
@@ -497,63 +500,9 @@ class AgentAdapterService {
      * Deterministic high-priority routing for critical commands.
      * Used as a fallback when STT text is noisy or LLM confidence is unstable.
      */
-    private getFastPathIntent(rawTranscript: string): Intent | null {
-        const transcript = (rawTranscript || "").toLowerCase().trim();
-        if (!transcript) return null;
-
-        // Exact phrase match from state command map first.
-        const exact = this.mapTranscriptToIntent(transcript);
-        if (exact) return exact;
-
-        if (/\b(go back|back|previous page|one page back|previous)\b/.test(transcript)) {
-            return "BACK_REQUESTED";
-        }
-        if (this.state !== "IDLE" && /\b(cancel|cancel booking|stop booking|start over|abort)\b/.test(transcript)) {
-            return "CANCEL_REQUESTED";
-        }
-        if (this.state === "BOOKING_SUMMARY") {
-            if (/\b(confirm|yes|proceed|continue|pay|looks good|done)\b/.test(transcript)) {
-                return "CONFIRM_PAYMENT";
-            }
-            if (/\b(modify|change|edit)\b/.test(transcript)) {
-                return "MODIFY_BOOKING";
-            }
-        }
-        if (this.state === "PAYMENT") {
-            if (/\b(pay|confirm payment|process payment|continue|proceed|card)\b/.test(transcript)) {
-                return "CONFIRM_PAYMENT";
-            }
-        }
-
-        const voiceEntryStates: UiState[] = ["WELCOME", "AI_CHAT", "MANUAL_MENU"];
-        if (voiceEntryStates.includes(this.state)) {
-            const roomBookingSignal =
-                /(book|booking|reserve|reservation)\b/.test(transcript) ||
-                /room\s*book|book\s*room/.test(transcript) ||
-                (/\b(room|kamra)\b/.test(transcript) && /(want|need|looking|find|take|new|chahiye|chaiye)/.test(transcript)) ||
-                /\b(kamra|book karna|booking karna|room chahiye)\b/.test(transcript);
-
-            if (roomBookingSignal) {
-                return "BOOK_ROOM_SELECTED";
-            }
-            if (/(check\s*in|checkin|reservation\s*check|booking\s*check)/.test(transcript)) {
-                return "CHECK_IN_SELECTED";
-            }
-            if (/(help|support|staff|human|manager|madad|sahayata)/.test(transcript)) {
-                return "HELP_SELECTED";
-            }
-        }
-
-        if (this.state === "ROOM_SELECT") {
-            if (this.isRoomInfoQuery(transcript)) {
-                return null;
-            }
-            const inferredRoom = this.inferRoomFromTranscript(transcript) || this.resolveRoomFromHint(transcript);
-            if (inferredRoom) {
-                return "ROOM_SELECTED";
-            }
-        }
-
+    private getFastPathIntent(_transcript: string): Intent | null {
+        // [V2 DUMB FRONTEND] Hardcoded regex triggers removed.
+        // All intent classification must happen in the backend.
         return null;
     }
 
@@ -676,51 +625,9 @@ class AgentAdapterService {
         return asksAmenities || asksPrice || asksCompare;
     }
 
-    private maybeHandleRealtimeCommand(rawTranscript: string, source: "partial" | "final" = "partial"): boolean {
-        const transcript = (rawTranscript || "").trim();
-        if (transcript.length < 2) return false;
-
-        if (this.state === "ROOM_SELECT" && this.isRoomInfoQuery(transcript)) {
-            return false;
-        }
-
-        const fastIntent = this.getFastPathIntent(transcript);
-        if (!fastIntent) return false;
-
-        const inferredRoom = this.state === "ROOM_SELECT"
-            ? this.inferRoomFromTranscript(transcript) || this.resolveRoomFromHint(transcript)
-            : null;
-
-        if (fastIntent === "ROOM_SELECTED" && !inferredRoom) {
-            return false;
-        }
-
-        const now = Date.now();
-        if (
-            this.lastRealtimeIntent === fastIntent &&
-            now - this.lastRealtimeIntentAt < this.REALTIME_INTENT_DEDUP_MS
-        ) {
-            return true;
-        }
-
-        this.lastRealtimeIntent = fastIntent;
-        this.lastRealtimeIntentAt = now;
-        if (source === "partial") {
-            this.suppressFinalTranscriptUntil = now + 1400;
-        }
-
-        if (fastIntent === "CANCEL_REQUESTED" || fastIntent === "CANCEL_BOOKING") {
-            if (!this.pendingCancelConfirmation) {
-                this.pendingCancelConfirmation = true;
-                this.speak("Are you sure you want to cancel? Please say yes or no.");
-            }
-            this.hasProcessedTranscript = true;
-            return true;
-        }
-
-        this.dispatch(fastIntent, { transcript, room: inferredRoom });
-        this.hasProcessedTranscript = true;
-        return true;
+    private maybeHandleRealtimeCommand(_transcript: string, _source: "partial" | "final" = "partial"): boolean {
+        // [V2 DUMB FRONTEND] Realtime command interceptors disabled to prevent jumpy navigation.
+        return false;
     }
 
     private resolveRoomFromHint(hint: unknown): any | null {
@@ -849,7 +756,9 @@ class AgentAdapterService {
             case 'WELCOME':
                 return 'GENERAL_QUERY';
             case 'IDLE':
-                return 'RESET';
+                // [V2 DUMB FRONTEND] Do NOT map to RESET. The backend's nextUiScreen
+                // controls screen changes. An IDLE intent just means "no specific action".
+                return 'GENERAL_QUERY';
             case 'BACK':
             case 'BACK_REQUESTED':
                 return 'BACK_REQUESTED';
@@ -1000,30 +909,37 @@ class AgentAdapterService {
 
             console.log(`[Agent] Mapping Intent: ${rawIntent} -> ${strictEvent}`);
 
-            const willTransition =
-                strictEvent !== "GENERAL_QUERY" &&
-                this.resolveNextStateFromIntent(this.state, strictEvent) !== this.state;
+            // 3. Handle Transitions (Server-Driven)
+            const serverState = decision.nextUiScreen as UiState;
+            const willTransition = serverState && serverState !== this.state;
 
-            // 3. Handle "Talking" (TTS)
-            // Avoid speaking text that will be immediately cancelled by a state transition.
-            if (decision.speech && !willTransition) {
-                this.speak(decision.speech);
-            }
-
-            // 4. Handle "Moving" (State Machine)
-            // Use dispatch() instead of handleIntent() to avoid killing the TTS we just started.
-            // dispatch() respects the State Machine and Voice Authority without hard-stopping audio.
-            if (strictEvent !== 'GENERAL_QUERY') {
-                // Convert string to Intent type if possible, or cast (User provided string return type)
-                this.dispatch(strictEvent as Intent, {
+            // Execute Transition or Data Update
+            if (willTransition) {
+                // IMPORTANT: Do NOT speak before transitioning.
+                // transitionTo() calls stopSpeaking() internally, which would kill the audio.
+                // The new screen will handle its own speech (e.g., room announcement).
+                console.log(`[AgentAdapter] Server directed transition: ${this.state} -> ${serverState}`);
+                this.transitionTo(serverState, strictEvent, {
                     transcript,
-                    llmIntent: rawIntent,
-                    room: inferredRoom,
-                    slots: decision.accumulatedSlots || decision.extractedSlots,
-                    missingSlots: decision.missingSlots,
-                    nextSlotToAsk: decision.nextSlotToAsk,
-                    isComplete: decision.isComplete
+                    ...decision
                 });
+            } else {
+                // No transition — speak the LLM response (conversational turn on same screen)
+                if (decision.speech) {
+                    this.speak(decision.speech);
+                }
+
+                if (strictEvent !== 'GENERAL_QUERY') {
+                    this.dispatch(strictEvent as Intent, {
+                        transcript,
+                        llmIntent: rawIntent,
+                        room: inferredRoom,
+                        slots: decision.accumulatedSlots || decision.extractedSlots,
+                        missingSlots: decision.missingSlots,
+                        nextSlotToAsk: decision.nextSlotToAsk,
+                        isComplete: decision.isComplete
+                    });
+                }
             }
 
         } catch (error) {
@@ -1314,8 +1230,8 @@ class AgentAdapterService {
         ];
         const randomNudge = nudges[Math.floor(Math.random() * nudges.length)];
 
-        // Speak, but don't force listening immediately to avoid loops
-        TTSController.speak(randomNudge);
+        // Speak through the proper VoiceRuntime path (premium voice, not robot)
+        this.speak(randomNudge);
     }
 
     /**
@@ -1358,6 +1274,15 @@ class AgentAdapterService {
 
         console.log(`[AgentAdapter] State Transition: ${previousState} -> ${this.state}`);
 
+        // [V2] Adaptive Timeouts (UX Enhancement) - Give more time on complex screens
+        if (["ROOM_SELECT", "BOOKING_COLLECT", "PAYMENT"].includes(nextState)) {
+            VoiceRuntime.updateTimeouts(10000, 15000); // 10s no-speech, 15s no-result
+        } else {
+            // Defaults are restored in VoiceRuntime.setMode("idle") when session ends,
+            // but for state-to-state transitions we might want to reset explicitly too.
+            VoiceRuntime.updateTimeouts(8000, 12000);
+        }
+
         // Phase 9.4.1: On state change, stop any active TTS and listening
         VoiceRuntime.stopSpeaking();
         VoiceRuntime.stopListening();
@@ -1365,27 +1290,21 @@ class AgentAdapterService {
         // Notify Listeners
         this.notifyListeners();
 
-        // Speak Agent response (lookup from legacy map)
-        let speech = STATE_SPEECH_MAP[nextState];
-        if (nextState === "ROOM_SELECT") {
-            speech = "Sure. I am fetching available rooms for this hotel.";
-        }
-        if (nextState === "BOOKING_COLLECT") {
-            speech = this.buildBookingCollectPrompt();
-        }
-        if (speech) {
-            const resolvedSpeech = this.withTenantName(speech);
-            console.log(`[AgentAdapter] Speaking: "${resolvedSpeech}"`);
-            this.speak(resolvedSpeech);
-        } else {
-            // If no speech, check if we should listen
-            // Start listening if applicable
-            if (this.hasVoiceAuthority()) {
+        // [V2 DUMB FRONTEND] Speech is now primarily handled by the backend response.
+        // Exception: The initial WELCOME greeting is a frontend concern (no backend call yet).
+        if (this.hasVoiceAuthority()) {
+            if (nextState === 'WELCOME' && previousState === 'IDLE') {
+                // First contact: Greet the guest, THEN listen.
+                const tenantName = getTenant()?.name || "our hotel";
+                const greeting = `Welcome to ${tenantName}. How may I assist you today?`;
+                this.speak(greeting);
+                // VoiceRuntime will start listening automatically after TTS ends (via TTS_ENDED handler)
+            } else {
                 setTimeout(() => {
                     if (this.hasVoiceAuthority()) {
-                        VoiceRuntime.startListening();
+                        VoiceRuntime.startListening(this.language);
                     }
-                }, 100);
+                }, 500);
             }
         }
 
@@ -1519,7 +1438,30 @@ class AgentAdapterService {
         this.notifyListeners();
     }
 
+    /**
+     * Destroy this instance — clear all listeners and timers.
+     * Called during HMR to prevent ghost instances.
+     */
+    public destroy(): void {
+        // Unsubscribe from VoiceRuntime and TTSController listener arrays
+        this.disposers.forEach(unsub => unsub());
+        this.disposers = [];
+        // Clear own UI state listeners
+        this.listeners = [];
+        if (this.inactivityTimer) {
+            clearTimeout(this.inactivityTimer);
+            this.inactivityTimer = null;
+        }
+        console.log("[AgentAdapter] Destroyed (HMR cleanup)");
+    }
+
 }
 
 export const AgentAdapter = new AgentAdapterService();
 
+// Vite HMR: Clean up old instance before replacement
+if (import.meta.hot) {
+    import.meta.hot.dispose(() => {
+        AgentAdapter.destroy();
+    });
+}

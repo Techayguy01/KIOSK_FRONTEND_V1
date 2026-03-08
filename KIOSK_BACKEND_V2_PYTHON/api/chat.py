@@ -90,8 +90,8 @@ async def chat(req: ChatRequest, session: AsyncSession = Depends(get_session)):
         state.language = normalize_language_code(req.language)
 
         # Run LangGraph agent
-        # invoke() returns a dict of the final state fields
-        result: dict = kiosk_agent.invoke(state.model_dump())
+        # ainvoke() returns a dict of the final state fields
+        result: dict = await kiosk_agent.ainvoke(state.model_dump())
 
         # Reconstruct updated state from result dict
         updated_state = KioskState(**result)

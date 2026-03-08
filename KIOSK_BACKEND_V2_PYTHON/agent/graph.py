@@ -28,7 +28,7 @@ BOOKING_INTENTS = {
 }
 
 # Intents that stay on the booking screen if already there
-BOOKING_SCREENS = {"BOOKING_COLLECT", "BOOKING_SUMMARY"}
+BOOKING_SCREENS = {"ROOM_SELECT", "BOOKING_COLLECT", "BOOKING_SUMMARY"}
 
 
 def route_to_node(state: KioskState) -> str:
@@ -54,7 +54,7 @@ def build_kiosk_graph() -> StateGraph:
     # Every node function receives a KioskState and returns a dict of updates.
     graph = StateGraph(KioskState)
 
-    # Add all nodes
+    # Add all nodes (now async)
     graph.add_node("route_intent", route_intent)
     graph.add_node("general_chat", general_chat)
     graph.add_node("booking_logic", booking_logic)
