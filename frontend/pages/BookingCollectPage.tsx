@@ -32,6 +32,9 @@ export const BookingCollectPage: React.FC = () => {
     const { emit, data } = useUIState();
     const { conversationHistory, bookingSlots, isProcessing, lastResponse } = useBrain();
     const effectiveBookingSlots = data?.bookingSlots || bookingSlots;
+    const selectedRoomLabel = String(data?.selectedRoom?.displayName || data?.selectedRoom?.name || "").trim() || null;
+    const nextSlotHintKey = String(data?.nextSlotToAsk || "").trim();
+    const nextSlotHintLabel = nextSlotHintKey ? SLOT_LABELS[nextSlotHintKey] || nextSlotHintKey : null;
     const chatEndRef = useRef<HTMLDivElement>(null);
 
     // Auto-scroll chat to bottom
@@ -80,6 +83,9 @@ export const BookingCollectPage: React.FC = () => {
                 <div className="mb-6">
                     <h1 className="text-3xl font-light text-white/90">Booking Your Stay</h1>
                     <p className="text-sm text-white/50 mt-1">Speak naturally — I'll handle the details</p>
+                    {nextSlotHintLabel && (
+                        <p className="text-xs text-blue-200/80 mt-2">Next detail: {nextSlotHintLabel}</p>
+                    )}
                 </div>
 
                 {/* Chat Messages */}
@@ -188,8 +194,10 @@ export const BookingCollectPage: React.FC = () => {
                                 </div>
                                 <div className={`mt-1 text-sm ${isFilled ? "text-white" : "text-white/20"}`}>
                                     {isFilled
-                                        ? key === "totalPrice"
-                                            ? `₹${value.toLocaleString()}`
+                                        ? key === "roomType" && selectedRoomLabel
+                                            ? selectedRoomLabel
+                                            : key === "totalPrice"
+                                                ? `INR ${value.toLocaleString()}`
                                             : String(value)
                                         : "—"
                                     }

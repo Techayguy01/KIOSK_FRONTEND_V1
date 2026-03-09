@@ -14,6 +14,7 @@ export const BookingSummaryPage: React.FC = () => {
     const { emit, data } = useUIState();
     const { bookingSlots } = useBrain();
     const effectiveSlots = data?.bookingSlots || bookingSlots;
+    const bookingError = data?.bookingError || null;
 
     const formatDate = (dateStr: string | null) => {
         if (!dateStr) return "—";
@@ -87,6 +88,12 @@ export const BookingSummaryPage: React.FC = () => {
                         </span>
                     </div>
                 </div>
+
+                {bookingError && (
+                    <div className="mt-4 rounded-lg border border-red-500/40 bg-red-950/40 p-3 text-sm text-red-100">
+                        We could not finalize the booking yet. Please try confirming again.
+                    </div>
+                )}
 
                 {/* Action Buttons */}
                 <div className="flex gap-4 mt-8">

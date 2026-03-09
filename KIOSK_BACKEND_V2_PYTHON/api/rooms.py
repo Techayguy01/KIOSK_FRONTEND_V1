@@ -44,18 +44,24 @@ async def get_rooms(
 
         print(f"[RoomsAPI] Found {len(rooms)} rooms for tenant {tenant_id}")
 
+        normalized_rooms = [
+            {
+                "id": str(room.id),
+                "name": room.name,
+                "code": room.code,
+                "price": float(room.price),
+                "currency": "INR",
+                "image": "",
+                "features": room.amenities or [],
+            }
+            for room in rooms
+        ]
+
         return {
+            "rooms": normalized_rooms,
+            # Legacy compatibility fields while old consumers are being retired.
             "success": True,
-            "data": [
-                {
-                    "id": room.id,
-                    "name": room.name,
-                    "code": room.code,
-                    "price": float(room.price),
-                    "amenities": room.amenities or [],
-                }
-                for room in rooms
-            ]
+            "data": normalized_rooms,
         }
     except HTTPException:
         raise

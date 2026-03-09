@@ -1,5 +1,5 @@
 import type { OcrRequestDTO, OcrResponseDTO } from "@contracts/api.contract";
-import { buildTenantApiUrl, getTenantHeaders, getTenantSlug } from "./tenantContext";
+import { buildTenantApiUrl, getNodeApiBaseUrl, getTenantHeaders } from "./tenantContext";
 
 export class OcrServiceError extends Error {
   status: number;
@@ -40,12 +40,9 @@ export async function scanIdWithOcr(imageDataUrl: string, language = "eng"): Pro
 
   const response = primaryResponse.ok
     ? primaryResponse
-    : await fetch("http://localhost:3002/api/ocr", {
+    : await fetch(`${getNodeApiBaseUrl()}/api/ocr`, {
         method: "POST",
-        headers: {
-          ...headers,
-          "x-tenant-slug": getTenantSlug(),
-        },
+        headers,
         body: JSON.stringify(payload),
       });
 

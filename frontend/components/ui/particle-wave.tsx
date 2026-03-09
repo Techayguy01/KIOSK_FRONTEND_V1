@@ -1,11 +1,13 @@
 import React, { useRef, useEffect } from 'react';
 import * as THREE from 'three';
+import { usePrefersReducedMotion } from '../../hooks/usePrefersReducedMotion';
 
 interface ParticleWaveProps {
   className?: string;
 }
 
 const ParticleWave: React.FC<ParticleWaveProps> = ({ className = '' }) => {
+  const prefersReducedMotion = usePrefersReducedMotion();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const sceneRef = useRef<{
     scene: THREE.Scene;
@@ -144,7 +146,7 @@ const ParticleWave: React.FC<ParticleWaveProps> = ({ className = '' }) => {
 
     const { scene, camera, renderer, particleMaterial } = sceneRef.current;
     
-    particleMaterial.uniforms.uTime.value += 0.05;
+    particleMaterial.uniforms.uTime.value += prefersReducedMotion ? 0.005 : 0.05;
     
     // Update particle color and background based on current theme
     const currentTheme = getCurrentTheme();
@@ -154,7 +156,11 @@ const ParticleWave: React.FC<ParticleWaveProps> = ({ className = '' }) => {
     camera.lookAt(scene.position);
     renderer.render(scene, camera);
     
-    sceneRef.current.animationId = requestAnimationFrame(animate);
+    if (!prefersReducedMotion) {
+      sceneRef.current.animationId = requestAnimationFrame(animate);
+    } else {
+      sceneRef.current.animationId = null;
+    }
   };
 
   const handleResize = () => {
@@ -208,7 +214,7 @@ const ParticleWave: React.FC<ParticleWaveProps> = ({ className = '' }) => {
         renderer.dispose();
       }
     };
-  }, []);
+  }, [prefersReducedMotion]);
 
   return (
     <canvas

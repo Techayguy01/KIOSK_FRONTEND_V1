@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { cn } from "../../lib/utils";
+import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
 
 interface AnimatedGradientBackgroundProps {
     className?: string;
@@ -43,6 +44,7 @@ export function BeamsBackground({
     children,
     intensity = "strong",
 }: AnimatedGradientBackgroundProps) {
+    const prefersReducedMotion = usePrefersReducedMotion();
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const beamsRef = useRef<Beam[]>([]);
     const animationFrameRef = useRef<number>(0);
@@ -142,8 +144,10 @@ export function BeamsBackground({
 
             const totalBeams = beamsRef.current.length;
             beamsRef.current.forEach((beam, index) => {
-                beam.y -= beam.speed;
-                beam.pulse += beam.pulseSpeed;
+                beam.y -= beam.speed * (prefersReducedMotion ? 0.35 : 1);
+                if (!prefersReducedMotion) {
+                    beam.pulse += beam.pulseSpeed;
+                }
 
                 // Reset beam when it goes off screen
                 if (beam.y + beam.length < -100) {
@@ -153,7 +157,11 @@ export function BeamsBackground({
                 drawBeam(ctx, beam);
             });
 
-            animationFrameRef.current = requestAnimationFrame(animate);
+            if (!prefersReducedMotion) {
+                animationFrameRef.current = requestAnimationFrame(animate);
+            } else {
+                animationFrameRef.current = 0;
+            }
         }
 
         animate();
@@ -164,7 +172,7 @@ export function BeamsBackground({
                 cancelAnimationFrame(animationFrameRef.current);
             }
         };
-    }, [intensity]);
+    }, [intensity, prefersReducedMotion]);
 
     return (
         <div
@@ -176,7 +184,7 @@ export function BeamsBackground({
             <canvas
                 ref={canvasRef}
                 className="absolute inset-0"
-                style={{ filter: "blur(15px)" }}
+                style={{ filter: prefersReducedMotion ? "blur(8px)" : "blur(15px)" }}
             />
 
             {/* Subtle overlay for depth */}

@@ -1,5 +1,6 @@
 import { motion } from "framer-motion";
 import React, { useEffect, useRef } from "react";
+import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
 
 interface AnimatedGradientBackgroundProps {
     startingGap?: number;
@@ -32,6 +33,8 @@ const AnimatedGradientBackground: React.FC<AnimatedGradientBackgroundProps> = ({
     topOffset = 0,
     containerClassName = "",
 }) => {
+    const prefersReducedMotion = usePrefersReducedMotion();
+
     if (gradientColors.length !== gradientStops.length) {
         throw new Error(
             `GradientColors and GradientStops must have the same length.`
@@ -44,41 +47,51 @@ const AnimatedGradientBackground: React.FC<AnimatedGradientBackgroundProps> = ({
         let animationFrame: number;
         let width = startingGap;
         let directionWidth = 1;
+        const effectiveBreathing = Breathing && !prefersReducedMotion;
+
+        const applyGradient = (nextWidth: number) => {
+            const gradientStopsString = gradientStops
+                .map((stop, index) => `${gradientColors[index]} ${stop}%`)
+                .join(", ");
+
+            const gradient = `radial-gradient(${nextWidth}% ${nextWidth + topOffset}% at 50% 20%, ${gradientStopsString})`;
+
+            if (containerRef.current) {
+                containerRef.current.style.background = gradient;
+            }
+        };
 
         const animateGradient = () => {
             if (width >= startingGap + breathingRange) directionWidth = -1;
             if (width <= startingGap - breathingRange) directionWidth = 1;
 
-            if (!Breathing) directionWidth = 0;
+            if (!effectiveBreathing) directionWidth = 0;
             width += directionWidth * animationSpeed;
 
-            const gradientStopsString = gradientStops
-                .map((stop, index) => `${gradientColors[index]} ${stop}%`)
-                .join(", ");
-
-            const gradient = `radial-gradient(${width}% ${width + topOffset}% at 50% 20%, ${gradientStopsString})`;
-
-            if (containerRef.current) {
-                containerRef.current.style.background = gradient;
-            }
+            applyGradient(width);
 
             animationFrame = requestAnimationFrame(animateGradient);
         };
 
-        animationFrame = requestAnimationFrame(animateGradient);
+        applyGradient(startingGap);
+        if (effectiveBreathing) {
+            animationFrame = requestAnimationFrame(animateGradient);
+        }
 
-        return () => cancelAnimationFrame(animationFrame);
-    }, [startingGap, Breathing, gradientColors, gradientStops, animationSpeed, breathingRange, topOffset]);
+        return () => {
+            if (animationFrame) cancelAnimationFrame(animationFrame);
+        };
+    }, [startingGap, Breathing, gradientColors, gradientStops, animationSpeed, breathingRange, topOffset, prefersReducedMotion]);
 
     return (
         <div className={`absolute inset-0 overflow-hidden ${containerClassName}`}>
             <motion.div
                 key="animated-gradient-background"
-                initial={{ opacity: 0, scale: 1.5 }}
+                initial={prefersReducedMotion ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 1.5 }}
                 animate={{
                     opacity: 1,
                     scale: 1,
-                    transition: { duration: 2, ease: [0.25, 0.1, 0.25, 1] },
+                    transition: { duration: prefersReducedMotion ? 0 : 2, ease: [0.25, 0.1, 0.25, 1] },
                 }}
                 style={{ position: 'absolute', inset: 0 }}
             >

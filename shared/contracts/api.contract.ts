@@ -1,3 +1,5 @@
+import type { UIState } from "./backend.contract";
+
 export interface ApiErrorBody {
   error: {
     code: string;
@@ -65,7 +67,7 @@ export interface OcrResponseDTO {
 
 export interface ChatRequestDTO {
   transcript?: string;
-  currentState?: string;
+  currentState?: UIState;
   sessionId?: string;
   activeSlot?: BookingSlotName | null;
   expectedType?: BookingSlotExpectedType | null;
@@ -78,6 +80,18 @@ export interface ChatResponseDTO {
   speech: string;
   intent: string;
   confidence: number;
+  nextUiScreen?: UIState;
+  sessionId?: string;
+  language?: string;
+}
+
+export interface SelectedRoomHintDTO {
+  id: string;
+  name: string;
+  displayName?: string | null;
+  code?: string | null;
+  price?: number | null;
+  currency?: string | null;
 }
 
 export interface BookingChatResponseDTO extends ChatResponseDTO {
@@ -86,8 +100,10 @@ export interface BookingChatResponseDTO extends ChatResponseDTO {
   accumulatedSlots?: Record<string, unknown>;
   missingSlots?: string[];
   nextSlotToAsk?: string | null;
+  selectedRoom?: SelectedRoomHintDTO | null;
   isComplete?: boolean;
   persistedBookingId?: string | null;
+  error?: string;
 }
 
 export type BookingSlotName =

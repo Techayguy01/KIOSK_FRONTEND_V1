@@ -1,32 +1,17 @@
 /**
  * TTS Controller (Phase 9.4)
- * 
- * Audio Authority Model - strict priority control for TTS.
- * 
+ *
+ * Audio authority model for speech output.
+ *
  * Rules:
- * - Single active audio source (no overlapping)
- * - Cancelable mid-utterance (instant barge-in)
- * - Promise-safe (no race conditions)
+ * - Single active audio source (no overlap)
+ * - Cancelable mid-utterance (barge-in)
+ * - Promise-safe lifecycle events
  * - STT always has higher priority than TTS
- * 
- * Audio Authority Table:
- * | Event               | Action                    |
- * |---------------------|---------------------------|
- * | User starts speaking| Immediately stop TTS      |
- * | TTS playing         | STT still listens         |
- * | New Agent state     | Cancel any existing TTS   |
- * | ERROR / CANCEL      | Hard stop all audio       |
  */
 
 import { TtsEvent, TtsState } from "./tts.types";
 import { PremiumAudioPlayer } from "./premiumPlayer";
-
-const TTS_LANG_PRIORITY = (
-    import.meta.env.VITE_TTS_LANG_PRIORITY || "hi-IN,hi,en-IN,en-US,en"
-)
-    .split(",")
-    .map((lang: string) => lang.trim().toLowerCase())
-    .filter(Boolean);
 
 const VOICE_QUALITY_HINTS = ["google", "microsoft", "samantha", "hindi", "india"];
 
@@ -42,7 +27,8 @@ class TTSControllerService {
     private currentUtterance: SpeechSynthesisUtterance | null = null;
     private selectedVoice: SpeechSynthesisVoice | null = null;
     private pendingQueue: TTSQueueItem[] = [];
-    private isCancelling: boolean = false;
+    private isCancelling = false;
+    private activeText: string | null = null;
 
     constructor() {
         console.log("[TTSController] Initialized (Phase 9.4 - Audio Authority)");
@@ -62,18 +48,15 @@ class TTSControllerService {
                 return;
             }
 
-            // 1. Try to find an Indian Female voice first (Microsoft Neerja, Google's Indian female, etc.)
             let selected = voices.find(v =>
-                (v.lang === 'en-IN' || v.lang === 'hi-IN') &&
-                (v.name.includes('Female') || v.name.includes('Neerja') || v.name.includes('Aditi'))
+                (v.lang === "en-IN" || v.lang === "hi-IN") &&
+                (v.name.includes("Female") || v.name.includes("Neerja") || v.name.includes("Aditi"))
             );
 
-            // 2. If not found, fall back to any standard female English voice
             if (!selected) {
-                selected = voices.find(v => v.name.includes('Female') || v.name.includes('Samantha'));
+                selected = voices.find(v => v.name.includes("Female") || v.name.includes("Samantha"));
             }
 
-            // 3. Fallback to quality hints (Google, Microsoft, etc.)
             if (!selected) {
                 selected = voices.find(v => {
                     const lowerName = v.name.toLowerCase();
@@ -84,7 +67,7 @@ class TTSControllerService {
             this.selectedVoice = selected || voices[0];
 
             if (this.selectedVoice) {
-                console.log(`[TTSController] Selected Fallback Voice: ${this.selectedVoice.name} (${this.selectedVoice.lang})`);
+                console.log(`[TTSController] Selected fallback voice: ${this.selectedVoice.name} (${this.selectedVoice.lang})`);
             }
         };
 
@@ -96,82 +79,93 @@ class TTSControllerService {
     }
 
     /**
-     * Speak text with audio authority.
-     * Cancels any existing speech first. Promise-safe.
+     * Speak text with strict lifecycle semantics.
      */
     public async speak(text: string, language?: string): Promise<void> {
         if (!text || !text.trim()) return;
 
         // Cancel any existing speech immediately
-        this.hardStop();
+        this.hardStop("state_change");
 
-        // Detect language — use passed language, then selected voice, then default
         const currentLang = language || this.selectedVoice?.lang.split("-")[0] || "en";
+        const normalizedText = text.trim();
+        this.isCancelling = false;
+        this.activeText = normalizedText;
 
-        // Try Premium AI Voice — the ONLY voice source.
-        // If it fails, we stay silent. The text is already visible in the CaptionsOverlay.
         try {
             this.state = "SPEAKING";
-            this.emit({ type: "TTS_STARTED", text });
-
-            await PremiumAudioPlayer.play(text, currentLang);
+            await PremiumAudioPlayer.play(normalizedText, currentLang, {
+                onStart: () => {
+                    this.emit({ type: "TTS_STARTED", text: normalizedText });
+                },
+                onEnd: () => {
+                    this.emit({ type: "TTS_ENDED", text: normalizedText });
+                },
+            });
 
             this.state = "IDLE";
-            this.emit({ type: "TTS_ENDED" });
+            this.activeText = null;
         } catch (err) {
+            const isStopped = err instanceof Error && err.message === "playback_stopped";
+            if (this.isCancelling || isStopped) {
+                this.state = "IDLE";
+                this.activeText = null;
+                return;
+            }
+
             console.warn("[TTSController] Premium voice failed. Text shown on screen instead:", err);
             this.state = "IDLE";
-            // Emit TTS_ENDED so the system doesn't get stuck waiting for speech to finish.
-            this.emit({ type: "TTS_ENDED" });
+            this.emit({
+                type: "TTS_ERROR",
+                error: err instanceof Error ? err.message : "premium_tts_failed",
+                text: this.activeText || normalizedText,
+                fallbackToText: true,
+            });
+            this.activeText = null;
         }
     }
 
     /**
-     * Instant barge-in: Stop TTS immediately (<50ms target).
-     * Called when user starts speaking.
+     * Instant barge-in: stop TTS immediately.
      */
     public bargeIn(): void {
         if (this.isSpeaking()) {
             console.log("[TTSController] BARGE-IN: Stopping TTS instantly");
-            this.hardStop();
-            this.emit({ type: "TTS_CANCELLED" });
+            this.hardStop("barge_in");
         }
     }
 
     /**
-     * Hard stop all audio. Used for:
-     * - Barge-in
-     * - State change
-     * - Error
-     * - Session timeout
-     * - App unmount
+     * Hard stop all speech output.
      */
-    public hardStop(): void {
+    public hardStop(reason: "barge_in" | "hard_stop" | "state_change" = "hard_stop"): void {
         const synth = window.speechSynthesis;
+        const wasSpeaking = this.state === "SPEAKING" || synth.speaking || synth.pending;
 
         this.isCancelling = true;
 
-        // Cancel immediately
         if (synth.speaking || synth.pending) {
             synth.cancel();
         }
 
-        // Stop Premium Player
         PremiumAudioPlayer.stop();
 
-        // Clear queue
         this.pendingQueue.forEach(item => item.resolve());
         this.pendingQueue = [];
 
         this.state = "IDLE";
         this.currentUtterance = null;
+        this.activeText = null;
+
+        if (wasSpeaking) {
+            this.emit({ type: "TTS_CANCELLED", reason });
+        }
     }
 
     /**
      * Check if currently speaking.
      */
     public isSpeaking(): boolean {
-        // Check both native synth and our premium player
         return this.state === "SPEAKING" || window.speechSynthesis.speaking;
     }
 
@@ -195,9 +189,9 @@ class TTSControllerService {
     private emit(event: TtsEvent): void {
         this.listeners.forEach(cb => cb(event));
     }
+
     /**
-     * Destroy this instance — clear all listeners and stop audio.
-     * Called during HMR to prevent ghost instances.
+     * Destroy this instance and stop audio.
      */
     public destroy(): void {
         this.hardStop();
@@ -208,7 +202,6 @@ class TTSControllerService {
 
 export const TTSController = new TTSControllerService();
 
-// Vite HMR: Clean up old instance before replacement
 if (import.meta.hot) {
     import.meta.hot.dispose(() => {
         TTSController.destroy();

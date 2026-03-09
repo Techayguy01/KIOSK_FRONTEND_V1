@@ -1,5 +1,12 @@
 # Shared Code Documentation
 
+## Runtime Note (Migration Status)
+
+- Active frontend runtime backend is `KIOSK_BACKEND_V2_PYTHON/` (FastAPI on `http://localhost:8000` by default).
+- Older Node backend references in docs/archive are legacy migration material and may not reflect current runtime behavior.
+- `shared/contracts/*` remains the frontend-facing contract boundary during migration.
+- Chat state normalization is compatibility-safe: frontend normalizes outgoing `currentState`, backend normalizes incoming `currentState`, and unknown values fall back to `WELCOME`.
+
 ## 1. Folder Structure
 
 ```text

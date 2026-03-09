@@ -15,18 +15,29 @@ from pydantic import BaseModel, Field
 UIScreen = Literal[
     "IDLE",
     "WELCOME",
+    "AI_CHAT",
+    "MANUAL_MENU",
+    "SCAN_ID",
     "ROOM_SELECT",
     "BOOKING_COLLECT",
     "BOOKING_SUMMARY",
     "PAYMENT",
+    "KEY_DISPENSING",
     "COMPLETE",
     "ERROR",
 ]
+
+# Backend-owned progression states for booking orchestration.
+BOOKING_PROGRESS_SCREENS = {"ROOM_SELECT", "BOOKING_COLLECT", "BOOKING_SUMMARY"}
+
+# Frontend presentation states that are chat-compatible but not booking progression states.
+FRONTEND_PRESENTATION_SCREENS = {"AI_CHAT", "MANUAL_MENU"}
 
 # All possible intents the backend can determine from the user
 IntentType = Literal[
     "GENERAL_QUERY",
     "BOOK_ROOM",
+    "CHECK_IN",
     "SELECT_ROOM",
     "PROVIDE_GUESTS",
     "PROVIDE_DATES",
@@ -74,6 +85,15 @@ class ConversationTurn(BaseModel):
     content: str
 
 
+class RoomInventoryItem(BaseModel):
+    """Tenant-specific room catalog entry available for booking validation."""
+    id: str
+    name: str
+    code: Optional[str] = None
+    price: Optional[float] = None
+    currency: str = "INR"
+
+
 class KioskState(BaseModel):
     """
     The full state of a kiosk interaction.
@@ -101,6 +121,8 @@ class KioskState(BaseModel):
     # Booking progress
     booking_slots: BookingSlots = Field(default_factory=BookingSlots)
     active_slot: Optional[str] = None  # Which slot is the LLM currently asking for?
+    tenant_room_inventory: list[RoomInventoryItem] = Field(default_factory=list, alias="tenantRoomInventory")
+    selected_room: Optional[RoomInventoryItem] = Field(default=None, alias="selectedRoom")
 
     # What the AI will say back to the user (TTS input)
     speech_response: str = ""

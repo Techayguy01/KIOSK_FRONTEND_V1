@@ -10,8 +10,9 @@
  */
 
 import { AgentAdapter } from "../agent/adapter";
-import { buildTenantApiUrl, getTenantHeaders } from "./tenantContext";
+import { buildTenantApiUrl, getTenantHeaders, getTenantSlug } from "./tenantContext";
 import type { BookingChatResponseDTO, ChatRequestDTO, ChatResponseDTO } from "@contracts/api.contract";
+import { normalizeBackendStateFromResponse, normalizeStateForBackendChat } from "./uiStateInterop";
 
 // States that use the booking endpoint
 const BOOKING_STATES = ["BOOKING_COLLECT", "BOOKING_SUMMARY", "ROOM_SELECT"];
@@ -81,14 +82,17 @@ export async function sendToBrain(
     // V2 Python backend: unified /api/chat handles all states
     const url = buildTenantApiUrl("chat");
 
-    console.log(`[BrainService] Sending to V2 Brain: "${transcript}" (State: ${currentState})`);
+    const backendCurrentState = normalizeStateForBackendChat(currentState);
+    console.log(`[BrainService] Sending to V2 Brain: "${transcript}" (State: ${backendCurrentState})`);
 
     // V2 Python backend payload — note snake_case fields to match FastAPI ChatRequest
     const payload: any = {
         transcript,
         session_id: sessionId,
-        current_ui_screen: currentState, // V2 uses current_ui_screen, not currentState
+        // Normalize before crossing the API boundary.
+        current_ui_screen: backendCurrentState, // V2 uses current_ui_screen, not currentState
         tenant_id: "default",
+        tenant_slug: getTenantSlug(),
     };
 
     // Pass along extra context if available (V2 can use this for memory)
@@ -110,6 +114,13 @@ export async function sendToBrain(
         }
 
         const data: BrainResponse = await response.json();
+        const normalizedNextUiScreen = normalizeBackendStateFromResponse(data.nextUiScreen);
+        if (data.nextUiScreen && !normalizedNextUiScreen) {
+            console.warn(`[BrainService] Ignoring unknown backend nextUiScreen: ${data.nextUiScreen}`);
+        }
+        if (normalizedNextUiScreen) {
+            data.nextUiScreen = normalizedNextUiScreen;
+        }
         console.log("[BrainService] Brain response:", data);
 
         // 1. Notify listeners (TTS will speak, UI will show response)
@@ -121,8 +132,13 @@ export async function sendToBrain(
             console.log(`[BrainService] HIGH confidence (${data.confidence}) — Dispatching: ${data.intent}`);
             AgentAdapter.dispatch(data.intent as any, {
                 speech: data.speech,
+                selectedRoom: data.selectedRoom,
                 slots: data.accumulatedSlots,
+                missingSlots: data.missingSlots,
+                nextSlotToAsk: data.nextSlotToAsk,
+                nextUiScreen: data.nextUiScreen,
                 isComplete: data.isComplete,
+                backendDecision: true,
             });
         } else if (data.confidence >= 0.50) {
             // MEDIUM confidence: Dispatch but the LLM should have asked a clarifying question
@@ -130,9 +146,14 @@ export async function sendToBrain(
             console.log(`[BrainService] MEDIUM confidence (${data.confidence}) — Dispatching with clarification: ${data.intent}`);
             AgentAdapter.dispatch(data.intent as any, {
                 speech: data.speech,
+                selectedRoom: data.selectedRoom,
                 slots: data.accumulatedSlots,
+                missingSlots: data.missingSlots,
+                nextSlotToAsk: data.nextSlotToAsk,
+                nextUiScreen: data.nextUiScreen,
                 isComplete: data.isComplete,
                 needsClarification: true,
+                backendDecision: true,
             });
         } else {
             // LOW confidence: Do NOT dispatch intent, only speak the response

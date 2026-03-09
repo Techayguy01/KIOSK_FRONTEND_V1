@@ -35,14 +35,10 @@ async def get_tenant(
         return {
             "tenant": {
                 "id": str(tenant.id),
-                "hotelName": tenant.hotel_name,
+                "name": tenant.hotel_name,
                 "slug": tenant.slug,
-                "address": tenant.address,
-                "status": tenant.status,
-                "readableId": tenant.readable_id,
-                "imageUrl1": tenant.image_url_1,
-                "imageUrl2": tenant.image_url_2,
-                "imageUrl3": tenant.image_url_3,
+                "plan": "ENTERPRISE",
+                "hotelConfig": None,
             }
         }
     except HTTPException:

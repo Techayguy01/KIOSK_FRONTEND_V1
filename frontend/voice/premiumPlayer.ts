@@ -10,11 +10,16 @@ import { buildTenantApiUrl, getTenantHeaders } from "../services/tenantContext";
 class PremiumAudioPlayerService {
     private currentAudio: HTMLAudioElement | null = null;
     private onEndCallback: (() => void) | null = null;
+    private activeReject: ((error: Error) => void) | null = null;
 
     /**
      * Fetch and play TTS audio from the backend.
      */
-    public async play(text: string, language: string): Promise<void> {
+    public async play(
+        text: string,
+        language: string,
+        hooks?: { onStart?: () => void; onEnd?: () => void }
+    ): Promise<void> {
         this.stop();
 
         // Timeout: Don't let the user wait in silence forever.
@@ -47,23 +52,32 @@ class PremiumAudioPlayerService {
             return new Promise((resolve, reject) => {
                 const audio = new Audio(audioUrl);
                 this.currentAudio = audio;
+                this.activeReject = reject;
 
                 audio.onplay = () => {
                     console.log(`[PremiumPlayer] Playing AI Audio (${language}): "${text.substring(0, 30)}..."`);
+                    hooks?.onStart?.();
                 };
 
                 audio.onended = () => {
+                    this.activeReject = null;
                     this.cleanup();
+                    hooks?.onEnd?.();
                     if (this.onEndCallback) this.onEndCallback();
                     resolve();
                 };
 
-                audio.onerror = (e) => {
+                audio.onerror = () => {
+                    this.activeReject = null;
                     this.cleanup();
                     reject(new Error("Audio playback failed"));
                 };
 
-                audio.play().catch(reject);
+                audio.play().catch((error) => {
+                    this.activeReject = null;
+                    this.cleanup();
+                    reject(error instanceof Error ? error : new Error("Audio playback failed"));
+                });
             });
         } catch (error) {
             clearTimeout(timeout);
@@ -80,6 +94,12 @@ class PremiumAudioPlayerService {
         if (this.currentAudio) {
             this.currentAudio.pause();
             this.cleanup();
+        }
+
+        if (this.activeReject) {
+            const reject = this.activeReject;
+            this.activeReject = null;
+            reject(new Error("playback_stopped"));
         }
     }
 

@@ -21,6 +21,7 @@ interface OrbProps {
   outputVolumeRef?: React.RefObject<number>
   getInputVolume?: () => number
   getOutputVolume?: () => number
+  reducedMotion?: boolean
   className?: string
 }
 
@@ -37,6 +38,7 @@ export function Orb({
   outputVolumeRef,
   getInputVolume,
   getOutputVolume,
+  reducedMotion = false,
   className,
 }: OrbProps) {
   return (
@@ -61,6 +63,7 @@ export function Orb({
           outputVolumeRef={outputVolumeRef}
           getInputVolume={getInputVolume}
           getOutputVolume={getOutputVolume}
+          reducedMotion={reducedMotion}
         />
       </Canvas>
     </div>
@@ -79,6 +82,7 @@ function Scene({
   outputVolumeRef,
   getInputVolume,
   getOutputVolume,
+  reducedMotion,
 }: {
   colors: [string, string]
   colorsRef?: React.RefObject<[string, string]>
@@ -91,6 +95,7 @@ function Scene({
   outputVolumeRef?: React.RefObject<number>
   getInputVolume?: () => number
   getOutputVolume?: () => number
+  reducedMotion: boolean
 }) {
   const { gl } = useThree()
   const circleRef =
@@ -171,7 +176,8 @@ function Scene({
       if (live[1]) targetColor2Ref.current.set(live[1])
     }
     const u = mat.uniforms
-    u.uTime.value += delta * 0.5
+    const timeStep = reducedMotion ? 0.08 : 0.5
+    u.uTime.value += delta * timeStep
 
     if (u.uOpacity.value < 1) {
       u.uOpacity.value = Math.min(1, u.uOpacity.value + delta * 2)
@@ -192,26 +198,28 @@ function Scene({
         targetIn = 0
         targetOut = 0.3
       } else if (agentRef.current === "listening") {
-        targetIn = clamp01(0.55 + Math.sin(t * 3.2) * 0.35)
+        targetIn = reducedMotion ? 0.62 : clamp01(0.55 + Math.sin(t * 3.2) * 0.35)
         targetOut = 0.45
       } else if (agentRef.current === "talking") {
-        targetIn = clamp01(0.65 + Math.sin(t * 4.8) * 0.22)
-        targetOut = clamp01(0.75 + Math.sin(t * 3.6) * 0.22)
+        targetIn = reducedMotion ? 0.65 : clamp01(0.65 + Math.sin(t * 4.8) * 0.22)
+        targetOut = reducedMotion ? 0.72 : clamp01(0.75 + Math.sin(t * 3.6) * 0.22)
       } else {
-        const base = 0.38 + 0.07 * Math.sin(t * 0.7)
-        const wander = 0.05 * Math.sin(t * 2.1) * Math.sin(t * 0.37 + 1.2)
+        const base = reducedMotion ? 0.38 : 0.38 + 0.07 * Math.sin(t * 0.7)
+        const wander = reducedMotion ? 0 : 0.05 * Math.sin(t * 2.1) * Math.sin(t * 0.37 + 1.2)
         targetIn = clamp01(base + wander)
-        targetOut = clamp01(0.48 + 0.12 * Math.sin(t * 1.05 + 0.6))
+        targetOut = reducedMotion ? 0.5 : clamp01(0.48 + 0.12 * Math.sin(t * 1.05 + 0.6))
       }
     }
 
     curInRef.current += (targetIn - curInRef.current) * 0.2
     curOutRef.current += (targetOut - curOutRef.current) * 0.2
 
-    const targetSpeed = 0.1 + (1 - Math.pow(curOutRef.current - 1, 2)) * 0.9
+    const targetSpeed = reducedMotion
+      ? 0.12 + (1 - Math.pow(curOutRef.current - 1, 2)) * 0.25
+      : 0.1 + (1 - Math.pow(curOutRef.current - 1, 2)) * 0.9
     animSpeedRef.current += (targetSpeed - animSpeedRef.current) * 0.12
 
-    u.uAnimation.value += delta * animSpeedRef.current
+    u.uAnimation.value += delta * animSpeedRef.current * (reducedMotion ? 0.35 : 1)
     u.uInputVolume.value = curInRef.current
     u.uOutputVolume.value = curOutRef.current
     u.uColor1.value.lerp(targetColor1Ref.current, 0.08)

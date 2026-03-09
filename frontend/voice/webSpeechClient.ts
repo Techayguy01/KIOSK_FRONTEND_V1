@@ -1,13 +1,13 @@
 /**
  * Web Speech STT Client
  *
- * Browser-native Web Speech API — the sole STT provider.
+ * Browser-native Web Speech API - the sole STT provider.
  */
 
 type InterimCallback = (transcript: string, isFinal: boolean) => void;
 type EndOfTurnCallback = (accumulatedTranscript: string, confidence?: number) => void;
 type SpeechStartedCallback = () => void;
-type ErrorCallback = (error: Error) => void;
+type ErrorCallback = (error: SttClientError) => void;
 
 type SpeechRecognitionLike = {
     continuous: boolean;
@@ -25,10 +25,27 @@ type SpeechRecognitionLike = {
 };
 
 type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
+type SttErrorCode =
+    | "aborted"
+    | "no-speech"
+    | "not-allowed"
+    | "service-not-allowed"
+    | "network"
+    | "audio-capture"
+    | "unknown_error";
+
+type SttClientError = Error & {
+    code: SttErrorCode | string;
+    fatal: boolean;
+    recoverable: boolean;
+    expected: boolean;
+    permissionDenied: boolean;
+};
 
 const STT_LANGUAGE = (import.meta.env.VITE_STT_LANGUAGE || "en-US").trim() || "en-US";
 const FINAL_COMMIT_GRACE_MS = Number(import.meta.env.VITE_FINAL_COMMIT_GRACE_MS || 250);
 const RESTART_DELAY_MS = 100;
+const PERMISSION_DENIED_COOLDOWN_MS = Number(import.meta.env.VITE_STT_PERMISSION_DENIED_COOLDOWN_MS || 15000);
 
 class BrowserWebSpeechClient {
     private recognition: SpeechRecognitionLike | null = null;
@@ -42,9 +59,13 @@ class BrowserWebSpeechClient {
     private shouldBeActive = false;
     private intentionalStop = false;
     private nativeRunning = false;
+    private activeSessionId = 0;
+    private sessionSequence = 0;
+    private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    private permissionDeniedUntil = 0;
+    private preferredLanguage = STT_LANGUAGE;
 
     private finalCommitTimer: ReturnType<typeof setTimeout> | null = null;
-    private finalTranscriptParts: string[] = [];
     private lastInterimTranscript = "";
     private lastConfidence = 0;
 
@@ -77,11 +98,24 @@ class BrowserWebSpeechClient {
             throw new Error("Web Speech API is not supported in this browser.");
         }
 
+        if (this.isPermissionDeniedLocked()) {
+            const retryInMs = Math.max(0, this.permissionDeniedUntil - Date.now());
+            const lockError = this.buildClientError(
+                "not-allowed",
+                `Web Speech permission denied recently; retry after ${Math.ceil(retryInMs / 1000)}s`,
+                true,
+                false,
+                false,
+                true
+            );
+            this.errorCallback?.(lockError);
+            throw lockError;
+        }
+
         console.log("[WebSpeech] Connecting...");
         this.shouldBeActive = true;
         this.intentionalStop = false;
-        this.ensureRecognition();
-        this.startRecognition();
+        this.beginSession();
     }
 
     public send(_audioChunk: Int16Array): void {
@@ -94,20 +128,13 @@ class BrowserWebSpeechClient {
         this.shouldBeActive = false;
         this.intentionalStop = true;
         this.clearFinalCommitTimer();
+        this.clearReconnectTimer();
 
-        if (this.recognition && this.nativeRunning) {
-            try {
-                // Use abort() for immediate cutoff to allow fast restart
-                this.recognition.abort();
-            } catch (error) {
-                console.warn("[WebSpeech] Abort failed:", error);
-            }
-        }
+        this.destroyRecognition({ stopNative: true });
 
         this.isConnected = false;
         this.isStarting = false;
         this.nativeRunning = false;
-        this.finalTranscriptParts = [];
         this.lastInterimTranscript = "";
         this.lastConfidence = 0;
 
@@ -124,17 +151,11 @@ class BrowserWebSpeechClient {
      */
     public setLanguage(lang: string): void {
         const targetLang = lang.startsWith("hi") ? "hi-IN" : (lang.startsWith("en") ? "en-IN" : lang);
+        this.preferredLanguage = targetLang;
 
         if (this.recognition && this.recognition.lang !== targetLang) {
             console.log(`[WebSpeech] Updating language: ${this.recognition.lang} -> ${targetLang}`);
             this.recognition.lang = targetLang;
-
-            // If we're already running, we might need to restart to apply immediately
-            if (this.nativeRunning && !this.intentionalStop) {
-                console.log("[WebSpeech] Restarting to apply language change");
-                this.close();
-                this.connect();
-            }
         }
     }
 
@@ -151,10 +172,16 @@ class BrowserWebSpeechClient {
         return webWindow.SpeechRecognition || webWindow.webkitSpeechRecognition || null;
     }
 
-    private ensureRecognition(): void {
-        if (this.recognition) {
-            return;
-        }
+    private beginSession(): void {
+        this.clearReconnectTimer();
+        const sessionId = ++this.sessionSequence;
+        this.activeSessionId = sessionId;
+        this.createRecognition(sessionId);
+        this.startRecognition(sessionId);
+    }
+
+    private createRecognition(sessionId: number): void {
+        this.destroyRecognition({ stopNative: false });
 
         const RecognitionCtor = this.getRecognitionCtor();
         if (!RecognitionCtor) {
@@ -164,10 +191,14 @@ class BrowserWebSpeechClient {
         const recognition = new RecognitionCtor();
         recognition.continuous = true;
         recognition.interimResults = true;
-        recognition.lang = STT_LANGUAGE;
+        recognition.lang = this.preferredLanguage;
         recognition.maxAlternatives = 1;
 
         recognition.onstart = () => {
+            if (this.isStaleSession(sessionId)) {
+                console.debug(`[WebSpeech] Ignoring stale onstart (session=${sessionId}, active=${this.activeSessionId})`);
+                return;
+            }
             this.isStarting = false;
             this.isConnected = true;
             this.nativeRunning = true;
@@ -175,16 +206,24 @@ class BrowserWebSpeechClient {
         };
 
         recognition.onspeechstart = () => {
+            if (this.isStaleSession(sessionId)) {
+                console.debug(`[WebSpeech] Ignoring stale onspeechstart (session=${sessionId}, active=${this.activeSessionId})`);
+                return;
+            }
             this.clearFinalCommitTimer();
             this.speechStartedCallback?.();
         };
 
         recognition.onresult = (event: any) => {
+            if (this.isStaleSession(sessionId)) {
+                console.debug(`[WebSpeech] Ignoring stale onresult (session=${sessionId}, active=${this.activeSessionId})`);
+                return;
+            }
+
             let hasFinal = false;
             let currentFullTranscript = "";
             let bestConfidence = 0;
 
-            // Consolidate all results to prevent duplication from resultIndex shifting
             for (let i = 0; i < event.results.length; i++) {
                 const result = event.results[i];
                 const alt = result?.[0];
@@ -212,11 +251,20 @@ class BrowserWebSpeechClient {
         };
 
         recognition.onerror = (event: any) => {
-            const code = String(event?.error || "unknown_error");
-            console.error(`[WebSpeech] Native Error: ${code}`, event);
+            if (this.isStaleSession(sessionId)) {
+                console.debug(`[WebSpeech] Ignoring stale onerror (session=${sessionId}, active=${this.activeSessionId})`);
+                return;
+            }
 
-            if (code === "aborted" || (code === "no-speech" && this.intentionalStop)) {
+            const code = String(event?.error || "unknown_error") as SttErrorCode;
+
+            if (code === "aborted") {
                 this.nativeRunning = false;
+                if (this.intentionalStop || !this.shouldBeActive) {
+                    console.info("[WebSpeech] Expected abort during intentional stop");
+                    return;
+                }
+                console.info("[WebSpeech] Non-fatal abort observed while active");
                 return;
             }
 
@@ -224,18 +272,48 @@ class BrowserWebSpeechClient {
                 return;
             }
 
-            this.errorCallback?.(new Error(`Web Speech error: ${code}`));
+            if (code === "not-allowed" || code === "service-not-allowed") {
+                this.permissionDeniedUntil = Date.now() + PERMISSION_DENIED_COOLDOWN_MS;
+                this.shouldBeActive = false;
+                this.intentionalStop = true;
+                console.warn(`[WebSpeech] Permission denied (${code}). Cooling down retries for ${PERMISSION_DENIED_COOLDOWN_MS}ms`);
+                this.errorCallback?.(this.buildClientError(
+                    code,
+                    `Web Speech permission denied (${code})`,
+                    true,
+                    false,
+                    false,
+                    true
+                ));
+                return;
+            }
+
+            console.error(`[WebSpeech] Native Error: ${code}`, event);
+            this.errorCallback?.(this.buildClientError(
+                code,
+                `Web Speech error: ${code}`,
+                false,
+                true,
+                false,
+                false
+            ));
         };
 
         recognition.onend = () => {
+            if (this.isStaleSession(sessionId)) {
+                console.debug(`[WebSpeech] Ignoring stale onend (session=${sessionId}, active=${this.activeSessionId})`);
+                return;
+            }
+
             console.log("[WebSpeech] Native connection closed");
             this.nativeRunning = false;
             this.isConnected = false;
             this.isStarting = false;
 
-            if (this.shouldBeActive && !this.intentionalStop) {
-                setTimeout(() => {
-                    this.startRecognition();
+            if (this.shouldBeActive && !this.intentionalStop && !this.isPermissionDeniedLocked()) {
+                this.clearReconnectTimer();
+                this.reconnectTimer = setTimeout(() => {
+                    this.startRecognition(sessionId);
                 }, RESTART_DELAY_MS);
             } else {
                 this.triggerEndOfTurn();
@@ -245,10 +323,10 @@ class BrowserWebSpeechClient {
         this.recognition = recognition;
     }
 
-    private startRecognition(): void {
+    private startRecognition(sessionId: number): void {
         if (!this.recognition) return;
+        if (this.isStaleSession(sessionId)) return;
 
-        // If it's already running natively, don't try to start again
         if (this.nativeRunning || this.isConnected || this.isStarting) {
             return;
         }
@@ -258,13 +336,36 @@ class BrowserWebSpeechClient {
             this.recognition.start();
         } catch (error: any) {
             this.isStarting = false;
-            // Catch "already started" string errors even if flags were out of sync
             if (error?.message?.includes("already started")) {
                 this.nativeRunning = true;
                 this.isConnected = true;
                 return;
             }
-            this.errorCallback?.(error instanceof Error ? error : new Error("Web Speech start failed"));
+            const message = String(error?.message || "Web Speech start failed");
+            const lowered = message.toLowerCase();
+            if (lowered.includes("not-allowed") || lowered.includes("service-not-allowed")) {
+                const permissionError = this.buildClientError(
+                    "not-allowed",
+                    message,
+                    true,
+                    false,
+                    false,
+                    true
+                );
+                this.permissionDeniedUntil = Date.now() + PERMISSION_DENIED_COOLDOWN_MS;
+                this.shouldBeActive = false;
+                this.intentionalStop = true;
+                this.errorCallback?.(permissionError);
+                return;
+            }
+            this.errorCallback?.(this.buildClientError(
+                "unknown_error",
+                message,
+                false,
+                true,
+                false,
+                false
+            ));
         }
     }
 
@@ -297,6 +398,59 @@ class BrowserWebSpeechClient {
             clearTimeout(this.finalCommitTimer);
             this.finalCommitTimer = null;
         }
+    }
+
+    private clearReconnectTimer(): void {
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+    }
+
+    private isPermissionDeniedLocked(): boolean {
+        return this.permissionDeniedUntil > Date.now();
+    }
+
+    private isStaleSession(sessionId: number): boolean {
+        return sessionId !== this.activeSessionId;
+    }
+
+    private destroyRecognition(options: { stopNative: boolean }): void {
+        if (!this.recognition) return;
+
+        const recognition = this.recognition;
+        this.recognition = null;
+
+        recognition.onstart = null;
+        recognition.onresult = null;
+        recognition.onspeechstart = null;
+        recognition.onerror = null;
+        recognition.onend = null;
+
+        if (options.stopNative) {
+            try {
+                recognition.abort();
+            } catch (error) {
+                console.debug("[WebSpeech] Abort during destroy failed (safe to ignore):", error);
+            }
+        }
+    }
+
+    private buildClientError(
+        code: SttErrorCode | string,
+        message: string,
+        fatal: boolean,
+        recoverable: boolean,
+        expected: boolean,
+        permissionDenied: boolean
+    ): SttClientError {
+        const error = new Error(message) as SttClientError;
+        error.code = code;
+        error.fatal = fatal;
+        error.recoverable = recoverable;
+        error.expected = expected;
+        error.permissionDenied = permissionDenied;
+        return error;
     }
 }
 

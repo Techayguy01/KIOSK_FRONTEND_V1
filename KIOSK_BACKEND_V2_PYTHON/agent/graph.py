@@ -12,7 +12,7 @@ from the state and decides which node to call next.
 """
 
 from langgraph.graph import StateGraph, END
-from agent.state import KioskState
+from agent.state import KioskState, BOOKING_PROGRESS_SCREENS
 from agent.nodes import route_intent, general_chat, booking_logic
 
 
@@ -27,10 +27,6 @@ BOOKING_INTENTS = {
     "CANCEL_BOOKING",
 }
 
-# Intents that stay on the booking screen if already there
-BOOKING_SCREENS = {"ROOM_SELECT", "BOOKING_COLLECT", "BOOKING_SUMMARY"}
-
-
 def route_to_node(state: KioskState) -> str:
     """
     Conditional edge function: decides which node to call after intent classification.
@@ -41,7 +37,7 @@ def route_to_node(state: KioskState) -> str:
     screen = state.current_ui_screen
 
     # User is in the booking flow OR explicitly booking
-    if intent in BOOKING_INTENTS or screen in BOOKING_SCREENS:
+    if intent in BOOKING_INTENTS or screen in BOOKING_PROGRESS_SCREENS:
         return "booking_logic"
 
     return "general_chat"

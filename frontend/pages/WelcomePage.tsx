@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useEffect, useId, useState } from 'react';
 import { useUIState } from '../state/uiContext';
 import { useFadeIn } from '../hooks/useAnimation';
+import { usePrefersReducedMotion } from '../hooks/usePrefersReducedMotion';
 import { Keyboard, Mic, CalendarCheck, BedDouble, HelpCircle, StopCircle } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { Button } from '../components/ui/button';
 import { Orb, OrbState } from '../components/ui/orb';
 import AnimatedGradientBackground from '../components/ui/animated-gradient-background';
@@ -24,6 +25,8 @@ interface WelcomePageProps {
 export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }) => {
   const { data, emit, loading, tenant } = useUIState();
   const tenantName = tenant?.name || "Nexus";
+  const prefersReducedMotion = usePrefersReducedMotion();
+  const micStatusId = useId();
 
   // Internal animation state only - NOT navigational state
   const [interactionState, setInteractionState] = useState<AgentState>(null);
@@ -57,6 +60,17 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
           setInteractionState(null); // Return to idle/Agent authority
           // Keep liveTranscript visible briefly, then clear
           setTimeout(() => setLiveTranscript(""), 2000);
+          break;
+        case "VOICE_SESSION_ABORTED":
+          setIsSessionActive(false);
+          setInteractionState(null);
+          break;
+        case "VOICE_SESSION_ERROR":
+          // Keep transcript visible for context, but reflect that active listening ended.
+          if (event.reason === "stt_permission_denied" || event.fatal) {
+            setIsSessionActive(false);
+            setInteractionState(null);
+          }
           break;
       }
     });
@@ -166,6 +180,7 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
         <Button
           variant="ghost"
           onClick={() => VoiceRuntime.startSession()} // Use Runtime directly
+          aria-label="Switch to voice mode"
           className="flex items-center gap-2 text-slate-500 hover:text-white"
         >
           <Mic size={18} />
@@ -200,6 +215,7 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
           variant="outline"
           size="sm"
           onClick={() => emit('TOUCH_SELECTED')} // Atomic Intent
+          aria-label="Switch to touch controls"
           className="gap-2 bg-slate-800/50 backdrop-blur-md border-slate-700"
         >
           <Keyboard size={16} />
@@ -211,9 +227,9 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
       <div className="flex-1 flex flex-col items-center justify-center relative z-10 min-h-0 w-full">
         {/* SIYA text above the orb */}
         <motion.div
-          initial={{ opacity: 0, y: -20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8, ease: "easeOut" }}
+          initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -20 }}
+          animate={prefersReducedMotion ? { opacity: 1 } : { opacity: 1, y: 0 }}
+          transition={{ duration: prefersReducedMotion ? 0.15 : 0.8, ease: "easeOut" }}
           className="text-5xl md:text-6xl font-black tracking-wider mb-6"
           style={{
             fontFamily: "'Montserrat', sans-serif",
@@ -248,7 +264,11 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
             }}
           />
           <div className="absolute inset-0">
-            <Orb agentState={getOrbState(getAgentState())} colors={["#977DFF", "#F2E6EE"]} />
+            <Orb
+              agentState={getOrbState(getAgentState())}
+              colors={["#977DFF", "#F2E6EE"]}
+              reducedMotion={prefersReducedMotion}
+            />
           </div>
         </div>
       </div>
@@ -264,28 +284,36 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
         {/* Mic Button - The Core Interaction */}
         <div className="relative group">
           {getAgentState() === 'listening' && (
-            <div className="absolute inset-0 bg-blue-500/20 rounded-full animate-ping" />
+            <div className={`absolute inset-0 bg-blue-500/20 rounded-full ${prefersReducedMotion ? '' : 'animate-ping'}`} />
           )}
 
           <button
+            type="button"
             className={`relative flex items-center justify-center w-24 h-24 rounded-full transition-all duration-200 active:scale-95 shadow-lg ${getAgentState() === 'listening'
               ? 'bg-blue-600 text-white shadow-blue-500/50 scale-110'
               : 'bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700'
               }`}
             onClick={toggleVoiceSession} // Tap-to-Toggle
             aria-label={isSessionActive ? "Stop listening" : "Start listening"}
+            aria-pressed={isSessionActive}
+            aria-describedby={micStatusId}
+            title={isSessionActive ? "Stop listening" : "Start listening"}
           >
             {isSessionActive ? (
-              <StopCircle size={32} className="animate-pulse text-red-400" />
+              <StopCircle size={32} className={`${prefersReducedMotion ? '' : 'animate-pulse'} text-red-400`} />
             ) : (
               <Mic size={32} />
             )}
           </button>
         </div>
 
-        <p className="text-xs text-slate-500 uppercase tracking-widest font-medium">
+        <p id={micStatusId} className="text-xs text-slate-500 uppercase tracking-widest font-medium">
           {isSessionActive ? "Tap to Stop" : "Tap to Speak"}
         </p>
+
+        <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+          {`Voice state: ${turnState}. ${isSessionActive ? "Listening is active." : "Listening is inactive."}`}
+        </span>
       </div>
     </div>
   );

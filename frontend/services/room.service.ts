@@ -1,4 +1,4 @@
-import { buildTenantApiUrl, getTenantHeaders, getTenantSlug } from "./tenantContext";
+import { buildTenantApiUrl, getNodeApiBaseUrl, getTenantHeaders } from "./tenantContext";
 import type { RoomsResponseDTO, RoomDTO } from "@contracts/api.contract";
 
 export type { RoomDTO };
@@ -24,10 +24,9 @@ export const RoomService = {
     const primaryResponse = await fetch(buildTenantApiUrl("rooms"), { headers });
     const response = primaryResponse.ok
       ? primaryResponse
-      : await fetch("http://localhost:3002/api/rooms", {
+      : await fetch(`${getNodeApiBaseUrl()}/api/rooms`, {
         headers: {
           ...headers,
-          "x-tenant-slug": getTenantSlug(),
         },
       });
 
@@ -46,8 +45,8 @@ export const RoomService = {
       throw new RoomServiceError(errorMessage, response.status, errorCode);
     }
 
-    // V2 Python backend returns { success, data: [] }
-    // Old Node backend returns { rooms: [] }
+    // V2 Python backend returns { rooms: [] }.
+    // Old Node backend may return { data: [] }.
     const payload = await response.json();
     const rawRooms: any[] = Array.isArray(payload?.data) ? payload.data
       : Array.isArray(payload?.rooms) ? payload.rooms

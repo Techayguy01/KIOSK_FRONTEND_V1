@@ -14,6 +14,37 @@ export type UIState =
   | 'COMPLETE'
   | 'ERROR';
 
+/**
+ * States that the backend chat endpoint currently accepts from the frontend.
+ * Keep this aligned with Python `agent/state.py::UIScreen`.
+ */
+export const BACKEND_CHAT_ACCEPTED_STATES: readonly UIState[] = [
+  'IDLE',
+  'WELCOME',
+  'AI_CHAT',
+  'MANUAL_MENU',
+  'SCAN_ID',
+  'ROOM_SELECT',
+  'BOOKING_COLLECT',
+  'BOOKING_SUMMARY',
+  'PAYMENT',
+  'KEY_DISPENSING',
+  'COMPLETE',
+  'ERROR',
+] as const;
+
+/**
+ * Frontend presentation surfaces that are chat-compatible but not backend-owned
+ * booking progression states.
+ */
+export const FRONTEND_PRESENTATION_STATES: readonly UIState[] = [
+  'AI_CHAT',
+  'MANUAL_MENU',
+] as const;
+
+/** Safe fallback when an unknown state arrives at a chat boundary. */
+export const BACKEND_STATE_NORMALIZATION_FALLBACK: UIState = 'WELCOME';
+
 export interface ChatMessage {
   id: string;
   role: 'assistant' | 'user';

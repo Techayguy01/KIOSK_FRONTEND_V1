@@ -19,9 +19,10 @@ import { CompletePage } from '../pages/CompletePage';
 import { ErrorBanner } from '../components/ErrorBanner';
 import { BackButton } from '../components/BackButton';
 import { CaptionsOverlay } from '../components/CaptionsOverlay';
+import { VoiceStatusIndicator } from '../components/VoiceStatusIndicator';
 import { DevToolbar } from '../components/DevToolbar';
 import AnimatedGradientBackground from '../components/ui/animated-gradient-background';
-import { setTenantContext, TenantPayload } from '../services/tenantContext';
+import { buildTenantApiUrl, getTenantHeaders, setTenantContext, TenantPayload } from '../services/tenantContext';
 
 // Tenant slug is derived from the URL route parameter only. No hardcoded default.
 
@@ -39,6 +40,16 @@ const STATE_TO_ROUTE: Record<UiState, string> = {
   COMPLETE: 'complete',
   ERROR: 'error',
 };
+
+const VOICE_RELEVANT_STATES = new Set<UiState>([
+  'WELCOME',
+  'AI_CHAT',
+  'MANUAL_MENU',
+  'ROOM_SELECT',
+  'BOOKING_COLLECT',
+  'BOOKING_SUMMARY',
+  'PAYMENT',
+]);
 
 const TenantKioskApp: React.FC = () => {
   const { tenantSlug } = useParams<{ tenantSlug: string }>();
@@ -96,6 +107,10 @@ const TenantKioskApp: React.FC = () => {
   // 3. DUMB ROUTER (State -> Component)
   // CRITICAL: This is a pure switch on Agent State. No logic allowed.
   const effectiveState = forcedState ?? state;
+  const showVoiceStatus = VOICE_RELEVANT_STATES.has(effectiveState);
+  const derivedVoiceEnabled = typeof data?.metadata?.listening === 'boolean'
+    ? Boolean(data.metadata.listening)
+    : showVoiceStatus;
 
   // Keep URL in sync with rendered kiosk state under /:tenantSlug/<page>
   useEffect(() => {
@@ -116,9 +131,7 @@ const TenantKioskApp: React.FC = () => {
 
     (async () => {
       try {
-        const response = await fetch(`http://localhost:8000/api/tenant?slug=${safeTenantSlug}`, {
-          headers: { 'x-tenant-slug': safeTenantSlug },
-        });
+        const response = await fetch(buildTenantApiUrl("tenant"), { headers: getTenantHeaders() });
 
         if (!response.ok) {
           throw new Error(`Tenant resolve failed (${response.status})`);
@@ -204,6 +217,13 @@ const TenantKioskApp: React.FC = () => {
         <CaptionsOverlay />
 
         {renderPage()}
+
+        {showVoiceStatus && (
+          <VoiceStatusIndicator
+            currentState={effectiveState}
+            voiceEnabled={derivedVoiceEnabled}
+          />
+        )}
 
         {/* Debug Info (To prove state comes from Agent) */}
         <div className="fixed bottom-2 right-2 z-50 bg-black/50 text-white text-xs p-1 rounded opacity-30 hover:opacity-100 pointer-events-none">

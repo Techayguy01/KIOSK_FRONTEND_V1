@@ -1,5 +1,4 @@
 import { VoiceEvent } from "./voice.types";
-import { AudioCapture } from "./audioCapture";
 import { WebSpeechClient } from "./webSpeechClient";
 import { normalizeTranscript } from "./normalizeTranscript";
 import { TTSController } from "./TTSController";
@@ -23,9 +22,17 @@ import { TTSController } from "./TTSController";
  */
 
 export type VoiceMode = "idle" | "listening" | "speaking";
-type StopReason = "user" | "pause";
+type StopReason = "user" | "pause" | "timeout_no_speech" | "timeout_no_result" | "session_timeout" | "permission_denied" | "hard_stop";
 type SttProvider = "webspeech";
 export type VoiceTurnState = "IDLE" | "USER_SPEAKING" | "PROCESSING" | "SYSTEM_RESPONDING";
+
+type RuntimeSttError = Error & {
+    code?: string;
+    fatal?: boolean;
+    recoverable?: boolean;
+    expected?: boolean;
+    permissionDenied?: boolean;
+};
 
 // Configuration
 const CONFIG = {
@@ -46,6 +53,7 @@ const CONFIG = {
     DEBUG_MODE: import.meta.env.DEV,   // Only in dev
     STT_PROVIDER: "webspeech" as SttProvider,
     ENABLE_WEBSPEECH_FALLBACK: true,
+    STT_PERMISSION_DENIED_COOLDOWN_MS: Number(import.meta.env.VITE_STT_PERMISSION_DENIED_COOLDOWN_MS || 15000),
 };
 
 // Phase 10: Debug session tracking
@@ -86,6 +94,7 @@ class VoiceRuntimeService {
 
     // Intentional Stop Flag - prevents auto-reconnect on user stop
     private isIntentionalStop: boolean = false;
+    private permissionDeniedCooldownUntil: number = 0;
 
     // Phase 10: Silence Loop Protection
     private consecutiveSilentTurns: number = 0;
@@ -172,27 +181,69 @@ class VoiceRuntimeService {
         });
         WebSpeechClient.onEndOfTurn(handleFinalTranscript);
         WebSpeechClient.onError((error) => {
-            // [V2 DUMB FRONTEND] Ignore "aborted" errors that happen when we stop the mic to speak.
-            // These are expected and should not trigger an error state.
-            if (error.message?.includes("aborted") && this.mode === "speaking") {
+            const sttError = error as RuntimeSttError;
+            const errorCode = String(sttError.code || "");
+
+            // Expected lifecycle stop/reset aborts are informational, not runtime failures.
+            if (sttError.expected || errorCode === "aborted") {
+                this.logDebug(`Expected STT abort ignored (${errorCode || "aborted"})`);
                 return;
             }
-            console.error("[VoiceRuntime] Web Speech STT error:", error.message);
-            this.emit({ type: "VOICE_SESSION_ERROR" });
+
+            if (sttError.permissionDenied || errorCode === "not-allowed" || errorCode === "service-not-allowed") {
+                this.permissionDeniedCooldownUntil = Date.now() + CONFIG.STT_PERMISSION_DENIED_COOLDOWN_MS;
+                console.warn("[VoiceRuntime] STT permission denied. Auto-retry disabled during cooldown.");
+
+                if (this.isListeningActive) {
+                    this.stopListening("permission_denied");
+                } else {
+                    this.clearAllTimers();
+                    this.clearWatchdog();
+                    this.setMode("idle");
+                }
+
+                this.emit({
+                    type: "VOICE_SESSION_ERROR",
+                    reason: "stt_permission_denied",
+                    fatal: true,
+                    recoverable: false,
+                    detail: sttError.message || "permission_denied",
+                });
+                return;
+            }
+
+            const recoverable = Boolean(sttError.recoverable);
+            const fatal = Boolean(sttError.fatal) || !recoverable;
+            const reason = fatal ? "stt_fatal" : "stt_recoverable";
+            console.warn(`[VoiceRuntime] STT ${reason}: ${sttError.message || errorCode || "unknown"}`);
+            this.emit({
+                type: "VOICE_SESSION_ERROR",
+                reason,
+                fatal,
+                recoverable,
+                detail: sttError.message || (errorCode || "unknown_error"),
+            });
         });
 
         // TTS lifecycle events — store unsubscribe for HMR cleanup
         const unsubTTS = TTSController.subscribe((event) => {
-            if (event.type === "TTS_ENDED" || event.type === "TTS_CANCELLED") {
+            if (event.type === "TTS_ENDED" || event.type === "TTS_CANCELLED" || event.type === "TTS_ERROR") {
                 if (this.mode === "speaking") {
-                    console.log("[VoiceRuntime] TTS ended, returning to idle");
+                    console.log("[VoiceRuntime] TTS lifecycle completed, returning to idle");
                     this.setMode("idle");
                 }
+                this.clearWatchdog();
             }
             if (event.type === "TTS_ERROR") {
                 // Phase 10: TTS failure - emit for UI to show text
                 console.warn("[VoiceRuntime] TTS failed, emitting for text fallback");
-                this.emit({ type: "VOICE_SESSION_ERROR" });
+                this.emit({
+                    type: "VOICE_SESSION_ERROR",
+                    reason: "tts_failure",
+                    fatal: false,
+                    recoverable: true,
+                    detail: event.error || "tts_failure",
+                });
             }
         });
         this.disposers.push(unsubTTS);
@@ -367,6 +418,19 @@ class VoiceRuntimeService {
             return;
         }
 
+        if (Date.now() < this.permissionDeniedCooldownUntil) {
+            const retryInMs = Math.max(0, this.permissionDeniedCooldownUntil - Date.now());
+            console.warn(`[VoiceRuntime] STT blocked by permission cooldown (${retryInMs}ms remaining)`);
+            this.emit({
+                type: "VOICE_SESSION_ERROR",
+                reason: "stt_permission_denied",
+                fatal: true,
+                recoverable: false,
+                detail: `permission_cooldown_${retryInMs}ms`,
+            });
+            return;
+        }
+
 
 
         try {
@@ -377,6 +441,7 @@ class VoiceRuntimeService {
             this.sessionStartTime = Date.now();
 
             await this.startActiveStt();
+            this.permissionDeniedCooldownUntil = 0;
 
             this.startNoSpeechTimer();
             this.startNoResultTimer();
@@ -386,11 +451,35 @@ class VoiceRuntimeService {
             this.setMode("listening");
             this.emit({ type: "VOICE_SESSION_STARTED" });
         } catch (error) {
+            const sttError = error as RuntimeSttError;
+            const errorCode = String(sttError?.code || "");
             console.error("[VoiceRuntime] Failed to start listening:", error);
             this.isListeningActive = false;
+            this.clearAllTimers();
+            this.clearWatchdog();
+            this.setMode("idle");
 
-            // Phase 10: Emit error for recovery
-            this.emit({ type: "VOICE_SESSION_ERROR" });
+            if (sttError?.permissionDenied || errorCode === "not-allowed" || errorCode === "service-not-allowed") {
+                this.permissionDeniedCooldownUntil = Date.now() + CONFIG.STT_PERMISSION_DENIED_COOLDOWN_MS;
+                this.emit({
+                    type: "VOICE_SESSION_ERROR",
+                    reason: "stt_permission_denied",
+                    fatal: true,
+                    recoverable: false,
+                    detail: sttError?.message || "permission_denied",
+                });
+                return;
+            }
+
+            const recoverable = Boolean(sttError?.recoverable);
+            const fatal = Boolean(sttError?.fatal) || !recoverable;
+            this.emit({
+                type: "VOICE_SESSION_ERROR",
+                reason: fatal ? "stt_fatal" : "stt_recoverable",
+                fatal,
+                recoverable,
+                detail: sttError?.message || "stt_start_failed",
+            });
         }
     }
 
@@ -401,6 +490,13 @@ class VoiceRuntimeService {
         if (!this.isListeningActive) return;
 
         console.log(`[VoiceRuntime] Stop listening (${reason}).`);
+        const hadTranscript = this.hasReceivedAnyTranscript || this.hasReceivedFinalTranscript;
+        if (reason === "permission_denied") {
+            this.permissionDeniedCooldownUntil = Math.max(
+                this.permissionDeniedCooldownUntil,
+                Date.now() + CONFIG.STT_PERMISSION_DENIED_COOLDOWN_MS
+            );
+        }
 
         // Set flag: "This was intentional, don't reconnect!"
         this.isIntentionalStop = reason === "user";
@@ -410,7 +506,7 @@ class VoiceRuntimeService {
         this.stopActiveStt(reason);
 
         this.setMode("idle");
-        this.emit({ type: "VOICE_SESSION_ENDED" });
+        this.emit({ type: "VOICE_SESSION_ENDED", reason, hadTranscript });
     }
 
     /**
@@ -433,7 +529,13 @@ class VoiceRuntimeService {
         } catch (error) {
             console.error("[VoiceRuntime] TTS error:", error);
             // Phase 10: TTS failure should not block - emit for text fallback
-            this.emit({ type: "VOICE_SESSION_ERROR" });
+            this.emit({
+                type: "VOICE_SESSION_ERROR",
+                reason: "tts_failure",
+                fatal: false,
+                recoverable: true,
+                detail: error instanceof Error ? error.message : "tts_failure",
+            });
         }
 
         // Mode transitions handled by TTS event subscription
@@ -456,6 +558,7 @@ class VoiceRuntimeService {
      */
     public hardStopAll(): void {
         console.log("[VoiceRuntime] HARD STOP ALL AUDIO");
+        const hadTranscript = this.hasReceivedAnyTranscript || this.hasReceivedFinalTranscript;
 
         // Stop TTS
         TTSController.hardStop();
@@ -464,7 +567,8 @@ class VoiceRuntimeService {
         if (this.isListeningActive) {
             this.isListeningActive = false;
             this.clearAllTimers();
-            this.stopActiveStt("user");
+            this.stopActiveStt("hard_stop");
+            this.emit({ type: "VOICE_SESSION_ENDED", reason: "hard_stop", hadTranscript });
         } else {
             WebSpeechClient.close();
         }
@@ -499,7 +603,7 @@ class VoiceRuntimeService {
             if (this.isListeningActive && !this.hasReceivedAnyTranscript) {
                 console.log("[Voice] Session auto-ended: no speech");
                 this.handleSilentTurn();  // Phase 10: Count as silent
-                this.stopListening("pause");
+                this.stopListening("timeout_no_speech");
             }
         }, this.noSpeechTimeoutMs);
     }
@@ -516,7 +620,7 @@ class VoiceRuntimeService {
             if (this.isListeningActive && !this.hasReceivedFinalTranscript) {
                 console.log("[Voice] Session auto-ended: no result");
                 this.handleSilentTurn();  // Phase 10
-                this.stopListening("pause");
+                this.stopListening("timeout_no_result");
             }
         }, this.noResultTimeoutMs);
     }
@@ -532,7 +636,7 @@ class VoiceRuntimeService {
         this.sessionTimeoutTimer = setTimeout(() => {
             if (this.isListeningActive) {
                 console.log("[Voice] Session auto-ended: max duration");
-                this.stopListening("pause");
+                this.stopListening("session_timeout");
             }
         }, CONFIG.MAX_SESSION_DURATION_MS);
     }

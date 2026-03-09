@@ -7,6 +7,7 @@ import { TTSController } from "../voice/TTSController";
 import { StateMachine } from "../state/uiState.machine";
 import { UIState } from "@contracts/backend.contract";
 import { buildTenantApiUrl, getTenantHeaders, getTenant, getTenantSlug } from "../services/tenantContext";
+import { normalizeBackendStateFromResponse, normalizeStateForBackendChat } from "../services/uiStateInterop";
 
 /**
  * AgentAdapter (Singleton) - Phase 9.4: TTS UX, Barge-In & Audio Authority
@@ -75,6 +76,27 @@ const SLOT_EXPECTED_TYPE_MAP: Record<BookingSlotKey, BookingSlotExpectedType> = 
     checkInDate: "date",
     checkOutDate: "date",
     guestName: "string",
+};
+
+const BOOKING_SLOT_PRIORITY: BookingSlotKey[] = [
+    "roomType",
+    "adults",
+    "checkInDate",
+    "checkOutDate",
+    "guestName",
+];
+
+const SLOT_KEY_ALIAS_MAP: Record<string, BookingSlotKey> = {
+    roomtype: "roomType",
+    room_type: "roomType",
+    adults: "adults",
+    children: "children",
+    checkindate: "checkInDate",
+    check_in_date: "checkInDate",
+    checkoutdate: "checkOutDate",
+    check_out_date: "checkOutDate",
+    guestname: "guestName",
+    guest_name: "guestName",
 };
 
 const SLOT_TO_INTENT_MAP: Record<BookingSlotKey, string> = {
@@ -169,6 +191,17 @@ class AgentAdapterService {
         expectedType: null,
         promptAsked: "",
     };
+    private listeningRestartTimer: ReturnType<typeof setTimeout> | null = null;
+    private silenceReengageTimer: ReturnType<typeof setTimeout> | null = null;
+    private keyDispenseCompleteTimer: ReturnType<typeof setTimeout> | null = null;
+    private readonly SILENCE_REENGAGE_COOLDOWN_MS = 12000;
+    private readonly KEY_DISPENSE_SIM_MS = 3500;
+    private reengageCooldownUntil = 0;
+    private voiceLifecycleEpoch = 0;
+    private pendingAiSpeechText: string | null = null;
+    private lastBookingPromptFingerprint: string | null = null;
+    private lastBookingPromptAt = 0;
+    private readonly BOOKING_PROMPT_DEDUP_MS = 3500;
 
     // HMR cleanup: store unsubscribe functions so destroy() can remove ghost callbacks
     private disposers: (() => void)[] = [];
@@ -182,8 +215,32 @@ class AgentAdapterService {
 
         // Phase 9.4.1: Subscribe to TTS events for polite turn-taking
         const unsubTTS = TTSController.subscribe((event) => {
+            if (event.type === "TTS_STARTED") {
+                this.clearListeningRestartTimer("tts_started");
+                this.clearSilenceReengageTimer("tts_started");
+                if (event.text?.trim()) {
+                    this.emitTranscript(event.text, true, 'ai');
+                }
+                this.pendingAiSpeechText = null;
+            }
+
             if (event.type === "TTS_ENDED") {
-                this.handleTTSEnded();
+                this.pendingAiSpeechText = null;
+                this.handleTTSEnded("ended");
+            }
+
+            if (event.type === "TTS_ERROR") {
+                const fallbackText = (event.text || this.pendingAiSpeechText || "").trim();
+                if (fallbackText) {
+                    this.emitTranscript(fallbackText, true, 'ai');
+                }
+                this.pendingAiSpeechText = null;
+                this.handleTTSEnded("error");
+            }
+
+            if (event.type === "TTS_CANCELLED") {
+                this.pendingAiSpeechText = null;
+                this.clearListeningRestartTimer("tts_cancelled");
             }
         });
         this.disposers.push(unsubTTS);
@@ -229,24 +286,160 @@ class AgentAdapterService {
 
     /**
      * Phase 9.4.1: Polite Turn-Taking
-     * After TTS finishes, start listening if state allows voice.
+     * After TTS lifecycle finishes, start listening if state allows voice.
      */
-    private handleTTSEnded(): void {
+    private handleTTSEnded(cause: "ended" | "error"): void {
         // Check if current state allows voice input
         const allowsVoice = this.hasVoiceAuthority();
 
         if (allowsVoice) {
-            console.log("[AgentAdapter] TTS ended, starting listening after 600ms (echo prevention)");
-            // Wait 600ms to clear audio buffers and room echo, then start listening
-            setTimeout(() => {
-                // Double-check we're still in a voice-enabled state
-                if (this.hasVoiceAuthority()) {
-                    VoiceRuntime.startListening(this.language);
-                }
-            }, 600);
+            // Ownership rule: TTS completion is the single owner for post-TTS mic resume.
+            const restartDelayMs = cause === "error" ? 900 : 600;
+            console.log(`[AgentAdapter] TTS ${cause}; scheduling listening restart (${restartDelayMs}ms).`);
+            this.scheduleListeningRestart(restartDelayMs, "tts_lifecycle");
         } else {
             console.log("[AgentAdapter] TTS ended, but state doesn't allow voice");
         }
+    }
+
+    private clearListeningRestartTimer(reason: string): void {
+        if (!this.listeningRestartTimer) return;
+        clearTimeout(this.listeningRestartTimer);
+        this.listeningRestartTimer = null;
+        console.debug(`[AgentAdapter] Cleared listening restart timer (${reason})`);
+    }
+
+    private clearSilenceReengageTimer(reason: string): void {
+        if (!this.silenceReengageTimer) return;
+        clearTimeout(this.silenceReengageTimer);
+        this.silenceReengageTimer = null;
+        console.debug(`[AgentAdapter] Cleared silence re-engagement timer (${reason})`);
+    }
+
+    private clearKeyDispenseTimer(reason: string): void {
+        if (!this.keyDispenseCompleteTimer) return;
+        clearTimeout(this.keyDispenseCompleteTimer);
+        this.keyDispenseCompleteTimer = null;
+        console.debug(`[AgentAdapter] Cleared key-dispense timer (${reason})`);
+    }
+
+    private resetVoiceLifecycle(reason: string): void {
+        this.voiceLifecycleEpoch += 1;
+        this.clearListeningRestartTimer(reason);
+        this.clearSilenceReengageTimer(reason);
+    }
+
+    private scheduleListeningRestart(delayMs: number, source: "tts_lifecycle" | "state_transition"): void {
+        this.clearListeningRestartTimer(`reschedule:${source}`);
+        const expectedEpoch = this.voiceLifecycleEpoch;
+        const expectedState = this.state;
+        this.listeningRestartTimer = setTimeout(() => {
+            this.listeningRestartTimer = null;
+
+            if (expectedEpoch !== this.voiceLifecycleEpoch) {
+                console.debug("[AgentAdapter] Ignored stale listening restart timer");
+                return;
+            }
+            if (expectedState !== this.state) {
+                console.debug(`[AgentAdapter] Ignored restart from stale state ${expectedState} -> ${this.state}`);
+                return;
+            }
+            if (!this.hasVoiceAuthority()) return;
+            if (VoiceRuntime.getMode() !== "idle") return;
+            if (TTSController.isSpeaking()) return;
+
+            VoiceRuntime.startListening(this.language).catch((error) => {
+                console.warn("[AgentAdapter] Failed to restart listening:", error);
+            });
+        }, delayMs);
+    }
+
+    private getSilenceReengagementPlan(): { delayMs: number; prompt: string } | null {
+        switch (this.state) {
+            case "WELCOME":
+                return {
+                    delayMs: 2200,
+                    prompt: "I can help you check in, book a room, or call for help.",
+                };
+            case "AI_CHAT":
+                return {
+                    delayMs: 2400,
+                    prompt: "I'm listening. You can say check in, book room, or help.",
+                };
+            case "MANUAL_MENU":
+                return {
+                    delayMs: 3200,
+                    prompt: "You can continue by voice or tap an option on screen.",
+                };
+            case "ROOM_SELECT":
+                return {
+                    delayMs: 6500,
+                    prompt: "Take your time. Say the room name when you're ready.",
+                };
+            case "BOOKING_COLLECT":
+                return {
+                    delayMs: 8000,
+                    prompt: "When you're ready, tell me the next booking detail.",
+                };
+            case "BOOKING_SUMMARY":
+                return {
+                    delayMs: 9000,
+                    prompt: "Review the summary and say confirm booking when ready.",
+                };
+            default:
+                return null;
+        }
+    }
+
+    private scheduleSilenceReengagement(sourceReason: string): void {
+        if (!this.hasVoiceAuthority()) return;
+        const plan = this.getSilenceReengagementPlan();
+        if (!plan) return;
+
+        const now = Date.now();
+        if (now < this.reengageCooldownUntil) {
+            console.debug("[AgentAdapter] Silence re-engagement skipped (cooldown active)");
+            return;
+        }
+
+        this.clearSilenceReengageTimer("reschedule:silence");
+        const expectedEpoch = this.voiceLifecycleEpoch;
+        const expectedState = this.state;
+        const finalDelay = plan.delayMs;
+
+        this.silenceReengageTimer = setTimeout(() => {
+            this.silenceReengageTimer = null;
+
+            if (expectedEpoch !== this.voiceLifecycleEpoch) {
+                console.debug("[AgentAdapter] Ignored stale silence re-engagement timer");
+                return;
+            }
+            if (expectedState !== this.state) {
+                console.debug(`[AgentAdapter] Ignored stale silence prompt for ${expectedState}; current=${this.state}`);
+                return;
+            }
+            if (!this.hasVoiceAuthority()) return;
+            if (TTSController.isSpeaking()) return;
+
+            this.reengageCooldownUntil = Date.now() + this.SILENCE_REENGAGE_COOLDOWN_MS;
+            console.log(`[AgentAdapter] Silence re-engagement prompt (${sourceReason}) for state=${this.state}`);
+            this.speak(plan.prompt);
+        }, finalDelay);
+    }
+
+    private scheduleKeyDispenseCompletion(): void {
+        this.clearKeyDispenseTimer("reschedule:key_dispense");
+        const expectedState = this.state;
+        this.keyDispenseCompleteTimer = setTimeout(() => {
+            this.keyDispenseCompleteTimer = null;
+            if (expectedState !== "KEY_DISPENSING" || this.state !== "KEY_DISPENSING") {
+                console.debug("[AgentAdapter] Ignored stale key-dispense completion timer");
+                return;
+            }
+            // TODO: Replace with real hardware completion event when dispenser integration is available.
+            console.log("[AgentAdapter] Simulated key dispensing complete -> DISPENSE_COMPLETE");
+            this.handleIntent("DISPENSE_COMPLETE");
+        }, this.KEY_DISPENSE_SIM_MS);
     }
 
     // === Phase 8.6: Structured Telemetry ===
@@ -321,6 +514,7 @@ class AgentAdapterService {
 
         switch (event.type) {
             case "VOICE_SESSION_STARTED":
+                this.clearSilenceReengageTimer("session_started");
                 this.hasProcessedTranscript = false; // Reset flag
                 // Phase 8.6: Check voice authority matrix
                 if (!this.hasVoiceAuthority()) {
@@ -346,6 +540,7 @@ class AgentAdapterService {
                 break;
 
             case "VOICE_TRANSCRIPT_READY":
+                this.clearSilenceReengageTimer("transcript_ready");
                 if (Date.now() < this.suppressFinalTranscriptUntil) {
                     console.debug("[AgentAdapter] Final transcript ignored (realtime command already handled)");
                     return;
@@ -430,13 +625,19 @@ class AgentAdapterService {
                 break;
 
             case "VOICE_SESSION_ENDED":
-                console.log("[AgentAdapter] Voice Session Ended.");
+                console.log(`[AgentAdapter] Voice Session Ended. reason=${event.reason || "unknown"}`);
                 VoiceRuntime.setTurnState("IDLE");
 
-                // Silence Recovery
-                if (!this.hasProcessedTranscript) {
-                    console.log("[Agent] ðŸ”‡ Silence Detected. Attempting Re-engagement.");
-                    this.handleSilence();
+                if (event.reason === "user" || event.reason === "pause" || event.reason === "hard_stop" || event.reason === "permission_denied") {
+                    this.resetVoiceLifecycle(`session_ended:${event.reason}`);
+                    this.hasProcessedTranscript = false;
+                    break;
+                }
+
+                // Silence recovery is only for no-input timeout style endings.
+                const endedWithoutTranscript = event.hadTranscript === false || !this.hasProcessedTranscript;
+                if (endedWithoutTranscript) {
+                    this.scheduleSilenceReengagement(event.reason || "unknown");
                 }
                 this.hasProcessedTranscript = false;
                 break;
@@ -445,6 +646,7 @@ class AgentAdapterService {
             case "VOICE_SESSION_ABORTED":
                 console.log("[AgentAdapter] Voice Session ABORTED (watchdog/silence)");
                 VoiceRuntime.setTurnState("IDLE");
+                this.resetVoiceLifecycle("session_aborted");
                 VoiceRuntime.clearSessionData();  // Privacy
                 // Transition to WELCOME for recovery
                 if (this.state !== "WELCOME" && this.state !== "ERROR") {
@@ -453,14 +655,18 @@ class AgentAdapterService {
                 break;
 
             case "VOICE_SESSION_ERROR":
-                console.warn("[AgentAdapter] Voice Session ERROR");
+                console.warn(`[AgentAdapter] Voice Session ERROR (${event.reason || "unknown"})`);
                 VoiceRuntime.setTurnState("IDLE");
+                if (event.reason === "stt_permission_denied" || event.fatal) {
+                    this.resetVoiceLifecycle(`session_error:${event.reason || "fatal"}`);
+                }
                 // Don't block navigation - just log and continue
                 // UI can show text fallback if needed
                 break;
 
             case "VOICE_TRANSCRIPT_PARTIAL":
                 // Just for live display, no action needed
+                this.clearSilenceReengageTimer("transcript_partial");
                 this.resetInactivityTimer();
                 this.emitTranscript(event.transcript, false, 'user');
                 break;
@@ -523,7 +729,7 @@ class AgentAdapterService {
 
     private buildBookingCollectPrompt(): string {
         const slots = (this.viewData.bookingSlots || {}) as Record<string, any>;
-        const selectedRoomName = this.viewData.selectedRoom?.name;
+        const selectedRoomName = this.getCanonicalSelectedRoomLabel();
 
         if (slots.adults == null) {
             return selectedRoomName
@@ -540,6 +746,118 @@ class AgentAdapterService {
         }
 
         return "Please review the details. Say confirm booking when you are ready.";
+    }
+
+    private normalizeBookingSlotKey(raw: unknown): BookingSlotKey | null {
+        if (raw == null) return null;
+        const asText = String(raw).trim();
+        if (!asText) return null;
+        const snake = asText
+            .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+            .replace(/[\s-]+/g, "_")
+            .toLowerCase();
+        const compact = snake.replace(/_/g, "");
+        return SLOT_KEY_ALIAS_MAP[snake] || SLOT_KEY_ALIAS_MAP[compact] || null;
+    }
+
+    private normalizeRoomHintText(value: unknown): string {
+        return String(value || "")
+            .toLowerCase()
+            .replace(/\bsweet\b/g, "suite")
+            .replace(/\bsweets\b/g, "suites")
+            .replace(/\bluxary\b/g, "luxury")
+            .replace(/\blux\b/g, "luxury")
+            .replace(/\s+/g, " ")
+            .trim();
+    }
+
+    private getCanonicalSelectedRoomLabel(roomLike?: any): string | null {
+        const room = roomLike || this.viewData.selectedRoom;
+        const display = String(room?.displayName || room?.name || room?.roomType || "").trim();
+        return display || null;
+    }
+
+    private getMissingBookingSlotsFromState(): BookingSlotKey[] {
+        const slots = (this.viewData.bookingSlots || {}) as Record<string, unknown>;
+        return BOOKING_SLOT_PRIORITY.filter((slot) => {
+            const value = slots[slot];
+            return value === null || value === undefined || String(value).trim() === "";
+        });
+    }
+
+    private resolveNextBookingSlot(payload?: any): BookingSlotKey | null {
+        const hinted = this.normalizeBookingSlotKey(payload?.nextSlotToAsk ?? this.viewData.nextSlotToAsk ?? this.slotContext.activeSlot);
+        if (hinted) return hinted;
+
+        const backendMissing = (payload?.missingSlots ?? this.viewData.missingSlots) as unknown;
+        if (Array.isArray(backendMissing)) {
+            for (const slot of BOOKING_SLOT_PRIORITY) {
+                if (backendMissing.some((item) => this.normalizeBookingSlotKey(item) === slot)) {
+                    return slot;
+                }
+            }
+        }
+
+        const localMissing = this.getMissingBookingSlotsFromState();
+        return localMissing.length > 0 ? localMissing[0] : null;
+    }
+
+    private buildPromptForBookingSlot(slot: BookingSlotKey | null): string {
+        const selectedRoomName = this.getCanonicalSelectedRoomLabel();
+        switch (slot) {
+            case "roomType":
+                return "Please tell me which room you would like to book.";
+            case "adults":
+                return selectedRoomName
+                    ? `Great choice. ${selectedRoomName} is selected. How many adults will be staying?`
+                    : "How many adults will be staying?";
+            case "checkInDate":
+                return "What is your check in date?";
+            case "checkOutDate":
+                return "What is your check out date?";
+            case "guestName":
+                return "What name should I use for this booking?";
+            case "children":
+                return "How many children will be staying?";
+            default:
+                return this.buildBookingCollectPrompt();
+        }
+    }
+
+    private maybeSpeakBookingCollectGuidance(payload?: any, options?: { preferBackendSpeech?: boolean }): boolean {
+        if (this.state !== "BOOKING_COLLECT") return false;
+        if (!this.hasVoiceAuthority()) return false;
+        if (TTSController.isSpeaking()) return false;
+
+        const backendSpeech = String(payload?.speech || "").trim();
+        const slot = this.resolveNextBookingSlot(payload);
+        const fallbackPrompt = this.buildPromptForBookingSlot(slot);
+        const prompt = options?.preferBackendSpeech && backendSpeech ? backendSpeech : fallbackPrompt;
+
+        if (!prompt) return false;
+
+        const fingerprint = `${slot || "none"}|${prompt.toLowerCase()}`;
+        const now = Date.now();
+        if (
+            this.lastBookingPromptFingerprint === fingerprint &&
+            now - this.lastBookingPromptAt < this.BOOKING_PROMPT_DEDUP_MS
+        ) {
+            return false;
+        }
+
+        if (slot && SLOT_EXPECTED_TYPE_MAP[slot]) {
+            this.slotContext = {
+                ...this.slotContext,
+                activeSlot: slot,
+                expectedType: SLOT_EXPECTED_TYPE_MAP[slot],
+                promptAsked: prompt,
+            };
+        }
+
+        this.lastBookingPromptFingerprint = fingerprint;
+        this.lastBookingPromptAt = now;
+        this.speak(prompt);
+        return true;
     }
 
     private setActiveSlot(slot: BookingSlotKey, expectedType: BookingSlotExpectedType, promptAsked: string): void {
@@ -594,26 +912,9 @@ class AgentAdapterService {
     }
 
     private applyBookingCollectIntentGuardrail(rawIntent: string, mappedIntent: string): string {
-        if (this.state !== "BOOKING_COLLECT") {
-            return mappedIntent;
-        }
-
-        const activeSlot = this.slotContext.activeSlot;
-        if (!activeSlot) {
-            return mappedIntent;
-        }
-
-        const normalizedRaw = (rawIntent || "").toUpperCase().trim();
-        const suspiciousIntents = new Set(["SELECT_ROOM", "GENERAL_QUERY", "UNKNOWN"]);
-        if (!suspiciousIntents.has(normalizedRaw)) {
-            return mappedIntent;
-        }
-
-        const correctedIntent = SLOT_TO_INTENT_MAP[activeSlot] || mappedIntent;
-        if (correctedIntent !== mappedIntent) {
-            console.log(`[Agent] Correcting misfire: ${normalizedRaw || "UNKNOWN"} -> ${correctedIntent}`);
-        }
-        return correctedIntent;
+        // TODO: If needed, move intent correction logic to backend classifier prompts/nodes.
+        // Frontend should not rewrite backend intent decisions.
+        return mappedIntent;
     }
 
     private isRoomInfoQuery(rawTranscript: string): boolean {
@@ -635,10 +936,10 @@ class AgentAdapterService {
         const rooms = Array.isArray(this.viewData.rooms) ? this.viewData.rooms : [];
         if (rooms.length === 0) return null;
 
-        const normalized = String(hint).toLowerCase().trim();
+        const normalized = this.normalizeRoomHintText(hint);
         if (!normalized) return null;
 
-        const roomText = (room: any) => `${String(room?.name || "")} ${String(room?.code || "")}`.toLowerCase();
+        const roomText = (room: any) => this.normalizeRoomHintText(`${String(room?.name || "")} ${String(room?.code || "")}`);
 
         const byExactCode = rooms.find((room: any) => String(room?.code || "").toLowerCase() === normalized);
         if (byExactCode) return byExactCode;
@@ -650,7 +951,7 @@ class AgentAdapterService {
         if (byCode) return byCode;
 
         const byName = rooms.find((room: any) => {
-            const name = String(room?.name || "").toLowerCase();
+            const name = this.normalizeRoomHintText(room?.name || "");
             return Boolean(name) && (name.includes(normalized) || normalized.includes(name));
         });
         if (byName) return byName;
@@ -686,7 +987,7 @@ class AgentAdapterService {
             { pattern: /(standard|single|queen|classic)/, pick: (text) => text.includes("standard") || text.includes("single") || text.includes("queen") || text.includes("classic") },
             { pattern: /(bunk|dorm|shared)/, pick: (text) => text.includes("bunk") || text.includes("dorm") || text.includes("shared") },
             { pattern: /(executive|business)/, pick: (text) => text.includes("executive") || text.includes("business") },
-            { pattern: /(suite)/, pick: (text) => text.includes("suite") },
+            { pattern: /(suite|sweet)/, pick: (text) => text.includes("suite") },
         ];
 
         for (const rule of keywordChecks) {
@@ -700,41 +1001,14 @@ class AgentAdapterService {
     }
 
     private maybeHandleRoomInfoQuery(rawTranscript: string): boolean {
-        if (this.state !== "ROOM_SELECT") {
-            return false;
-        }
-
-        const rooms = Array.isArray(this.viewData.rooms) ? this.viewData.rooms : [];
-        if (rooms.length === 0) {
-            return false;
-        }
-
-        const transcript = (rawTranscript || "").toLowerCase().trim();
-        if (!this.isRoomInfoQuery(transcript)) {
-            return false;
-        }
-
-        const specificRoom = this.inferRoomFromTranscript(transcript) || this.resolveRoomFromHint(transcript);
-        const formatRoomLine = (room: any) => {
-            const name = String(room?.name || "Room");
-            const price = room?.price != null ? `${room.currency || "USD"} ${room.price}` : "price on request";
-            const features = Array.isArray(room?.features) ? room.features.slice(0, 4).join(", ") : "standard amenities";
-            return `${name} is ${price} per night with ${features}.`;
-        };
-
-        if (specificRoom) {
-            this.speak(formatRoomLine(specificRoom));
-            return true;
-        }
-
-        const topRooms = rooms.slice(0, 4);
-        const summary = topRooms.map((room: any) => formatRoomLine(room)).join(" ");
-        this.speak(`${summary} Which room would you like to book?`);
-        return true;
+        // TODO: Keep room Q&A backend-owned; frontend should render backend speech only.
+        return false;
     }
 
     // HELPER: Map LLM "fuzzy" intents to Strict Machine Events
     private mapIntentToEvent(llmIntent: string): string {
+        // Compatibility layer: backend owns intent meaning, frontend still translates that
+        // intent into existing local FSM event names until state/event contracts fully converge.
         const upper = (llmIntent || '').toUpperCase().trim();
 
         // Explicit LLM intent enum mapping (backend/contracts.ts)
@@ -819,10 +1093,6 @@ class AgentAdapterService {
                 return;
             }
 
-            if (this.maybeHandleRoomInfoQuery(transcript)) {
-                return;
-            }
-
             const fastPathIntent = this.getFastPathIntent(transcript);
             if (fastPathIntent) {
                 if (fastPathIntent === "CANCEL_REQUESTED" || fastPathIntent === "CANCEL_BOOKING") {
@@ -830,10 +1100,9 @@ class AgentAdapterService {
                     this.speak("Are you sure you want to cancel? Please say yes or no.");
                     return;
                 }
-                const inferredRoom = this.state === "ROOM_SELECT" ? this.inferRoomFromTranscript(transcript) : null;
                 this.dispatch(fastPathIntent, {
                     transcript,
-                    room: inferredRoom
+                    room: this.viewData.selectedRoom || null,
                 });
                 return;
             }
@@ -842,6 +1111,7 @@ class AgentAdapterService {
             const targetUrl = bookingStates.includes(this.state)
                 ? buildTenantApiUrl("chat/booking")
                 : buildTenantApiUrl("chat");
+            const backendCurrentState = normalizeStateForBackendChat(this.state);
 
             // 1. Call LLM Brain with session ID for memory
             const response = await fetch(targetUrl, {
@@ -849,8 +1119,10 @@ class AgentAdapterService {
                 headers: { 'Content-Type': 'application/json', ...getTenantHeaders() },
                 body: JSON.stringify({
                     transcript,
-                    currentState: this.state,
+                    // Normalize here so backend never receives drifted/non-canonical state tokens.
+                    currentState: backendCurrentState,
                     sessionId: sessionId || this.getSessionId(),
+                    tenantSlug: getTenantSlug(),
                     activeSlot: this.slotContext.activeSlot,
                     expectedType: this.slotContext.expectedType,
                     lastSystemPrompt: this.slotContext.promptAsked || undefined,
@@ -873,10 +1145,10 @@ class AgentAdapterService {
             // 2. Map Fuzzy Intent -> Strict Event
             const rawIntent = decision.intent;
             let strictEvent = this.mapIntentToEvent(rawIntent);
-            strictEvent = this.applyBookingCollectIntentGuardrail(rawIntent, strictEvent);
+            const backendSelectedRoom = decision?.selectedRoom || null;
             const slotRoomHint = decision?.accumulatedSlots?.roomType || decision?.extractedSlots?.roomType;
             let inferredRoom = this.state === "ROOM_SELECT"
-                ? this.inferRoomFromTranscript(transcript)
+                ? backendSelectedRoom
                 || this.resolveRoomFromHint(slotRoomHint)
                 || this.viewData.selectedRoom
                 || null
@@ -888,14 +1160,6 @@ class AgentAdapterService {
                 (strictEvent === "ROOM_SELECTED" || strictEvent === "BOOK_ROOM_SELECTED" || strictEvent === "GENERAL_QUERY")
             ) {
                 strictEvent = "ROOM_SELECTED";
-            }
-            if (
-                this.state === "BOOKING_COLLECT" &&
-                decision?.isComplete === true &&
-                strictEvent !== "CANCEL_BOOKING" &&
-                strictEvent !== "CANCEL_REQUESTED"
-            ) {
-                strictEvent = "CONFIRM_BOOKING";
             }
             if (strictEvent === "CANCEL_BOOKING" || strictEvent === "CANCEL_REQUESTED") {
                 this.pendingCancelConfirmation = true;
@@ -910,34 +1174,62 @@ class AgentAdapterService {
             console.log(`[Agent] Mapping Intent: ${rawIntent} -> ${strictEvent}`);
 
             // 3. Handle Transitions (Server-Driven)
-            const serverState = decision.nextUiScreen as UiState;
-            const willTransition = serverState && serverState !== this.state;
+            const serverState = normalizeBackendStateFromResponse(decision.nextUiScreen);
+            if (decision.nextUiScreen && !serverState) {
+                console.warn(`[AgentAdapter] Ignoring unknown backend nextUiScreen: ${decision.nextUiScreen}`);
+            }
+            const willTransition = Boolean(serverState && serverState !== this.state);
 
             // Execute Transition or Data Update
-            if (willTransition) {
+            if (willTransition && serverState) {
                 // IMPORTANT: Do NOT speak before transitioning.
                 // transitionTo() calls stopSpeaking() internally, which would kill the audio.
-                // The new screen will handle its own speech (e.g., room announcement).
                 console.log(`[AgentAdapter] Server directed transition: ${this.state} -> ${serverState}`);
                 this.transitionTo(serverState, strictEvent, {
                     transcript,
-                    ...decision
+                    ...decision,
+                    nextUiScreen: serverState,
+                    selectedRoom: backendSelectedRoom,
+                    room: inferredRoom,
+                    slots: decision.accumulatedSlots || decision.extractedSlots,
+                    missingSlots: decision.missingSlots,
+                    nextSlotToAsk: decision.nextSlotToAsk,
+                    error: decision.error,
+                    backendDecision: true,
+                    backendSpeechSpoken: false,
                 });
             } else {
                 // No transition — speak the LLM response (conversational turn on same screen)
+                const backendSpeechSpoken = Boolean(decision.speech);
                 if (decision.speech) {
                     this.speak(decision.speech);
                 }
 
-                if (strictEvent !== 'GENERAL_QUERY') {
+                const hasBookingDelta = Boolean(
+                    backendSelectedRoom ||
+                    inferredRoom ||
+                    decision.accumulatedSlots ||
+                    decision.extractedSlots ||
+                    decision.missingSlots ||
+                    decision.nextSlotToAsk !== undefined
+                );
+                const shouldDispatch = strictEvent !== 'GENERAL_QUERY' || hasBookingDelta;
+
+                if (shouldDispatch) {
                     this.dispatch(strictEvent as Intent, {
                         transcript,
                         llmIntent: rawIntent,
+                        selectedRoom: backendSelectedRoom,
                         room: inferredRoom,
                         slots: decision.accumulatedSlots || decision.extractedSlots,
                         missingSlots: decision.missingSlots,
                         nextSlotToAsk: decision.nextSlotToAsk,
-                        isComplete: decision.isComplete
+                        isComplete: decision.isComplete,
+                        nextUiScreen: serverState || undefined,
+                        error: decision.error,
+                        backendDecision: true,
+                        backendSpeechSpoken,
+                        speech: decision.speech,
                     });
                 }
             }
@@ -1026,31 +1318,58 @@ class AgentAdapterService {
             merged.selectedRoom = payload.room;
         }
 
+        if (payload?.selectedRoom) {
+            // Backend-selected room is authoritative for booking semantics.
+            merged.selectedRoom = payload.selectedRoom;
+        }
+
         if (Array.isArray(payload?.rooms)) {
             merged.rooms = payload.rooms;
         }
 
         if (payload?.slots) {
+            // Slot values come from backend extraction/validation, not transcript heuristics.
             merged.bookingSlots = { ...(merged.bookingSlots || {}), ...payload.slots };
             this.maybeClearFilledActiveSlot(payload.slots);
+        }
 
-            if (!merged.selectedRoom && payload.slots.roomType && Array.isArray(merged.rooms)) {
-                merged.selectedRoom =
-                    this.resolveRoomFromHint(payload.slots.roomType) ||
-                    merged.rooms.find((room: any) =>
-                        String(room?.name || "").toLowerCase().includes(String(payload.slots.roomType).toLowerCase())
-                    ) ||
-                    null;
+        const selectedRoomDisplay = this.getCanonicalSelectedRoomLabel(merged.selectedRoom);
+        if (selectedRoomDisplay) {
+            merged.selectedRoom = {
+                ...(merged.selectedRoom || {}),
+                name: selectedRoomDisplay,
+                displayName: selectedRoomDisplay,
+            };
+            merged.bookingSlots = {
+                ...(merged.bookingSlots || {}),
+                roomType: selectedRoomDisplay,
+            };
+        } else if (merged?.bookingSlots?.roomType) {
+            const resolvedRoom = this.resolveRoomFromHint(merged.bookingSlots.roomType);
+            if (resolvedRoom?.name) {
+                const canonicalName = String(resolvedRoom.name).trim();
+                merged.selectedRoom = {
+                    ...(merged.selectedRoom || {}),
+                    ...resolvedRoom,
+                    name: canonicalName,
+                    displayName: canonicalName,
+                };
+                merged.bookingSlots = {
+                    ...(merged.bookingSlots || {}),
+                    roomType: canonicalName,
+                };
             }
         }
 
-        if (payload?.missingSlots) {
-            merged.missingSlots = payload.missingSlots;
+        if (payload?.missingSlots !== undefined) {
+            merged.missingSlots = Array.isArray(payload.missingSlots)
+                ? payload.missingSlots.map((slot: unknown) => this.normalizeBookingSlotKey(slot) || slot)
+                : payload.missingSlots;
         }
 
         if (payload?.nextSlotToAsk !== undefined) {
-            merged.nextSlotToAsk = payload.nextSlotToAsk;
-            const hintedSlot = payload.nextSlotToAsk as BookingSlotKey | null;
+            const hintedSlot = this.normalizeBookingSlotKey(payload.nextSlotToAsk);
+            merged.nextSlotToAsk = hintedSlot || payload.nextSlotToAsk;
             if (hintedSlot && SLOT_EXPECTED_TYPE_MAP[hintedSlot]) {
                 this.slotContext = {
                     ...this.slotContext,
@@ -1060,11 +1379,11 @@ class AgentAdapterService {
             }
         }
 
-        if (intent === 'ROOM_SELECTED' && !merged.selectedRoom && Array.isArray(merged.rooms)) {
-            const text = String(payload?.transcript || '').toLowerCase();
-            merged.selectedRoom = merged.rooms.find((r: any) => String(r.name || '').toLowerCase().includes(text))
-                || merged.rooms.find((r: any) => text.includes('deluxe') && String(r.name || '').toLowerCase().includes('deluxe'))
-                || null;
+        if (payload?.error !== undefined) {
+            merged.bookingError = payload.error || null;
+        } else if (payload?.backendDecision) {
+            // Clear stale error when a new backend turn does not carry an error.
+            merged.bookingError = null;
         }
 
         const progressState = nextState || this.state;
@@ -1088,23 +1407,6 @@ class AgentAdapterService {
         }, this.INACTIVITY_TIMEOUT_MS);
     }
 
-    private inferRoomFromTranscript(transcript: string): any | null {
-        const t = (transcript || "").toLowerCase();
-        if (!t) return null;
-
-        const rooms = Array.isArray(this.viewData.rooms) ? this.viewData.rooms : [];
-        if (rooms.length === 0) return null;
-
-        if (/\b(first|1st)\b/.test(t) && rooms[0]) return rooms[0];
-        if (/\b(second|2nd)\b/.test(t) && rooms[1]) return rooms[1];
-        if (/\b(third|3rd)\b/.test(t) && rooms[2]) return rooms[2];
-
-        if ((/\b(this room|that room|this one|that one)\b/.test(t)) && this.viewData.selectedRoom) {
-            return this.viewData.selectedRoom;
-        }
-
-        return this.resolveRoomFromHint(t);
-    }
     private isAffirmative(text: string): boolean {
         const t = (text || "").toLowerCase();
         return /\b(yes|yeah|yep|confirm|sure|ok|okay|proceed|cancel it|do it|haan|han|ji|correct)\b/.test(t);
@@ -1167,6 +1469,21 @@ class AgentAdapterService {
         console.log(`[AgentAdapter] ðŸ‘† Handle Intent (Touch Authority): ${intent}`, payload || '');
         this.resetInactivityTimer();
 
+        // BOOKING_SUMMARY touch-confirm should use the same backend confirmation path as voice.
+        // This keeps persistence + transition semantics unified while preserving touch fallback.
+        if (intent === "CONFIRM_PAYMENT" && this.state === "BOOKING_SUMMARY") {
+            console.log("[AgentAdapter] BOOKING_SUMMARY touch confirm -> backend CONFIRM_BOOKING turn");
+            const expectedState = this.state;
+            void this.processWithLLMBrain("confirm booking", this.getSessionId());
+            setTimeout(() => {
+                if (this.state === expectedState && !this.viewData?.bookingError) {
+                    console.warn("[AgentAdapter] Backend confirm timeout; using touch fallback transition to PAYMENT");
+                    this.transitionTo("PAYMENT", "CONFIRM_PAYMENT", { touchFallback: true });
+                }
+            }, 2200);
+            return;
+        }
+
         // 1. TOUCH AUTHORITY CHECK ðŸ›¡ï¸
         const INTERRUPT_INTENTS = [
             "CHECK_IN_SELECTED", "BOOK_ROOM_SELECTED",
@@ -1179,6 +1496,7 @@ class AgentAdapterService {
 
         if (INTERRUPT_INTENTS.includes(intent)) {
             console.log("[AgentAdapter] ðŸ‘† Touch Interrupt detected. Killing Audio.");
+            this.resetVoiceLifecycle(`interrupt:${intent}`);
             TTSController.hardStop();
             VoiceRuntime.stopListening();
 
@@ -1218,22 +1536,6 @@ class AgentAdapterService {
     // === Phase 11.8: Enterprise Hardening ===
     private hasProcessedTranscript = false;
 
-    private handleSilence() {
-        // Don't nag if we are Idle or in Manual Mode
-        if (this.state === 'IDLE' || this.state === 'MANUAL_MENU') return;
-
-        // Gentle Nudge
-        const nudges = [
-            "I'm still listening.",
-            "Did you need more time?",
-            "You can say 'Check In' or 'Help'."
-        ];
-        const randomNudge = nudges[Math.floor(Math.random() * nudges.length)];
-
-        // Speak through the proper VoiceRuntime path (premium voice, not robot)
-        this.speak(randomNudge);
-    }
-
     /**
      * Internal transition helper to handle side-effects
      */
@@ -1264,9 +1566,12 @@ class AgentAdapterService {
         }
 
         const previousState = this.state;
+        this.clearKeyDispenseTimer(`transition:${previousState}->${nextState}`);
         this.state = nextState;
         if (nextState !== "BOOKING_COLLECT") {
             this.clearActiveSlot();
+            this.lastBookingPromptFingerprint = null;
+            this.lastBookingPromptAt = 0;
         }
         this.applyPayloadData(intent || 'UNKNOWN', payload, nextState);
         this.resetInactivityTimer();
@@ -1284,11 +1589,16 @@ class AgentAdapterService {
         }
 
         // Phase 9.4.1: On state change, stop any active TTS and listening
+        this.resetVoiceLifecycle(`transition:${previousState}->${nextState}`);
         VoiceRuntime.stopSpeaking();
         VoiceRuntime.stopListening();
 
         // Notify Listeners
         this.notifyListeners();
+
+        const spokeBookingGuidance = this.state === "BOOKING_COLLECT"
+            ? this.maybeSpeakBookingCollectGuidance(payload, { preferBackendSpeech: true })
+            : false;
 
         // [V2 DUMB FRONTEND] Speech is now primarily handled by the backend response.
         // Exception: The initial WELCOME greeting is a frontend concern (no backend call yet).
@@ -1299,22 +1609,17 @@ class AgentAdapterService {
                 const greeting = `Welcome to ${tenantName}. How may I assist you today?`;
                 this.speak(greeting);
                 // VoiceRuntime will start listening automatically after TTS ends (via TTS_ENDED handler)
+            } else if (!spokeBookingGuidance) {
+                // No guided prompt was spoken on this transition, so bootstrap listening directly.
+                // If TTS is in-flight, TTS lifecycle owns the restart path.
+                this.scheduleListeningRestart(500, "state_transition");
             } else {
-                setTimeout(() => {
-                    if (this.hasVoiceAuthority()) {
-                        VoiceRuntime.startListening(this.language);
-                    }
-                }, 500);
+                console.debug("[AgentAdapter] BOOKING_COLLECT guidance spoken; waiting for TTS lifecycle to restart listening.");
             }
         }
 
-        // Demo-complete flow: advance key dispensing to completion.
         if (nextState === "KEY_DISPENSING") {
-            setTimeout(() => {
-                if (this.state === "KEY_DISPENSING") {
-                    this.dispatch("DISPENSE_COMPLETE" as Intent);
-                }
-            }, 2000);
+            this.scheduleKeyDispenseCompletion();
         }
     }
 
@@ -1334,6 +1639,7 @@ class AgentAdapterService {
         let effectiveIntent = intent;
         if (
             payload?.isComplete === true &&
+            !payload?.backendDecision &&
             this.state === "BOOKING_COLLECT" &&
             intent !== "CANCEL_BOOKING" &&
             intent !== "BACK_REQUESTED"
@@ -1351,6 +1657,13 @@ class AgentAdapterService {
         } else {
             this.applyPayloadData(effectiveIntent, payload, nextState);
             this.notifyListeners();
+            if (
+                this.state === "BOOKING_COLLECT" &&
+                payload?.backendDecision &&
+                payload?.backendSpeechSpoken !== true
+            ) {
+                this.maybeSpeakBookingCollectGuidance(payload, { preferBackendSpeech: true });
+            }
         }
     }
 
@@ -1370,12 +1683,12 @@ class AgentAdapterService {
 
     /**
      * Phase 9.4: Speak text from Agent via VoiceRuntime.
-     * Wrapped to emit 'ai' transcript events.
+     * AI captions are emitted from TTS lifecycle events for better sync.
      */
     public speak(text: string): void {
         this.maybeTrackSlotFromPrompt(text);
-        this.emitTranscript(text, true, 'ai');
-        VoiceRuntime.speak(text, this.language);
+        this.pendingAiSpeechText = text;
+        void VoiceRuntime.speak(text, this.language);
     }
 
     private withTenantName(text: string): string {
@@ -1405,6 +1718,8 @@ class AgentAdapterService {
      * Called on: ERROR, CANCEL, route change, app unmount.
      */
     public hardStopAll(): void {
+        this.resetVoiceLifecycle("hard_stop_all");
+        this.clearKeyDispenseTimer("hard_stop_all");
         VoiceRuntime.hardStopAll();
     }
 
@@ -1451,6 +1766,18 @@ class AgentAdapterService {
         if (this.inactivityTimer) {
             clearTimeout(this.inactivityTimer);
             this.inactivityTimer = null;
+        }
+        if (this.listeningRestartTimer) {
+            clearTimeout(this.listeningRestartTimer);
+            this.listeningRestartTimer = null;
+        }
+        if (this.silenceReengageTimer) {
+            clearTimeout(this.silenceReengageTimer);
+            this.silenceReengageTimer = null;
+        }
+        if (this.keyDispenseCompleteTimer) {
+            clearTimeout(this.keyDispenseCompleteTimer);
+            this.keyDispenseCompleteTimer = null;
         }
         console.log("[AgentAdapter] Destroyed (HMR cleanup)");
     }

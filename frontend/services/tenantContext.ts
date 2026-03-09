@@ -2,8 +2,8 @@ import type { TenantDTO } from "@contracts/api.contract";
 
 export type TenantPayload = TenantDTO;
 
-// V2: Python FastAPI backend
-const API_BASE_URL = "http://localhost:8000";
+const PYTHON_API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://localhost:8000").replace(/\/+$/, "");
+const NODE_API_BASE_URL = (import.meta.env.VITE_NODE_API_BASE_URL || "http://localhost:3002").replace(/\/+$/, "");
 
 let currentTenantSlug = "";
 let currentTenant: TenantPayload | null = null;
@@ -21,25 +21,32 @@ export function getTenant(): TenantPayload | null {
   return currentTenant;
 }
 
+export function getPythonApiBaseUrl(): string {
+  return PYTHON_API_BASE_URL;
+}
+
+export function getNodeApiBaseUrl(): string {
+  return NODE_API_BASE_URL;
+}
+
 export function buildTenantApiUrl(route: "chat" | "chat/booking" | "tenant" | "rooms" | "ocr" | "voice/tts" | "voice/stt"): string {
-  // V2: Python backend handles chat, rooms, and voice.
   if (route === "chat" || route === "chat/booking") {
-    return `${API_BASE_URL}/api/chat`;
+    return `${PYTHON_API_BASE_URL}/api/chat`;
   }
   if (route === "rooms") {
-    return `${API_BASE_URL}/api/rooms?slug=${currentTenantSlug}`;
+    return `${PYTHON_API_BASE_URL}/api/rooms?slug=${currentTenantSlug}`;
   }
   if (route === "tenant") {
-    return `${API_BASE_URL}/api/tenant?slug=${currentTenantSlug}`;
+    return `${PYTHON_API_BASE_URL}/api/tenant?slug=${currentTenantSlug}`;
   }
   if (route === "voice/tts") {
-    return `${API_BASE_URL}/api/voice/tts`;
+    return `${PYTHON_API_BASE_URL}/api/voice/tts`;
   }
   if (route === "voice/stt") {
-    return `${API_BASE_URL}/api/voice/stt`;
+    return `${PYTHON_API_BASE_URL}/api/voice/stt`;
   }
-  // OCR still hits the old Node backend for now
-  return `http://localhost:3002/api/${currentTenantSlug}/${route}`;
+  // OCR still relies on legacy Node handlers during migration.
+  return `${NODE_API_BASE_URL}/api/ocr`;
 }
 
 export function getTenantHeaders(): Record<string, string> {
