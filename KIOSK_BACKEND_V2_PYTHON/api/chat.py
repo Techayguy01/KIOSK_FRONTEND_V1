@@ -8,13 +8,20 @@ the speech response and next UI screen.
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, Any
 from agent.graph import kiosk_agent
 from agent.state import KioskState, BookingSlots, ConversationTurn
+from agent.nodes import _match_faq, _format_faq_response
 from core.voice import normalize_language_code
 from core.database import get_session
 from sqlmodel.ext.asyncio.session import AsyncSession
 from fastapi import Depends
+from sqlmodel import select
+import uuid
+from models.tenant_config import TenantConfig
+from core.llm import get_llm_response
+import json
+import re
 
 router = APIRouter()
 
@@ -31,6 +38,7 @@ class ChatRequest(BaseModel):
     current_ui_screen: str = Field(default="WELCOME", alias="currentState")
     tenant_id: str = Field(default="default", alias="tenantId")
     language: str = "en"
+    faq_context: Optional[Any] = Field(default=None, alias="faq_context")
     # Extra fields the frontend sends — accepted but not required by the agent
     active_slot: Optional[str] = Field(default=None, alias="activeSlot")
     expected_type: Optional[str] = Field(default=None, alias="expectedType")
@@ -88,6 +96,105 @@ async def chat(req: ChatRequest, session: AsyncSession = Depends(get_session)):
         state.latest_transcript = req.transcript
         state.current_ui_screen = req.current_ui_screen
         state.language = normalize_language_code(req.language)
+        state.faq_context = req.faq_context
+        faq_count = len(req.faq_context) if isinstance(req.faq_context, list) else 0
+        print(f"[ChatAPI] FAQ context items received: {faq_count}")
+
+        # Load tenant support phone for fallback responses
+        try:
+            tenant_uuid = uuid.UUID(str(req.tenant_id))
+            cfg_result = await session.exec(
+                select(TenantConfig).where(TenantConfig.tenant_id == tenant_uuid)
+            )
+            cfg = cfg_result.first()
+            state.support_phone = cfg.support_phone if cfg else None
+        except Exception:
+            state.support_phone = None
+
+        # Try FAQ context first (deterministic, no LLM)
+        if req.faq_context:
+            faq_match = _match_faq(state.latest_transcript, state.faq_context)
+            if faq_match:
+                faq_answer = _format_faq_response(state.latest_transcript, faq_match)
+                print("[ChatAPI] ✅ Answered from FAQ context (deterministic).")
+                updated_history = state.history + [
+                    ConversationTurn(role="user", content=state.latest_transcript),
+                    ConversationTurn(role="assistant", content=faq_answer),
+                ]
+                _sessions[req.session_id] = state.model_copy(update={"history": updated_history})
+                return ChatResponse(
+                    speech=faq_answer,
+                    intent="GENERAL_QUERY",
+                    confidence=0.7,
+                    nextUiScreen=state.current_ui_screen,
+                    accumulatedSlots=state.booking_slots.model_dump(),
+                    isComplete=state.booking_slots.is_complete(),
+                    sessionId=req.session_id,
+                    language=state.language,
+                )
+
+        # Question vs Action classification (no hardcoded keyword routing)
+        try:
+            classifier_messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "Classify the user's intent as either QUESTION or ACTION_COMMAND. "
+                        "Return ONLY JSON: {\"type\": \"QUESTION\"|\"ACTION_COMMAND\"}."
+                    ),
+                },
+                {"role": "user", "content": state.latest_transcript},
+            ]
+            raw_classification = get_llm_response(classifier_messages, temperature=0.1)
+            match = re.search(r"\{.*\}", raw_classification.strip(), re.DOTALL)
+            classification = json.loads(match.group(0) if match else raw_classification.strip())
+            is_question = (classification.get("type") == "QUESTION")
+        except Exception:
+            is_question = False
+
+        if is_question:
+            # Decide if the question is hotel-related but missing from FAQ vs irrelevant
+            try:
+                relevance_messages = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Classify if the user's question is HOTEL_RELATED or IRRELEVANT for a hotel kiosk. "
+                            "Return ONLY JSON: {\"type\": \"HOTEL_RELATED\"|\"IRRELEVANT\"}."
+                        ),
+                    },
+                    {"role": "user", "content": state.latest_transcript},
+                ]
+                raw_relevance = get_llm_response(relevance_messages, temperature=0.1)
+                relevance = json.loads(raw_relevance.strip())
+                is_hotel_related = (relevance.get("type") == "HOTEL_RELATED")
+            except Exception:
+                is_hotel_related = True
+
+            if is_hotel_related:
+                fallback = (
+                    f"I'm sorry, I don't have that information. "
+                    f"Please contact our support at {state.support_phone}."
+                    if state.support_phone
+                    else "I'm sorry, I don't have that information right now."
+                )
+            else:
+                fallback = "I'm sorry, I can only help with hotel-related questions."
+            updated_history = state.history + [
+                ConversationTurn(role="user", content=state.latest_transcript),
+                ConversationTurn(role="assistant", content=fallback),
+            ]
+            _sessions[req.session_id] = state.model_copy(update={"history": updated_history})
+            return ChatResponse(
+                speech=fallback,
+                intent="GENERAL_QUERY",
+                confidence=0.6,
+                nextUiScreen=state.current_ui_screen,
+                accumulatedSlots=state.booking_slots.model_dump(),
+                isComplete=state.booking_slots.is_complete(),
+                sessionId=req.session_id,
+                language=state.language,
+            )
 
         # Run LangGraph agent
         # invoke() returns a dict of the final state fields

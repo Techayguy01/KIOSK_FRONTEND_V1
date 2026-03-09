@@ -22,6 +22,7 @@ import { CaptionsOverlay } from '../components/CaptionsOverlay';
 import { DevToolbar } from '../components/DevToolbar';
 import AnimatedGradientBackground from '../components/ui/animated-gradient-background';
 import { setTenantContext, TenantPayload } from '../services/tenantContext';
+import { initDB, syncFAQs } from '../services/faqDb.service';
 
 const DEFAULT_TENANT_SLUG = 'grand-hotel';
 
@@ -130,6 +131,21 @@ const TenantKioskApp: React.FC = () => {
 
         setTenant(resolvedTenant);
         setTenantContext(safeTenantSlug, resolvedTenant);
+
+        // Background FAQ sync
+        try {
+          await initDB();
+          const faqResponse = await fetch(`http://localhost:8000/api/${safeTenantSlug}/faqs`, {
+            headers: { 'x-tenant-slug': safeTenantSlug },
+          });
+          if (faqResponse.ok) {
+            const faqPayload = await faqResponse.json();
+            const faqList = Array.isArray(faqPayload?.data) ? faqPayload.data : [];
+            await syncFAQs(resolvedTenant?.id || safeTenantSlug, faqList);
+          }
+        } catch (faqError) {
+          console.warn('[App] FAQ sync failed', faqError);
+        }
       } catch (e) {
         console.error('[App] Failed to resolve tenant', e);
         if (!alive) return;

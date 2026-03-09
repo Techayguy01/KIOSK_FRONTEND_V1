@@ -7,7 +7,7 @@ This is what the "brain" knows at every step of the conversation.
 Think of it like the entire working memory for one guest interaction.
 """
 
-from typing import Optional, Literal
+from typing import Optional, Literal, Any
 from pydantic import BaseModel, Field
 
 
@@ -93,6 +93,12 @@ class KioskState(BaseModel):
 
     # Last thing the user said (raw transcript)
     latest_transcript: str = ""
+
+    # FAQ context injected from frontend (IndexedDB)
+    faq_context: Optional[Any] = None
+
+    # Tenant support phone (fallback for unknown questions)
+    support_phone: Optional[str] = None
 
     # Intent resolved by the router node
     resolved_intent: Optional[IntentType] = None

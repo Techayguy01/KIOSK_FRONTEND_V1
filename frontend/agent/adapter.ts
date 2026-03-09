@@ -7,6 +7,7 @@ import { TTSController } from "../voice/TTSController";
 import { StateMachine } from "../state/uiState.machine";
 import { UIState } from "@contracts/backend.contract";
 import { buildTenantApiUrl, getTenantHeaders, getTenant, getTenantSlug } from "../services/tenantContext";
+import { getAllFAQs } from "../services/faqDb.service";
 
 /**
  * AgentAdapter (Singleton) - Phase 9.4: TTS UX, Barge-In & Audio Authority
@@ -360,12 +361,6 @@ class AgentAdapterService {
                 // Phase 12: Emit Final Transcript
                 this.emitTranscript(event.transcript, true, 'user');
 
-                // Always try deterministic command handling first on final transcript.
-                // This keeps navigation fast even when interim packets were delayed.
-                if (this.maybeHandleRealtimeCommand(event.transcript, "final")) {
-                    return;
-                }
-
                 // Phase 8.6: Rate limiting check
                 if (this.isRateLimited()) {
                     this.emitTelemetry("VOICE_TRANSCRIPT_REJECTED", {
@@ -459,7 +454,6 @@ class AgentAdapterService {
                 // Phase 12: Emit Partial Transcript
                 this.resetInactivityTimer();
                 this.emitTranscript(event.transcript, false, 'user');
-                this.maybeHandleRealtimeCommand(event.transcript, "partial");
                 break;
         }
     }
@@ -910,29 +904,17 @@ class AgentAdapterService {
                 return;
             }
 
-            if (this.maybeHandleRoomInfoQuery(transcript)) {
-                return;
-            }
-
-            const fastPathIntent = this.getFastPathIntent(transcript);
-            if (fastPathIntent) {
-                if (fastPathIntent === "CANCEL_REQUESTED" || fastPathIntent === "CANCEL_BOOKING") {
-                    this.pendingCancelConfirmation = true;
-                    this.speak("Are you sure you want to cancel? Please say yes or no.");
-                    return;
-                }
-                const inferredRoom = this.state === "ROOM_SELECT" ? this.inferRoomFromTranscript(transcript) : null;
-                this.dispatch(fastPathIntent, {
-                    transcript,
-                    room: inferredRoom
-                });
-                return;
-            }
-
             const bookingStates: UiState[] = ['ROOM_SELECT', 'BOOKING_COLLECT', 'BOOKING_SUMMARY'];
             const targetUrl = bookingStates.includes(this.state)
                 ? buildTenantApiUrl("chat/booking")
                 : buildTenantApiUrl("chat");
+
+            const tenantId = getTenant()?.id || getTenantSlug();
+            const faqs = await getAllFAQs(tenantId);
+            const faq_context = faqs.map((faq) => ({
+                question: faq.question,
+                answer: faq.answer
+            }));
 
             // 1. Call LLM Brain with session ID for memory
             const response = await fetch(targetUrl, {
@@ -940,6 +922,7 @@ class AgentAdapterService {
                 headers: { 'Content-Type': 'application/json', ...getTenantHeaders() },
                 body: JSON.stringify({
                     transcript,
+                    faq_context,
                     currentState: this.state,
                     sessionId: sessionId || this.getSessionId(),
                     activeSlot: this.slotContext.activeSlot,
@@ -1005,9 +988,15 @@ class AgentAdapterService {
                 this.resolveNextStateFromIntent(this.state, strictEvent) !== this.state;
 
             // 3. Handle "Talking" (TTS)
+            // Always emit AI transcript when speech exists (even if we skip TTS due to transition).
+            if (decision.speech) {
+                this.emitTranscript(decision.speech, true, 'ai');
+            }
             // Avoid speaking text that will be immediately cancelled by a state transition.
             if (decision.speech && !willTransition) {
                 this.speak(decision.speech);
+            } else if (strictEvent === "GENERAL_QUERY" && !decision.speech) {
+                this.speak("I'm sorry, I don't have that information right now.");
             }
 
             // 4. Handle "Moving" (State Machine)

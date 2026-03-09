@@ -7,6 +7,7 @@ updates to the conversation state.
 """
 
 import json
+import re
 from agent.state import KioskState, BookingSlots, ConversationTurn
 from core.llm import get_llm_response
 
@@ -87,6 +88,10 @@ GENERAL_CHAT_SYSTEM_PROMPT = """
 You are "Siya", a warm and professional AI concierge at a luxury hotel kiosk.
 Your role is to assist guests with information about the hotel.
 
+When analyzing the user's transcript, first identify the intent: is it an Action Command (e.g., booking a room) or a Question?
+If it is a Question, review the provided faq_context. You must use your reasoning capabilities to answer the user. For example, if they ask to check in at 9:00 AM, and the context says check-in is at 10:00 AM, politely explain that check-in starts at 10:00 AM.
+If the faq_context provides the necessary information to answer the question (even if phrased differently), frame a natural, polite response. If the information is NOT present in the context at all, politely apologize and state that you do not have that information.
+
 You can:
 - Welcome guests and answer general questions
 - Describe room types, amenities, pool timings, restaurants, etc.
@@ -98,10 +103,24 @@ End your response by naturally offering further assistance.
 """
 
 
-def build_general_chat_prompt(language: str) -> str:
+def _format_faq_context(faq_context) -> str:
+    if faq_context is None:
+        return "No faq_context provided."
+    if isinstance(faq_context, str):
+        return faq_context
+    try:
+        return json.dumps(faq_context, indent=2, ensure_ascii=False)
+    except Exception:
+        return str(faq_context)
+
+
+def build_general_chat_prompt(language: str, faq_context) -> str:
     return "\n".join(
         [
             GENERAL_CHAT_SYSTEM_PROMPT.strip(),
+            "",
+            "FAQ Context:",
+            _format_faq_context(faq_context),
             "",
             f"Language rule: {_response_language_instruction(language)}",
         ]
@@ -112,13 +131,41 @@ def general_chat(state: KioskState) -> dict:
     """Node 2: Handle general hotel questions and greetings."""
     print("[GeneralChat] Handling general query...")
 
+    if state.faq_context:
+        faq_answer = _answer_from_faq_context(state)
+        if faq_answer:
+            updated_history = state.history + [
+                ConversationTurn(role="user", content=state.latest_transcript),
+                ConversationTurn(role="assistant", content=faq_answer),
+            ]
+            return {
+                "speech_response": faq_answer,
+                "history": updated_history,
+                "next_ui_screen": state.current_ui_screen,
+            }
+
+    if state.support_phone:
+        response = (
+            f"I'm sorry, I don't have that information. "
+            f"Please contact our support at {state.support_phone}."
+        )
+        updated_history = state.history + [
+            ConversationTurn(role="user", content=state.latest_transcript),
+            ConversationTurn(role="assistant", content=response),
+        ]
+        return {
+            "speech_response": response,
+            "history": updated_history,
+            "next_ui_screen": state.current_ui_screen,
+        }
+
     history_messages = [
         {"role": turn.role, "content": turn.content}
         for turn in state.history[-6:]
     ]
 
     messages = (
-        [{"role": "system", "content": build_general_chat_prompt(state.language)}]
+        [{"role": "system", "content": build_general_chat_prompt(state.language, state.faq_context)}]
         + history_messages
         + [{"role": "user", "content": state.latest_transcript}]
     )
@@ -135,6 +182,148 @@ def general_chat(state: KioskState) -> dict:
         "history": updated_history,
         "next_ui_screen": state.current_ui_screen,
     }
+
+
+def _normalize_text(text: str) -> str:
+    return "".join(ch.lower() if ch.isalnum() or ch.isspace() else " " for ch in text).strip()
+
+
+def _normalize_time_expressions(text: str) -> str:
+    # Normalize times like "9:00 a.m.", "9 am", "09:00am" to "09:00"
+    cleaned = _normalize_text(text)
+    cleaned = re.sub(r"\b(\d{1,2})\s*(am|pm)\b", r"\1:00 \2", cleaned)
+    cleaned = re.sub(r"\b(\d{1,2})\s*:\s*(\d{2})\s*(am|pm)\b", r"\1:\2 \3", cleaned)
+
+    def _to_24h(match):
+        hour = int(match.group(1))
+        minute = match.group(2)
+        period = match.group(3)
+        if period == "pm" and hour != 12:
+            hour += 12
+        if period == "am" and hour == 12:
+            hour = 0
+        return f"{hour:02d}:{minute}"
+
+    cleaned = re.sub(r"\b(\d{1,2}):(\d{2})\s*(am|pm)\b", _to_24h, cleaned)
+    return cleaned
+
+
+def _tokenize(text: str) -> list[str]:
+    stopwords = {
+        "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "have",
+        "i", "in", "is", "it", "of", "on", "or", "that", "the", "this", "to", "was",
+        "were", "will", "with", "you", "your", "we", "our", "they", "their", "me", "my", "us"
+    }
+    tokens = _normalize_time_expressions(text).split()
+    return [t for t in tokens if len(t) > 2 and t not in stopwords]
+
+
+def _build_trigrams(text: str) -> set[str]:
+    compact = _normalize_time_expressions(text).replace(" ", "")
+    if not compact:
+        return set()
+    if len(compact) < 3:
+        return {compact}
+    return {compact[i:i + 3] for i in range(len(compact) - 2)}
+
+
+def _dice_similarity(a: str, b: str) -> float:
+    a_grams = _build_trigrams(a)
+    b_grams = _build_trigrams(b)
+    if not a_grams or not b_grams:
+        return 0.0
+    overlap = sum(1 for gram in a_grams if gram in b_grams)
+    return (2 * overlap) / (len(a_grams) + len(b_grams))
+
+
+def _match_faq(transcript: str, faq_context) -> dict | None:
+    if not transcript or not faq_context:
+        return None
+    if isinstance(faq_context, str):
+        return None
+
+    tokens = _tokenize(transcript)
+    if not tokens:
+        return None
+
+    best = None
+    best_score = 0.0
+    for item in faq_context:
+        question = str(item.get("question", "") if isinstance(item, dict) else "")
+        answer = str(item.get("answer", "") if isinstance(item, dict) else "")
+        combined = f"{question} {answer}".strip()
+        if not combined:
+            continue
+        combined_norm = _normalize_time_expressions(combined)
+        hits = sum(1 for t in tokens if t in combined_norm)
+        keyword_score = hits / max(1, len(tokens))
+        fuzzy_score = max(
+            _dice_similarity(transcript, question),
+            _dice_similarity(transcript, combined)
+        )
+        score = max(keyword_score, fuzzy_score)
+        if score > best_score:
+            best_score = score
+            best = {"question": question, "answer": answer, "score": score}
+
+    return best if best and best["score"] >= 0.26 else None
+
+
+def _format_faq_response(transcript: str, faq_match: dict) -> str:
+    question = faq_match.get("question") or ""
+    answer = faq_match.get("answer") or ""
+    if not answer:
+        return "I'm sorry, I don't have that information right now."
+    # If the user asks about checking in at a specific time and the FAQ contains a time,
+    # craft a concise, policy-consistent response.
+    transcript_norm = _normalize_time_expressions(transcript)
+    answer_norm = _normalize_time_expressions(answer)
+    requested_time_match = re.search(r"\b(\d{2}:\d{2})\b", transcript_norm)
+    policy_time_match = re.search(r"\b(\d{2}:\d{2})\b", answer_norm)
+    if requested_time_match and policy_time_match and "check" in transcript_norm:
+        requested_time = requested_time_match.group(1)
+        policy_time = policy_time_match.group(1)
+        return (
+            f"Check-in starts at {policy_time} per hotel policy, "
+            f"so {requested_time} isn't available."
+        )
+    if faq_match.get("score", 0) < 0.45 and question:
+        return f"{answer}"
+    return answer
+
+
+def _answer_from_faq_context(state: KioskState) -> str | None:
+    system_prompt = """
+You are an assistant for a hotel kiosk. You must answer ONLY using the provided FAQ context.
+Your task:
+1) Decide if the user's question can be answered from the FAQ context (including paraphrases and follow-ups).
+2) If yes, respond with a polite, natural answer that does NOT contradict the FAQ.
+3) If not, respond with a JSON saying has_answer=false.
+
+Important rules:
+- Do NOT invent information.
+- If the guest asks for a time earlier/later than policy in the FAQ, explain the policy from the FAQ.
+- Keep responses concise (1-2 sentences).
+
+Return ONLY JSON:
+{"has_answer": true|false, "response": "..." }
+"""
+
+    messages = [
+        {"role": "system", "content": system_prompt.strip()},
+        {"role": "system", "content": f"FAQ_CONTEXT: {json.dumps(state.faq_context, ensure_ascii=False)}"},
+        {"role": "system", "content": f"Recent conversation (last 4 turns): {json.dumps([t.model_dump() for t in state.history[-4:]], ensure_ascii=False)}"},
+        {"role": "user", "content": state.latest_transcript},
+    ]
+
+    raw = get_llm_response(messages, temperature=0.2)
+    try:
+        result = json.loads(raw.strip())
+        if result.get("has_answer") and result.get("response"):
+            return str(result.get("response")).strip()
+    except Exception:
+        return None
+    return None
 
 
 def build_booking_prompt(state: KioskState) -> str:
