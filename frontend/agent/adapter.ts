@@ -32,6 +32,8 @@ const VOICE_AUTHORITY_MATRIX: Record<UiState, boolean> = {
     AI_CHAT: true,
     MANUAL_MENU: true,
     SCAN_ID: false,     // Security - no voice during ID scan
+    ID_VERIFY: false,
+    CHECK_IN_SUMMARY: false,
     ROOM_SELECT: true,
     BOOKING_COLLECT: true,
     BOOKING_SUMMARY: true,
@@ -1304,6 +1306,8 @@ class AgentAdapterService {
         const steps = ['ID Scan', 'Room', 'Payment', 'Key'];
         switch (state) {
             case 'SCAN_ID': return { currentStep: 1, totalSteps: 4, steps };
+            case 'ID_VERIFY': return { currentStep: 2, totalSteps: 4, steps: ['ID Scan', 'Verify', 'Summary', 'Key'] };
+            case 'CHECK_IN_SUMMARY': return { currentStep: 3, totalSteps: 4, steps: ['ID Scan', 'Verify', 'Summary', 'Key'] };
             case 'ROOM_SELECT': return { currentStep: 2, totalSteps: 4, steps };
             case 'PAYMENT': return { currentStep: 3, totalSteps: 4, steps };
             case 'COMPLETE': return { currentStep: 4, totalSteps: 4, steps };
@@ -1313,6 +1317,12 @@ class AgentAdapterService {
 
     private applyPayloadData(intent: string, payload?: any, nextState?: UiState): void {
         const merged: Record<string, any> = { ...this.viewData };
+
+        if (nextState === "SCAN_ID" && (intent === "RESCAN" || intent === "CHECK_IN_SELECTED")) {
+            merged.ocr = null;
+            merged.matchedBooking = null;
+            merged.multiplePossibleMatches = false;
+        }
 
         if (payload?.room) {
             merged.selectedRoom = payload.room;
@@ -1377,6 +1387,19 @@ class AgentAdapterService {
                     expectedType: SLOT_EXPECTED_TYPE_MAP[hintedSlot],
                 };
             }
+        }
+
+        if (payload?.ocr !== undefined) {
+            merged.ocr = payload.ocr || null;
+        }
+        if (payload?.matchedBooking !== undefined) {
+            merged.matchedBooking = payload.matchedBooking || null;
+        }
+        if (payload?.multiplePossibleMatches !== undefined) {
+            merged.multiplePossibleMatches = Boolean(payload.multiplePossibleMatches);
+        }
+        if (payload?.ocrDemo !== undefined) {
+            merged.ocrDemo = Boolean(payload.ocrDemo);
         }
 
         if (payload?.error !== undefined) {

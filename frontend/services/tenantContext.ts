@@ -45,8 +45,7 @@ export function buildTenantApiUrl(route: "chat" | "chat/booking" | "tenant" | "r
   if (route === "voice/stt") {
     return `${PYTHON_API_BASE_URL}/api/voice/stt`;
   }
-  // OCR still relies on legacy Node handlers during migration.
-  return `${NODE_API_BASE_URL}/api/ocr`;
+  return `${PYTHON_API_BASE_URL}/api/ocr`;
 }
 
 export function getTenantHeaders(): Record<string, string> {

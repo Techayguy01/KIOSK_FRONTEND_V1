@@ -291,6 +291,18 @@ def _is_summary_modify_transcript(transcript: str) -> bool:
     return bool(re.search(r"\b(change|modify|edit|update|wrong|not correct|go back)\b", text))
 
 
+def _looks_like_check_in_request(transcript: str) -> bool:
+    text = (transcript or "").strip().lower()
+    if not text:
+        return False
+    return bool(
+        re.search(
+            r"\b(check[\s-]?in|i have a booking|existing booking|have reservation|my reservation)\b",
+            text,
+        )
+    )
+
+
 ROUTER_SYSTEM_PROMPT = """
 You are a highly critical intent classifier for a luxury hotel kiosk AI named "Siya".
 The user's text may contain mixed intentions, conversational filler, or mid-sentence corrections (e.g., "Wait, no, I mean check in").
@@ -321,6 +333,9 @@ Respond ONLY with a JSON object:
 async def route_intent(state: KioskState) -> dict:
     """Node 1: Classify the user's intent."""
     print(f"[Router] Classifying: '{state.latest_transcript}'")
+
+    if _looks_like_check_in_request(state.latest_transcript):
+        return {"resolved_intent": "CHECK_IN", "confidence": 0.97}
 
     # Deterministic summary control avoids LLM drift on "confirm and pay"/"it's correct"/"card".
     if state.current_ui_screen == "BOOKING_SUMMARY":
@@ -379,6 +394,18 @@ def build_general_chat_prompt(language: str) -> str:
 async def general_chat(state: KioskState) -> dict:
     """Node 2: Handle general hotel questions and greetings."""
     print("[GeneralChat] Handling general query...")
+
+    if state.resolved_intent == "CHECK_IN":
+        response = "Sure. Let's begin check in. Please scan your ID to continue."
+        updated_history = state.history + [
+            ConversationTurn(role="user", content=state.latest_transcript),
+            ConversationTurn(role="assistant", content=response),
+        ]
+        return {
+            "speech_response": response,
+            "history": updated_history,
+            "next_ui_screen": "SCAN_ID",
+        }
 
     history_messages = [
         {"role": turn.role, "content": turn.content}

@@ -1,9 +1,28 @@
 import React, { useState } from 'react';
 import { useUIState } from '../state/uiContext';
-import { WebcamScanner } from '../components/WebcamScanner'; // Import it
+import { WebcamScanner, type WebcamCapturePayload } from '../components/WebcamScanner';
 import { ShieldCheck } from 'lucide-react';
 import AnimatedGradientBackground from '../components/ui/animated-gradient-background';
-import { scanIdWithOcr } from '../services/ocr.service';
+import { OcrServiceError, scanIdWithOcr } from '../services/ocr.service';
+
+const ENABLE_OCR_DEMO_SKIP = import.meta.env.VITE_ENABLE_OCR_DEMO_SKIP === 'true';
+
+function mapOcrErrorMessage(error: unknown): string {
+  if (error instanceof OcrServiceError) {
+    switch (error.code) {
+      case 'OCR_ENGINE_NOT_AVAILABLE':
+        return 'ID scanning service is unavailable on this kiosk. Please contact support.';
+      case 'OCR_BAD_IMAGE':
+        return 'Could not read the ID image. Place the full card inside the frame and retry with better lighting.';
+      case 'OCR_PROCESSING_FAILED':
+        return 'ID image was captured but not readable enough. Avoid glare, hold steady, and rescan.';
+      default:
+        return error.message || 'OCR service failed. Please try again.';
+    }
+  }
+  if (error instanceof Error) return error.message;
+  return 'Could not process ID image.';
+}
 
 export const ScanIdPage: React.FC = () => {
   const { emit } = useUIState();
@@ -12,12 +31,24 @@ export const ScanIdPage: React.FC = () => {
   const [guestName, setGuestName] = useState('Guest');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const handleCapture = async (imageSrc: string) => {
+  const handleCapture = async ({ imageSrc, cropBox }: WebcamCapturePayload) => {
     setStatus('ANALYZING');
     setErrorMessage(null);
 
     try {
-      const result = await scanIdWithOcr(imageSrc);
+      const result = await scanIdWithOcr(imageSrc, cropBox);
+
+      if (result.weakExtraction) {
+        // Keep the user on SCAN_ID: weak OCR must not advance as a successful verification turn.
+        setStatus('ERROR');
+        setErrorMessage(
+          result.extractionMessage ||
+            'We could not clearly read your ID. Place it fully inside the frame, avoid glare, and keep the text visible.',
+        );
+        setScannerVersion((prev) => prev + 1);
+        return;
+      }
+
       const extractedName = result?.ocr?.fields?.fullName?.trim();
       if (extractedName) {
         setGuestName(extractedName);
@@ -25,10 +56,16 @@ export const ScanIdPage: React.FC = () => {
       setStatus('APPROVED');
 
       setTimeout(() => {
-        emit('SCAN_COMPLETED');
+        emit('OCR_SUCCESS', {
+          ocr: result.ocr || null,
+          matchedBooking: result.matchedBooking || null,
+          multiplePossibleMatches: Boolean(result.multiplePossibleMatches),
+          weakExtraction: Boolean(result.weakExtraction),
+          extractionMessage: result.extractionMessage || null,
+        });
       }, 800);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Could not process ID image.';
+      const message = mapOcrErrorMessage(error);
       console.error('[ScanPage] OCR failed:', error);
       setErrorMessage(message);
       setStatus('ERROR');
@@ -44,7 +81,7 @@ export const ScanIdPage: React.FC = () => {
         {/* Header */}
         <div className="mb-8">
           <h1 className="text-4xl font-bold text-white mb-2">Identity Verification</h1>
-          <p className="text-slate-400 text-lg">Please hold your ID card or Passport up to the camera.</p>
+          <p className="text-slate-400 text-lg">Place your ID fully inside the frame, avoid glare, and hold steady until capture.</p>
         </div>
 
         {/* The Scanner */}
@@ -63,23 +100,41 @@ export const ScanIdPage: React.FC = () => {
         {/* Status Text */}
         {status === 'ANALYZING' && (
           <p className="text-blue-400 font-mono animate-pulse">
-            Extracting Data... verifying hologram...
+            Isolating document... normalizing image... extracting identity...
           </p>
         )}
 
         {status === 'ERROR' && (
           <p className="text-red-400 font-mono max-w-xl">
-            OCR failed: {errorMessage || 'Unable to read ID. Please retry with better lighting.'}
+            Scan issue: {errorMessage || 'Unable to read ID. Please retry with better lighting and a steady hold.'}
           </p>
         )}
 
-        {/* Fallback for Demo (Director Safety Net) */}
-        <button
-          onClick={() => emit('SCAN_COMPLETED')}
-          className="mt-8 text-xs text-slate-600 hover:text-slate-400 underline transition-colors"
-        >
-          (Demo: Skip Camera)
-        </button>
+        {ENABLE_OCR_DEMO_SKIP && (
+          <button
+            onClick={() =>
+              emit('OCR_DEMO_SUCCESS', {
+                ocr: {
+                  text: 'DEMO_OCR_RESULT',
+                  confidence: 1,
+                  fields: {
+                    fullName: 'Demo Guest',
+                    documentNumber: 'DEMO1234',
+                    dateOfBirth: '1990-01-01',
+                    yearOfBirth: '1990',
+                    documentType: 'UNKNOWN',
+                  },
+                },
+                matchedBooking: null,
+                multiplePossibleMatches: false,
+                ocrDemo: true,
+              })
+            }
+            className="mt-8 text-xs text-amber-500 hover:text-amber-300 underline transition-colors"
+          >
+            (Demo Mode: Skip Camera)
+          </button>
+        )}
       </div>
     </div>
   );

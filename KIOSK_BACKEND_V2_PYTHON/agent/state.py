@@ -18,6 +18,8 @@ UIScreen = Literal[
     "AI_CHAT",
     "MANUAL_MENU",
     "SCAN_ID",
+    "ID_VERIFY",
+    "CHECK_IN_SUMMARY",
     "ROOM_SELECT",
     "BOOKING_COLLECT",
     "BOOKING_SUMMARY",

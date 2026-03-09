@@ -7,6 +7,8 @@ export type UiState =
     | "AI_CHAT"
     | "MANUAL_MENU"
     | "SCAN_ID"
+    | "ID_VERIFY"
+    | "CHECK_IN_SUMMARY"
     | "ROOM_SELECT"
     | "BOOKING_COLLECT"
     | "BOOKING_SUMMARY"
@@ -28,6 +30,8 @@ export const STATE_SPEECH_MAP: Partial<Record<UiState, string>> = {
     AI_CHAT: "I'm listening. You can say check in, book a room, or ask for help.",
     MANUAL_MENU: "Please select an option from the menu.",
     SCAN_ID: "Please scan your ID or passport.",
+    ID_VERIFY: "Please verify your identity details.",
+    CHECK_IN_SUMMARY: "Here is your check in summary.",
     ROOM_SELECT: "Please select your preferred room.",
     BOOKING_COLLECT: "Let me help you book a room. I'll need a few details.",
     BOOKING_SUMMARY: "Let me confirm your booking details.",
@@ -49,6 +53,8 @@ export const STATE_INPUT_MODES: Record<UiState, InputMode[]> = {
     AI_CHAT: ["VOICE", "TOUCH"],
     MANUAL_MENU: ["VOICE", "TOUCH"],
     SCAN_ID: ["TOUCH"], // Security/Hardware focus - Voice ignored
+    ID_VERIFY: ["TOUCH"],
+    CHECK_IN_SUMMARY: ["TOUCH"],
     ROOM_SELECT: ["VOICE", "TOUCH"], // Voice allowed for nav commands
     BOOKING_COLLECT: ["VOICE", "TOUCH"], // Conversational booking - Voice primary
     BOOKING_SUMMARY: ["VOICE", "TOUCH"], // Confirmation - Both allowed
@@ -95,6 +101,8 @@ export const VOICE_COMMAND_MAP: Record<UiState, Partial<Record<string, Intent>>>
     },
     // States where Voice is ignored (Redundant but explicit)
     SCAN_ID: {},
+    ID_VERIFY: {},
+    CHECK_IN_SUMMARY: {},
     PAYMENT: {},
     KEY_DISPENSING: {},
     COMPLETE: {},
@@ -178,6 +186,14 @@ const TRANSITION_TABLE: Record<UiState, Partial<Record<Intent, UiState>>> = {
     },
     SCAN_ID: {
         BACK_REQUESTED: "MANUAL_MENU",
+        CANCEL_REQUESTED: "WELCOME",
+    },
+    ID_VERIFY: {
+        BACK_REQUESTED: "SCAN_ID",
+        CANCEL_REQUESTED: "WELCOME",
+    },
+    CHECK_IN_SUMMARY: {
+        BACK_REQUESTED: "ID_VERIFY",
         CANCEL_REQUESTED: "WELCOME",
     },
     ROOM_SELECT: {

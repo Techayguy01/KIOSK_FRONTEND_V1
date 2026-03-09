@@ -9,6 +9,8 @@ import { UiState } from '../agent/index'; // Import directly from source
 import { IdlePage } from '../pages/IdlePage';
 import { WelcomePage } from '../pages/WelcomePage';
 import { ScanIdPage } from '../pages/ScanIdPage';
+import { IdVerifyPage } from '../pages/IdVerifyPage';
+import { CheckInSummaryPage } from '../pages/CheckInSummaryPage';
 import { RoomSelectPage } from '../pages/RoomSelectPage';
 import { BookingCollectPage } from '../pages/BookingCollectPage';
 import { BookingSummaryPage } from '../pages/BookingSummaryPage';
@@ -32,6 +34,8 @@ const STATE_TO_ROUTE: Record<UiState, string> = {
   AI_CHAT: 'ai-chat',
   MANUAL_MENU: 'manual-menu',
   SCAN_ID: 'scan-id',
+  ID_VERIFY: 'id-verify',
+  CHECK_IN_SUMMARY: 'check-in-summary',
   ROOM_SELECT: 'room-select',
   BOOKING_COLLECT: 'booking-collect',
   BOOKING_SUMMARY: 'booking-summary',
@@ -166,6 +170,8 @@ const TenantKioskApp: React.FC = () => {
       case 'MANUAL_MENU': return <WelcomePage visualMode="manual" />;
 
       case 'SCAN_ID': return <ScanIdPage />;
+      case 'ID_VERIFY': return <IdVerifyPage />;
+      case 'CHECK_IN_SUMMARY': return <CheckInSummaryPage />;
       case 'ROOM_SELECT': return <RoomSelectPage />;
       case 'BOOKING_COLLECT': return <BookingCollectPage />;
       case 'BOOKING_SUMMARY': return <BookingSummaryPage />;

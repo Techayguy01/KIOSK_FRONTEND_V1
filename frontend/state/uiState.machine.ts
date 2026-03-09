@@ -37,7 +37,34 @@ const MACHINE_CONFIG: StateConfig = {
     canGoBack: true
   },
   SCAN_ID: {
-    on: { SCAN_COMPLETED: 'ROOM_SELECT' },
+    on: {
+      OCR_SUCCESS: 'ID_VERIFY',
+      OCR_DEMO_SUCCESS: 'ID_VERIFY',
+      SCAN_COMPLETED: 'ID_VERIFY',
+      RESCAN: 'SCAN_ID',
+      BACK_REQUESTED: 'WELCOME',
+      CANCEL_REQUESTED: 'WELCOME'
+    },
+    canGoBack: true
+  },
+  ID_VERIFY: {
+    on: {
+      CONFIRM_ID: 'CHECK_IN_SUMMARY',
+      RESCAN: 'SCAN_ID',
+      BACK_REQUESTED: 'SCAN_ID',
+      CANCEL_REQUESTED: 'WELCOME',
+      RESET: 'IDLE'
+    },
+    canGoBack: true
+  },
+  CHECK_IN_SUMMARY: {
+    on: {
+      CONFIRM_CHECKIN: 'KEY_DISPENSING',
+      RESCAN: 'SCAN_ID',
+      BACK_REQUESTED: 'ID_VERIFY',
+      CANCEL_REQUESTED: 'WELCOME',
+      RESET: 'IDLE'
+    },
     canGoBack: true
   },
   ROOM_SELECT: {
@@ -123,7 +150,7 @@ export const StateMachine = {
    */
   getPreviousState: (current: UIState): UIState => {
     // Phase 11.7: Simple Linear Flow for Demo
-    const flow: UIState[] = ['IDLE', 'WELCOME', 'SCAN_ID', 'ROOM_SELECT', 'BOOKING_COLLECT', 'BOOKING_SUMMARY', 'PAYMENT'];
+    const flow: UIState[] = ['IDLE', 'WELCOME', 'SCAN_ID', 'ID_VERIFY', 'CHECK_IN_SUMMARY', 'ROOM_SELECT', 'BOOKING_COLLECT', 'BOOKING_SUMMARY', 'PAYMENT'];
     const idx = flow.indexOf(current);
     if (idx > 0) return flow[idx - 1];
 

@@ -14,6 +14,9 @@ litellm>=1.40.0
 websockets==12.0
 aiohttp>=3.13.0
 python-dotenv==1.0.1
+pytesseract>=0.3.13
+Pillow>=10.0.0
+easyocr>=1.7.1
 
 # Circuit Breakers & Resilience
 tenacity==8.2.3

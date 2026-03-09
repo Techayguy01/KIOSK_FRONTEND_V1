@@ -46,12 +46,22 @@ export interface RoomsResponseDTO {
 export interface OcrRequestDTO {
   imageDataUrl: string;
   language?: string;
+  cropBox?: NormalizedCropBoxDTO;
+}
+
+export interface NormalizedCropBoxDTO {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 export interface OcrFieldsDTO {
   fullName?: string;
   documentNumber?: string;
   dateOfBirth?: string;
+  yearOfBirth?: string;
+  documentType?: string;
 }
 
 export interface OcrResultDTO {
@@ -60,8 +70,22 @@ export interface OcrResultDTO {
   fields: OcrFieldsDTO;
 }
 
+export interface MatchedBookingDTO {
+  id: string;
+  guestName: string;
+  checkInDate: string;
+  checkOutDate: string;
+  status: string;
+  roomTypeId: string;
+  roomName?: string | null;
+}
+
 export interface OcrResponseDTO {
   ocr: OcrResultDTO;
+  matchedBooking?: MatchedBookingDTO | null;
+  multiplePossibleMatches?: boolean;
+  weakExtraction?: boolean;
+  extractionMessage?: string;
   requestId?: string;
 }
 

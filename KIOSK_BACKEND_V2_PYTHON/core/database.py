@@ -31,6 +31,8 @@ if DATABASE_URL:
         echo=False,
         pool_size=5,
         max_overflow=10,
+        pool_pre_ping=True,
+        pool_recycle=900,
         connect_args={"ssl": True},  # Neon requires SSL; asyncpg uses this instead of sslmode
     )
     AsyncSessionLocal = async_sessionmaker(

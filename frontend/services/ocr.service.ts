@@ -1,5 +1,5 @@
-import type { OcrRequestDTO, OcrResponseDTO } from "@contracts/api.contract";
-import { buildTenantApiUrl, getNodeApiBaseUrl, getTenantHeaders } from "./tenantContext";
+import type { NormalizedCropBoxDTO, OcrRequestDTO, OcrResponseDTO } from "@contracts/api.contract";
+import { buildTenantApiUrl, getTenantHeaders } from "./tenantContext";
 
 export class OcrServiceError extends Error {
   status: number;
@@ -20,31 +20,29 @@ async function parseError(response: Response): Promise<OcrServiceError> {
     const payload = await response.json();
     if (payload?.error?.message) {
       message = payload.error.message;
+    } else if (typeof payload?.detail === "string" && payload.detail.trim()) {
+      message = payload.detail;
     }
-    code = payload?.error?.code;
+    code = payload?.error?.code || payload?.error?.type;
   } catch {
     // keep fallback message
   }
   return new OcrServiceError(message, response.status, code);
 }
 
-export async function scanIdWithOcr(imageDataUrl: string, language = "eng"): Promise<OcrResponseDTO> {
-  const payload: OcrRequestDTO = { imageDataUrl, language };
+export async function scanIdWithOcr(
+  imageDataUrl: string,
+  cropBox?: NormalizedCropBoxDTO,
+  language = "eng",
+): Promise<OcrResponseDTO> {
+  const payload: OcrRequestDTO = { imageDataUrl, language, cropBox };
   const headers = { "Content-Type": "application/json", ...getTenantHeaders() };
 
-  const primaryResponse = await fetch(buildTenantApiUrl("ocr"), {
+  const response = await fetch(buildTenantApiUrl("ocr"), {
     method: "POST",
     headers,
     body: JSON.stringify(payload),
   });
-
-  const response = primaryResponse.ok
-    ? primaryResponse
-    : await fetch(`${getNodeApiBaseUrl()}/api/ocr`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(payload),
-      });
 
   if (!response.ok) {
     throw await parseError(response);

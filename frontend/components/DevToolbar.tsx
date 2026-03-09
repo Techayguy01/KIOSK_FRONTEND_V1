@@ -20,6 +20,8 @@ export const DevToolbar: React.FC<DevToolbarProps> = ({ onForceState, isUnlocked
         'MANUAL_MENU',
         'AI_CHAT',
         'SCAN_ID',
+        'ID_VERIFY',
+        'CHECK_IN_SUMMARY',
         'ROOM_SELECT',
         'BOOKING_COLLECT',
         'BOOKING_SUMMARY',
