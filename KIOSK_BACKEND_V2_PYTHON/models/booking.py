@@ -26,5 +26,7 @@ class Booking(SQLModel, table=True):
     status: str = Field(default="CONFIRMED", sa_column=Column(String(20)))
     idempotency_key: Optional[str] = Field(default=None, sa_column=Column(String(190), nullable=True))
     payment_ref: Optional[str] = Field(default=None, sa_column=Column(String(120), nullable=True))
+    checked_in_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
+    checkin_status: Optional[str] = Field(default=None, sa_column=Column(String(40), nullable=True))
     created_at: datetime = Field(default_factory=datetime.utcnow, sa_column=Column(DateTime(timezone=True)))
     updated_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))

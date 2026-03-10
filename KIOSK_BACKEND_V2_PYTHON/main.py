@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from api.chat import router as chat_router
+from api.checkin import router as checkin_router
 from api.voice import router as voice_router
 from api.rooms import router as rooms_router
 from api.tenant import router as tenant_router
@@ -25,6 +26,7 @@ app.add_middleware(
 
 # Register routers
 app.include_router(chat_router, prefix="/api", tags=["Chat"])
+app.include_router(checkin_router, prefix="/api", tags=["CheckIn"])
 app.include_router(voice_router, prefix="/api/voice", tags=["Voice"])
 app.include_router(rooms_router, prefix="/api", tags=["Rooms"])
 app.include_router(tenant_router, prefix="/api", tags=["Tenant"])

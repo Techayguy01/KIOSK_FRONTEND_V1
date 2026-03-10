@@ -1254,6 +1254,10 @@ class AgentAdapterService {
         return this.sessionId;
     }
 
+    public getCurrentSessionId(): string {
+        return this.getSessionId();
+    }
+
     /**
      * Clear session for privacy (called on WELCOME transition).
      */
@@ -1422,12 +1426,17 @@ class AgentAdapterService {
 
         if (this.state === "IDLE") return;
 
+        // SCAN_ID needs a longer dwell window so users can align and scan their ID.
+        const timeoutMs = this.state === "SCAN_ID"
+            ? Math.max(this.INACTIVITY_TIMEOUT_MS, 60 * 1000)
+            : this.INACTIVITY_TIMEOUT_MS;
+
         this.inactivityTimer = setTimeout(() => {
             console.warn("[AgentAdapter] Inactivity timeout reached. Returning to IDLE.");
             this.hardStopAll();
             this.state = "IDLE";
             this.notifyListeners();
-        }, this.INACTIVITY_TIMEOUT_MS);
+        }, timeoutMs);
     }
 
     private isAffirmative(text: string): boolean {
