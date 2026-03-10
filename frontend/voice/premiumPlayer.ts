@@ -26,7 +26,7 @@ class PremiumAudioPlayerService {
         this.stop();
 
         // Timeout: short kiosk prompts should fail fast and fall back instead of creating long silence.
-        const PREMIUM_TTS_TIMEOUT_MS = 6000;
+        const PREMIUM_TTS_TIMEOUT_MS = 4500;
         const controller = new AbortController();
         this.activeController = controller;
         this.stopRequested = false;

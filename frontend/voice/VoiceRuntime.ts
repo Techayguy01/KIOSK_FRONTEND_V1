@@ -265,8 +265,8 @@ class VoiceRuntimeService {
         WebSpeechClient.connect();
     }
 
-    private stopActiveStt(_reason: StopReason): void {
-        WebSpeechClient.close();
+    private stopActiveStt(_reason: StopReason): string {
+        return WebSpeechClient.close();
     }
 
 
@@ -522,7 +522,19 @@ class VoiceRuntimeService {
         this.isListeningActive = false;
         this.clearAllTimers();
         this.clearWatchdog();
-        this.stopActiveStt(reason);
+        const recoveredTranscript = this.stopActiveStt(reason);
+
+        if (!this.hasReceivedFinalTranscript && recoveredTranscript.trim()) {
+            const normalizedRecovered = normalizeTranscript(recoveredTranscript);
+            const validation = this.validateTranscript(normalizedRecovered);
+            if (validation.valid) {
+                console.log(`[VoiceRuntime] Recovered final from interim buffer (${reason}): "${normalizedRecovered}"`);
+                this.hasReceivedFinalTranscript = true;
+                this.emit({ type: "VOICE_TRANSCRIPT_READY", transcript: normalizedRecovered });
+            } else {
+                this.logDebug(`Recovered interim transcript rejected: ${validation.reason}`);
+            }
+        }
 
         this.setMode("idle");
         this.emit({ type: "VOICE_SESSION_ENDED", reason, hadTranscript });

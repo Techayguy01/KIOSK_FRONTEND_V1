@@ -23,6 +23,19 @@ function normalizeTtsLanguage(language?: string): string {
     return "en-IN";
 }
 
+function shouldUseBrowserFallbackForPremiumError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error || "");
+    const normalized = message.toLowerCase();
+    return (
+        normalized.includes("tts api failed")
+        || normalized.includes("aborterror")
+        || normalized.includes("signal is aborted")
+        || normalized.includes("timeout")
+        || normalized.includes("network")
+        || normalized.includes("failed to fetch")
+    );
+}
+
 type TTSQueueItem = {
     text: string;
     resolve: () => void;
@@ -121,22 +134,35 @@ class TTSControllerService {
                 return;
             }
 
-            console.warn("[TTSController] Premium voice failed. Trying browser fallback:", err);
-            try {
-                await this.speakWithBrowserFallback(normalizedText, currentLang);
-                this.activeText = null;
-                return;
-            } catch (fallbackError) {
-                console.warn("[TTSController] Browser TTS fallback failed. Text shown on screen instead:", fallbackError);
-                this.state = "IDLE";
-                this.emit({
-                    type: "TTS_ERROR",
-                    error: fallbackError instanceof Error ? fallbackError.message : "browser_tts_fallback_failed",
-                    text: this.activeText || normalizedText,
-                    fallbackToText: true,
-                });
-                this.activeText = null;
+            if (shouldUseBrowserFallbackForPremiumError(err)) {
+                console.warn("[TTSController] Premium voice failed due to API/network issue. Trying browser fallback:", err);
+                try {
+                    await this.speakWithBrowserFallback(normalizedText, currentLang);
+                    this.activeText = null;
+                    return;
+                } catch (fallbackError) {
+                    console.warn("[TTSController] Browser TTS fallback failed. Text shown on screen instead:", fallbackError);
+                    this.state = "IDLE";
+                    this.emit({
+                        type: "TTS_ERROR",
+                        error: fallbackError instanceof Error ? fallbackError.message : "browser_tts_fallback_failed",
+                        text: this.activeText || normalizedText,
+                        fallbackToText: true,
+                    });
+                    this.activeText = null;
+                    return;
+                }
             }
+
+            console.warn("[TTSController] Premium voice failed. Text shown on screen instead:", err);
+            this.state = "IDLE";
+            this.emit({
+                type: "TTS_ERROR",
+                error: err instanceof Error ? err.message : "premium_tts_failed",
+                text: this.activeText || normalizedText,
+                fallbackToText: true,
+            });
+            this.activeText = null;
         }
     }
 
