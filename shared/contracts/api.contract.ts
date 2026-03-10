@@ -11,8 +11,14 @@ export interface ApiErrorBody {
 
 export interface TenantConfigDTO {
   timezone: string;
-  supportPhone: string;
+  supportPhone?: string | null;
   checkInTime: string;
+  checkOutTime?: string;
+  defaultLang?: string;
+  availableLang?: string[];
+  welcomeMessage?: string | null;
+  supportEmail?: string | null;
+  logoUrl?: string | null;
 }
 
 export interface TenantDTO {

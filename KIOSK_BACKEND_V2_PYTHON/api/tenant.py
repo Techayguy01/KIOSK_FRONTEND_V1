@@ -11,6 +11,7 @@ from typing import Optional
 
 from core.database import get_session
 from models.tenant import Tenant
+from models.tenant_config import TenantConfig
 
 router = APIRouter()
 
@@ -32,13 +33,28 @@ async def get_tenant(
         if not tenant:
             raise HTTPException(status_code=404, detail=f"Tenant '{slug}' not found")
 
+        config_result = await session.exec(
+            select(TenantConfig).where(TenantConfig.tenant_id == tenant.id)
+        )
+        tenant_config = config_result.first()
+
         return {
             "tenant": {
                 "id": str(tenant.id),
                 "name": tenant.hotel_name,
                 "slug": tenant.slug,
                 "plan": "ENTERPRISE",
-                "hotelConfig": None,
+                "hotelConfig": {
+                    "timezone": tenant_config.timezone,
+                    "supportPhone": tenant_config.support_phone,
+                    "checkInTime": tenant_config.check_in_time,
+                    "checkOutTime": tenant_config.check_out_time,
+                    "defaultLang": tenant_config.default_lang,
+                    "availableLang": tenant_config.available_lang or [],
+                    "welcomeMessage": tenant_config.welcome_message,
+                    "supportEmail": tenant_config.support_email,
+                    "logoUrl": tenant_config.logo_url,
+                } if tenant_config else None,
             }
         }
     except HTTPException:
