@@ -297,7 +297,10 @@ def _looks_like_check_in_request(transcript: str) -> bool:
         return False
     # Guard: informational FAQ phrases like "what is check in time" are NOT transactional check-in.
     check_in_info_question = bool(
-        re.search(r"\bcheck[\s-]?in\b", text)
+        (
+            re.search(r"\bcheck[\s-]?in\b", text)
+            or re.search(r"\b(check and|second time)\b", text)
+        )
         and re.search(r"\b(what|when|time|timing|hours?|know|tell)\b", text)
     )
     if check_in_info_question:
@@ -384,6 +387,9 @@ You can:
 
 Keep responses concise (2-3 sentences max) since this is a voice interface.
 Do not make up specific prices or room details you do not know.
+For hotel-specific policies or rules, only answer when you have exact policy context.
+If exact policy context is unavailable, say you are not certain and offer to connect the guest to assistance.
+Never invent hotel regulations, timings, fees, or exceptions.
 End your response by naturally offering further assistance.
 """
 

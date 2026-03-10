@@ -13,7 +13,7 @@ import { AgentAdapter } from "../agent/adapter";
 import { buildTenantApiUrl, getTenantHeaders, getTenantSlug } from "./tenantContext";
 import type { BookingChatResponseDTO, ChatRequestDTO, ChatResponseDTO } from "@contracts/api.contract";
 import { normalizeBackendStateFromResponse, normalizeStateForBackendChat } from "./uiStateInterop";
-import { getCachedFaqAnswer, putCachedFaqAnswer } from "./faqCache.service";
+import { buildCacheKey, getCachedFaqAnswer, putCachedFaqAnswer } from "./faqCache.service";
 
 export type BrainResponse = ChatResponseDTO & Partial<BookingChatResponseDTO>;
 type BrainTurn = { role: "user" | "assistant"; text: string };
@@ -44,7 +44,9 @@ const FAQ_CACHE_BLOCKED_STATES = new Set([
     "COMPLETE",
 ]);
 
-const TRANSACTIONAL_QUERY_PATTERN = /\b(check[\s-]?in|check[\s-]?out|book|booking|reserve|reservation|confirm|cancel|modify|change|pay|payment|card|scan|id|passport|guest[s]?|adult[s]?|child(?:ren)?|date[s]?|night[s]?)\b/i;
+const TRANSACTIONAL_CHECK_IN_PATTERN = /\b(i want to check[\s-]?in|check me in|start check[\s-]?in|begin check[\s-]?in)\b/i;
+const TRANSACTIONAL_BOOKING_PATTERN = /\b(confirm booking|cancel booking|modify booking|book a room|make a booking|start booking|reserve a room)\b/i;
+const FAQ_INFO_PATTERN = /\b(what|when|where|which|how|time|timing|hours?|breakfast|wifi|parking|pool|check[\s-]?(in|out)|check and|second time)\b/i;
 
 /** Subscribe to brain responses (for TTS playback, UI updates, etc.) */
 export function onBrainResponse(listener: BrainResponseListener): () => void {
@@ -70,7 +72,9 @@ function shouldUseFaqCache(transcript: string, currentState: string): boolean {
     const cleaned = (transcript || "").trim();
     if (!cleaned) return false;
     if (FAQ_CACHE_BLOCKED_STATES.has(currentState)) return false;
-    if (TRANSACTIONAL_QUERY_PATTERN.test(cleaned)) return false;
+    if (TRANSACTIONAL_CHECK_IN_PATTERN.test(cleaned)) return false;
+    if (TRANSACTIONAL_BOOKING_PATTERN.test(cleaned)) return false;
+    if (!FAQ_INFO_PATTERN.test(cleaned)) return false;
     return true;
 }
 
@@ -134,8 +138,10 @@ export async function sendToBrain(
     const url = buildTenantApiUrl("chat");
     const backendCurrentState = normalizeStateForBackendChat(currentState);
     const tenantSlug = getTenantSlug();
+    const cacheKey = buildCacheKey(tenantSlug, transcript);
 
     console.log(`[BrainService] Sending to V2 Brain: "${transcript}" (State: ${backendCurrentState})`);
+    console.log(`[BrainService][FAQCache] eligibility=${shouldUseFaqCache(transcript, currentState)} key=${cacheKey}`);
 
     if (shouldUseFaqCache(transcript, currentState)) {
         const cachedFaq = await getCachedFaqAnswer(tenantSlug, transcript);
@@ -149,12 +155,12 @@ export async function sendToBrain(
                 faqId: cachedFaq.faqId ?? null,
                 sessionId,
             };
-            console.log(`[BrainService][FAQCache] HIT faqId=${cachedResponse.faqId || "none"}`);
+            console.log(`[BrainService][FAQCache] HIT key=${cacheKey} faqId=${cachedResponse.faqId || "none"}`);
             notifyListeners(cachedResponse);
             dispatchFromConfidence(cachedResponse);
             return cachedResponse;
         }
-        console.log("[BrainService][FAQCache] MISS");
+        console.log(`[BrainService][FAQCache] MISS key=${cacheKey}`);
     }
 
     // V2 Python backend payload - note snake_case fields to match FastAPI ChatRequest
@@ -186,6 +192,8 @@ export async function sendToBrain(
         }
 
         const data: BrainResponse = await response.json();
+        console.log("[BrainService] /api/chat response:", data);
+        console.log(`[BrainService] answerSource=${data.answerSource || "missing"}`);
         const normalizedNextUiScreen = normalizeBackendStateFromResponse(data.nextUiScreen);
         if (data.nextUiScreen && !normalizedNextUiScreen) {
             console.warn(`[BrainService] Ignoring unknown backend nextUiScreen: ${data.nextUiScreen}`);
@@ -195,14 +203,15 @@ export async function sendToBrain(
         }
 
         if (data.answerSource === "FAQ_DB") {
-            void putCachedFaqAnswer({
+            console.log(`[BrainService][FAQCache] WRITE_PATH key=${cacheKey}`);
+            await putCachedFaqAnswer({
                 tenantSlug,
                 transcript,
                 answer: data.speech,
                 faqId: data.faqId ?? null,
                 confidence: data.confidence,
             });
-            console.log(`[BrainService][FAQCache] STORED faqId=${data.faqId || "none"}`);
+            console.log(`[BrainService][FAQCache] STORED key=${cacheKey} faqId=${data.faqId || "none"}`);
         }
 
         console.log("[BrainService] Brain response:", data);

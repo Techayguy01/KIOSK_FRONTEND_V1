@@ -71,6 +71,12 @@ FAQ_BLOCKED_SCREENS = {
     "COMPLETE",
 }
 
+# Retrieval-first hotel policy architecture:
+# 1. FAQ / policy DB answers deterministic, tenant-scoped questions first.
+# 2. Only unmatched requests fall through to router + LLM.
+# 3. Do not stuff full hotel policy into every prompt; retrieve only relevant snippets later.
+# 4. Browser IndexedDB is a secondary cache, not the source of truth.
+
 
 def _to_contract_slot_name(slot_name: Optional[str]) -> Optional[str]:
     if not slot_name:
@@ -150,9 +156,20 @@ def _normalize_ui_screen(raw_screen: Optional[str]) -> UIScreen:
 
 def _should_attempt_faq(transcript: str, normalized_ui_screen: UIScreen) -> bool:
     if normalized_ui_screen in FAQ_BLOCKED_SCREENS:
+        print(
+            "[ChatAPI][FAQ] candidate "
+            f"screen={normalized_ui_screen} "
+            "allowed=False reason=blocked_screen"
+        )
         return False
 
-    return is_faq_candidate_query(transcript)
+    is_candidate = is_faq_candidate_query(transcript)
+    print(
+        "[ChatAPI][FAQ] candidate "
+        f"screen={normalized_ui_screen} "
+        f"allowed={is_candidate}"
+    )
+    return is_candidate
 
 
 async def _resolve_tenant_id(
@@ -304,19 +321,27 @@ async def chat(
                 f"tenant={resolved_tenant_id or req.tenant_id} "
                 f"query='{normalized_transcript}'"
             )
-            faq_match = await find_best_faq_match(
+            faq_lookup = await find_best_faq_match(
                 session=session,
                 tenant_id=resolved_tenant_id or req.tenant_id,
                 user_query=req.transcript,
+            )
+            faq_match = faq_lookup.match
+            print(
+                "[ChatAPI][FAQ] loaded "
+                f"session={req.session_id} "
+                f"faq_count={faq_lookup.faq_count} "
+                f"normalized='{faq_lookup.normalized_query}'"
             )
             if faq_match and faq_match.confidence >= FAQ_MATCH_THRESHOLD:
                 print(
                     "[ChatAPI][FAQ] matched "
                     f"session={req.session_id} "
                     f"faq_id={faq_match.faq_id} "
-                    f"confidence={faq_match.confidence:.3f}"
+                    f"confidence={faq_match.confidence:.3f} "
+                    f"match_type={faq_match.match_type}"
                 )
-                faq_response = faq_match.answer.strip() or "Please ask a different question."
+                faq_response = faq_match.answer
                 state.history = state.history + [
                     ConversationTurn(role="user", content=state.latest_transcript),
                     ConversationTurn(role="assistant", content=faq_response),
@@ -326,6 +351,11 @@ async def chat(
                 state.confidence = faq_match.confidence
                 state.next_ui_screen = normalized_ui_screen
                 _sessions[req.session_id] = state
+                print(
+                    "[ChatAPI][FAQ] respond "
+                    f"session={req.session_id} "
+                    f"answerSource=FAQ_DB faq_id={faq_match.faq_id}"
+                )
 
                 return ChatResponse(
                     speech=faq_response,
@@ -349,7 +379,8 @@ async def chat(
             print(
                 "[ChatAPI][FAQ] fallback "
                 f"session={req.session_id} "
-                f"reason={'no_match' if not faq_match else f'low_confidence:{faq_match.confidence:.3f}'}"
+                f"reason={'no_match' if not faq_match else f'low_confidence:{faq_match.confidence:.3f}'} "
+                f"faq_count={faq_lookup.faq_count}"
             )
 
         # Run LangGraph agent

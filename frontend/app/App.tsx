@@ -22,7 +22,6 @@ import { ErrorBanner } from '../components/ErrorBanner';
 import { BackButton } from '../components/BackButton';
 import { CaptionsOverlay } from '../components/CaptionsOverlay';
 import { VoiceStatusIndicator } from '../components/VoiceStatusIndicator';
-import { DevToolbar } from '../components/DevToolbar';
 import AnimatedGradientBackground from '../components/ui/animated-gradient-background';
 import { buildTenantApiUrl, getTenantHeaders, setTenantContext, TenantPayload } from '../services/tenantContext';
 
@@ -62,7 +61,6 @@ const TenantKioskApp: React.FC = () => {
 
   // Local UI State (Renderer only)
   const [state, setState] = useState<UiState>('IDLE');
-  const [forcedState, setForcedState] = useState<UiState | null>(null);
   const [data, setData] = useState<any>({});
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -110,7 +108,7 @@ const TenantKioskApp: React.FC = () => {
 
   // 3. DUMB ROUTER (State -> Component)
   // CRITICAL: This is a pure switch on Agent State. No logic allowed.
-  const effectiveState = forcedState ?? state;
+  const effectiveState = state;
   const showVoiceStatus = VOICE_RELEVANT_STATES.has(effectiveState);
   const derivedVoiceEnabled = typeof data?.metadata?.listening === 'boolean'
     ? Boolean(data.metadata.listening)
@@ -230,19 +228,6 @@ const TenantKioskApp: React.FC = () => {
             voiceEnabled={derivedVoiceEnabled}
           />
         )}
-
-        {/* Debug Info (To prove state comes from Agent) */}
-        <div className="fixed bottom-2 right-2 z-50 bg-black/50 text-white text-xs p-1 rounded opacity-30 hover:opacity-100 pointer-events-none">
-          Authority: AgentAdapter | State: {state}
-          {forcedState ? ` | Override: ${forcedState}` : ''}
-        </div>
-
-        {/* Development Toolbar */}
-        <DevToolbar
-          onForceState={(next) => setForcedState(next as UiState | null)}
-          isUnlocked={Boolean(forcedState)}
-          currentState={effectiveState as any}
-        />
       </div>
     </UIContext.Provider>
   );

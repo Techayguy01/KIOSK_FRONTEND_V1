@@ -8,6 +8,7 @@ import { StateMachine } from "../state/uiState.machine";
 import { UIState } from "@contracts/backend.contract";
 import { buildTenantApiUrl, getTenantHeaders, getTenant, getTenantSlug } from "../services/tenantContext";
 import { normalizeBackendStateFromResponse, normalizeStateForBackendChat } from "../services/uiStateInterop";
+import { buildCacheKey, getCachedFaqAnswer, putCachedFaqAnswer } from "../services/faqCache.service";
 
 /**
  * AgentAdapter (Singleton) - Phase 9.4: TTS UX, Barge-In & Audio Authority
@@ -42,6 +43,32 @@ const VOICE_AUTHORITY_MATRIX: Record<UiState, boolean> = {
     COMPLETE: false,
     ERROR: false,       // No voice during error states
 };
+
+const FAQ_CACHE_BLOCKED_STATES = new Set<UiState>([
+    "SCAN_ID",
+    "ID_VERIFY",
+    "CHECK_IN_SUMMARY",
+    "ROOM_SELECT",
+    "BOOKING_COLLECT",
+    "BOOKING_SUMMARY",
+    "PAYMENT",
+    "KEY_DISPENSING",
+    "COMPLETE",
+]);
+
+const TRANSACTIONAL_CHECK_IN_PATTERN = /\b(i want to check[\s-]?in|check me in|start check[\s-]?in|begin check[\s-]?in)\b/i;
+const TRANSACTIONAL_BOOKING_PATTERN = /\b(confirm booking|cancel booking|modify booking|book a room|make a booking|start booking|reserve a room)\b/i;
+const FAQ_INFO_PATTERN = /\b(what|when|where|which|how|time|timing|hours?|breakfast|wifi|parking|pool|check[\s-]?(in|out)|check and|second time|checking time)\b/i;
+
+function shouldUseFaqCache(transcript: string, currentState: UiState): boolean {
+    const cleaned = (transcript || "").trim();
+    if (!cleaned) return false;
+    if (FAQ_CACHE_BLOCKED_STATES.has(currentState)) return false;
+    if (TRANSACTIONAL_CHECK_IN_PATTERN.test(cleaned)) return false;
+    if (TRANSACTIONAL_BOOKING_PATTERN.test(cleaned)) return false;
+    if (!FAQ_INFO_PATTERN.test(cleaned)) return false;
+    return true;
+}
 
 // Phase 8.6: Telemetry Event Types
 type VoiceTelemetryEvent =
@@ -1114,29 +1141,73 @@ class AgentAdapterService {
                 ? buildTenantApiUrl("chat/booking")
                 : buildTenantApiUrl("chat");
             const backendCurrentState = normalizeStateForBackendChat(this.state);
+            const tenantSlug = getTenantSlug();
+            const cacheKey = buildCacheKey(tenantSlug, transcript);
+            const faqCacheEligible = shouldUseFaqCache(transcript, this.state);
+            console.log(`[AgentAdapter][FAQCache] eligibility=${faqCacheEligible} key=${cacheKey}`);
 
-            // 1. Call LLM Brain with session ID for memory
-            const response = await fetch(targetUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', ...getTenantHeaders() },
-                body: JSON.stringify({
-                    transcript,
-                    // Normalize here so backend never receives drifted/non-canonical state tokens.
-                    currentState: backendCurrentState,
-                    sessionId: sessionId || this.getSessionId(),
-                    tenantSlug: getTenantSlug(),
-                    activeSlot: this.slotContext.activeSlot,
-                    expectedType: this.slotContext.expectedType,
-                    lastSystemPrompt: this.slotContext.promptAsked || undefined,
-                    filledSlots: this.viewData.bookingSlots || {},
-                })
-            });
+            let decision: any;
 
-            if (!response.ok) {
-                throw new Error(`LLM API error: ${response.status}`);
+            if (faqCacheEligible) {
+                const cachedFaq = await getCachedFaqAnswer(tenantSlug, transcript);
+                if (cachedFaq) {
+                    decision = {
+                        speech: cachedFaq.answer,
+                        intent: "GENERAL_QUERY",
+                        confidence: Math.max(cachedFaq.confidence, 0.92),
+                        nextUiScreen: backendCurrentState,
+                        accumulatedSlots: {},
+                        extractedSlots: {},
+                        missingSlots: [],
+                        nextSlotToAsk: null,
+                        selectedRoom: null,
+                        isComplete: false,
+                        answerSource: "FAQ_CACHE",
+                        faqId: cachedFaq.faqId ?? null,
+                    };
+                    console.log(`[AgentAdapter][FAQCache] HIT key=${cacheKey} faqId=${decision.faqId || "none"}`);
+                } else {
+                    console.log(`[AgentAdapter][FAQCache] MISS key=${cacheKey}`);
+                }
             }
 
-            const decision = await response.json();
+            if (!decision) {
+                // 1. Call backend brain with session ID for memory
+                const response = await fetch(targetUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...getTenantHeaders() },
+                    body: JSON.stringify({
+                        transcript,
+                        // Normalize here so backend never receives drifted/non-canonical state tokens.
+                        currentState: backendCurrentState,
+                        sessionId: sessionId || this.getSessionId(),
+                        tenantSlug,
+                        activeSlot: this.slotContext.activeSlot,
+                        expectedType: this.slotContext.expectedType,
+                        lastSystemPrompt: this.slotContext.promptAsked || undefined,
+                        filledSlots: this.viewData.bookingSlots || {},
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`LLM API error: ${response.status}`);
+                }
+
+                decision = await response.json();
+                console.log("[AgentAdapter] /api/chat response:", decision);
+                console.log(`[AgentAdapter] answerSource=${decision.answerSource || "missing"}`);
+                if (decision.answerSource === "FAQ_DB") {
+                    console.log(`[AgentAdapter][FAQCache] WRITE_PATH key=${cacheKey}`);
+                    await putCachedFaqAnswer({
+                        tenantSlug,
+                        transcript,
+                        answer: decision.speech,
+                        faqId: decision.faqId ?? null,
+                        confidence: decision.confidence,
+                    });
+                    console.log(`[AgentAdapter][FAQCache] STORED key=${cacheKey} faqId=${decision.faqId || "none"}`);
+                }
+            }
             console.log(`[AgentAdapter] LLM Decision:`, decision);
 
             // Sync language
