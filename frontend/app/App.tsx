@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { UIContext } from '../state/uiContext';
 // Agent Authority
@@ -22,6 +22,7 @@ import { ErrorBanner } from '../components/ErrorBanner';
 import { BackButton } from '../components/BackButton';
 import { CaptionsOverlay } from '../components/CaptionsOverlay';
 import { VoiceStatusIndicator } from '../components/VoiceStatusIndicator';
+import { SiyaMiniOrb } from '../components/SiyaMiniOrb';
 import AnimatedGradientBackground from '../components/ui/animated-gradient-background';
 import { buildTenantApiUrl, getTenantHeaders, setTenantContext, TenantPayload } from '../services/tenantContext';
 
@@ -54,6 +55,17 @@ const VOICE_RELEVANT_STATES = new Set<UiState>([
   'PAYMENT',
 ]);
 
+const MINI_SIYA_ORB_STATES = new Set<UiState>([
+  'ID_VERIFY',
+  'CHECK_IN_SUMMARY',
+  'ROOM_SELECT',
+  'BOOKING_COLLECT',
+  'BOOKING_SUMMARY',
+  'COMPLETE',
+]);
+
+type JourneyMode = 'voice' | 'manual' | null;
+
 const TenantKioskApp: React.FC = () => {
   const { tenantSlug } = useParams<{ tenantSlug: string }>();
   const location = useLocation();
@@ -65,6 +77,8 @@ const TenantKioskApp: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [tenant, setTenant] = useState<TenantPayload | null>(null);
+  const [journeyMode, setJourneyMode] = useState<JourneyMode>(null);
+  const previousStateRef = useRef<UiState>('IDLE');
 
   // 1. CONNECT TO AGENT BRAIN
   useEffect(() => {
@@ -113,6 +127,40 @@ const TenantKioskApp: React.FC = () => {
   const derivedVoiceEnabled = typeof data?.metadata?.listening === 'boolean'
     ? Boolean(data.metadata.listening)
     : showVoiceStatus;
+  const showMiniSiyaOrb = journeyMode === 'voice' && MINI_SIYA_ORB_STATES.has(effectiveState);
+
+  // Track whether the current flow originated from voice mode or manual mode.
+  // This supports flows that jump from WELCOME directly to transaction pages.
+  useEffect(() => {
+    const previousState = previousStateRef.current;
+
+    setJourneyMode((currentMode) => {
+      if (effectiveState === 'IDLE') return null;
+      if (effectiveState === 'MANUAL_MENU') return 'manual';
+      if (effectiveState === 'AI_CHAT') return 'voice';
+
+      // Voice command from WELCOME can route directly into SCAN_ID/ROOM_SELECT.
+      if (
+        previousState === 'WELCOME' &&
+        (effectiveState === 'SCAN_ID' || effectiveState === 'ROOM_SELECT')
+      ) {
+        return 'voice';
+      }
+
+      // Manual menu actions continue as manual flow.
+      if (
+        previousState === 'MANUAL_MENU' &&
+        (effectiveState === 'SCAN_ID' || effectiveState === 'ROOM_SELECT')
+      ) {
+        return 'manual';
+      }
+
+      // Preserve chosen journey mode through downstream pages.
+      return currentMode;
+    });
+
+    previousStateRef.current = effectiveState;
+  }, [effectiveState]);
 
   // Keep URL in sync with rendered kiosk state under /:tenantSlug/<page>
   useEffect(() => {
@@ -221,6 +269,8 @@ const TenantKioskApp: React.FC = () => {
         <CaptionsOverlay />
 
         {renderPage()}
+
+        <SiyaMiniOrb visible={showMiniSiyaOrb} />
 
         {showVoiceStatus && (
           <VoiceStatusIndicator
