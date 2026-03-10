@@ -19,6 +19,17 @@ from models.faq import FAQ
 
 _WHITESPACE_RE = re.compile(r"\s+")
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9\s]")
+_CHECKIN_VARIANT_RE = re.compile(r"\bcheck[\s-]*in\b")
+_CHECKOUT_VARIANT_RE = re.compile(r"\bcheck[\s-]*out\b")
+_FILLER_PHRASES_RE = re.compile(
+    r"\b(i would like to know|i want to know|can you tell me|for this hotel)\b"
+)
+_FAQ_CANDIDATE_RE = re.compile(
+    r"\b(what|when|where|do you|can you tell me|i want to know|i would like to know)\b"
+)
+_CHECKIN_INFO_RE = re.compile(
+    r"(?:\b(what|when)\b.*\bcheckin\b|\bcheckin\b.*\b(time|timing|hours?)\b)"
+)
 
 # Fuzzy score threshold for direct FAQ answer.
 FAQ_MATCH_THRESHOLD = 0.84
@@ -32,9 +43,13 @@ class FAQMatchResult:
     confidence: float
 
 
-def _normalize_text(text: str) -> str:
+def normalize_faq_query(text: str) -> str:
     lowered = (text or "").strip().lower()
-    cleaned = _NON_ALNUM_RE.sub(" ", lowered)
+    normalized = _CHECKIN_VARIANT_RE.sub("checkin", lowered)
+    normalized = _CHECKOUT_VARIANT_RE.sub("checkout", normalized)
+    normalized = _NON_ALNUM_RE.sub(" ", normalized)
+    normalized = _FILLER_PHRASES_RE.sub(" ", normalized)
+    cleaned = normalized
     return _WHITESPACE_RE.sub(" ", cleaned).strip()
 
 
@@ -44,8 +59,8 @@ def _token_key(text: str) -> str:
 
 
 def _fuzzy_score(query: str, candidate: str) -> float:
-    query_norm = _normalize_text(query)
-    candidate_norm = _normalize_text(candidate)
+    query_norm = normalize_faq_query(query)
+    candidate_norm = normalize_faq_query(candidate)
     if not query_norm or not candidate_norm:
         return 0.0
 
@@ -67,6 +82,18 @@ def _fuzzy_score(query: str, candidate: str) -> float:
     return round(score, 4)
 
 
+def is_faq_candidate_query(transcript: str) -> bool:
+    normalized = normalize_faq_query(transcript)
+    if not normalized:
+        return False
+    if _FAQ_CANDIDATE_RE.search(normalized):
+        return True
+    # Explicit guard for the common "what is check in time" family.
+    if _CHECKIN_INFO_RE.search(normalized):
+        return True
+    return False
+
+
 async def find_best_faq_match(
     session: AsyncSession,
     tenant_id: Optional[str],
@@ -85,6 +112,21 @@ async def find_best_faq_match(
     faqs = faq_result.all()
     if not faqs:
         return None
+
+    query_normalized = normalize_faq_query(user_query)
+    if not query_normalized:
+        return None
+
+    # Deterministic first pass: exact normalized match.
+    for faq in faqs:
+        faq_question_normalized = normalize_faq_query(faq.question)
+        if faq_question_normalized and faq_question_normalized == query_normalized:
+            return FAQMatchResult(
+                faq_id=str(faq.id),
+                question=faq.question,
+                answer=faq.answer,
+                confidence=1.0,
+            )
 
     best_match: Optional[FAQMatchResult] = None
     for faq in faqs:

@@ -11,7 +11,6 @@ from pydantic import BaseModel, Field
 from typing import Optional, get_args
 from uuid import UUID
 from urllib.parse import urlparse
-import re
 from agent.graph import kiosk_agent
 from agent.state import KioskState, ConversationTurn, RoomInventoryItem, UIScreen
 from core.voice import normalize_language_code
@@ -21,7 +20,12 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel import select
 from models.tenant import Tenant
 from models.room import RoomType
-from services.faq_service import find_best_faq_match, FAQ_MATCH_THRESHOLD
+from services.faq_service import (
+    FAQ_MATCH_THRESHOLD,
+    find_best_faq_match,
+    is_faq_candidate_query,
+    normalize_faq_query,
+)
 
 router = APIRouter()
 
@@ -66,19 +70,6 @@ FAQ_BLOCKED_SCREENS = {
     "KEY_DISPENSING",
     "COMPLETE",
 }
-
-TRANSACTIONAL_INTENT_PATTERN = re.compile(
-    r"\b("
-    r"check[\s-]?in|check[\s-]?out|"
-    r"book|booking|reserve|reservation|"
-    r"confirm|cancel|modify|change|"
-    r"pay|payment|card|"
-    r"scan|id|passport|"
-    r"guest[s]?|adult[s]?|child(?:ren)?|"
-    r"date[s]?|night[s]?"
-    r")\b",
-    flags=re.IGNORECASE,
-)
 
 
 def _to_contract_slot_name(slot_name: Optional[str]) -> Optional[str]:
@@ -161,14 +152,7 @@ def _should_attempt_faq(transcript: str, normalized_ui_screen: UIScreen) -> bool
     if normalized_ui_screen in FAQ_BLOCKED_SCREENS:
         return False
 
-    cleaned = (transcript or "").strip()
-    if not cleaned:
-        return False
-
-    if TRANSACTIONAL_INTENT_PATTERN.search(cleaned):
-        return False
-
-    return True
+    return is_faq_candidate_query(transcript)
 
 
 async def _resolve_tenant_id(
@@ -313,10 +297,12 @@ async def chat(
 
         # Deterministic FAQ retrieval layer (tenant-scoped), only for non-transactional turns.
         if _should_attempt_faq(req.transcript, normalized_ui_screen):
+            normalized_transcript = normalize_faq_query(req.transcript)
             print(
                 "[ChatAPI][FAQ] attempt "
                 f"session={req.session_id} "
-                f"tenant={resolved_tenant_id or req.tenant_id}"
+                f"tenant={resolved_tenant_id or req.tenant_id} "
+                f"query='{normalized_transcript}'"
             )
             faq_match = await find_best_faq_match(
                 session=session,

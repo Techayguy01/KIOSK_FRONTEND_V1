@@ -295,6 +295,13 @@ def _looks_like_check_in_request(transcript: str) -> bool:
     text = (transcript or "").strip().lower()
     if not text:
         return False
+    # Guard: informational FAQ phrases like "what is check in time" are NOT transactional check-in.
+    check_in_info_question = bool(
+        re.search(r"\bcheck[\s-]?in\b", text)
+        and re.search(r"\b(what|when|time|timing|hours?|know|tell)\b", text)
+    )
+    if check_in_info_question:
+        return False
     return bool(
         re.search(
             r"\b(check[\s-]?in|i have a booking|existing booking|have reservation|my reservation)\b",
