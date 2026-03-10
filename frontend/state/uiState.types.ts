@@ -13,4 +13,5 @@ export interface UIContextType {
   loading: boolean;
   tenantSlug: string;
   tenant: TenantPayload | null;
+  refreshTenant: () => Promise<void>;
 }

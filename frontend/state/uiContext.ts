@@ -10,6 +10,7 @@ const initialContext: UIContextType = {
   loading: false,
   tenantSlug: '',
   tenant: null,
+  refreshTenant: async () => { throw new Error("Not Implemented: UIContext Provider missing"); },
 };
 
 export const UIContext = createContext<UIContextType>(initialContext);

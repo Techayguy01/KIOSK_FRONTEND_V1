@@ -47,6 +47,14 @@ const FINAL_COMMIT_GRACE_MS = Number(import.meta.env.VITE_FINAL_COMMIT_GRACE_MS 
 const RESTART_DELAY_MS = 100;
 const PERMISSION_DENIED_COOLDOWN_MS = Number(import.meta.env.VITE_STT_PERMISSION_DENIED_COOLDOWN_MS || 15000);
 
+function normalizeSpeechRecognitionLanguage(lang: string): string {
+    const normalized = String(lang || "").trim().toLowerCase();
+    if (normalized.startsWith("hi") || normalized === "hindi") return "hi-IN";
+    if (normalized.startsWith("mr") || normalized === "marathi") return "mr-IN";
+    if (normalized.startsWith("en") || normalized === "english") return "en-IN";
+    return normalized || "en-IN";
+}
+
 class BrowserWebSpeechClient {
     private recognition: SpeechRecognitionLike | null = null;
     private interimCallback: InterimCallback | null = null;
@@ -150,7 +158,7 @@ class BrowserWebSpeechClient {
      * Use "hi-IN" for Hindi, "en-IN" or "en-US" for English.
      */
     public setLanguage(lang: string): void {
-        const targetLang = lang.startsWith("hi") ? "hi-IN" : (lang.startsWith("en") ? "en-IN" : lang);
+        const targetLang = normalizeSpeechRecognitionLanguage(lang);
         this.preferredLanguage = targetLang;
 
         if (this.recognition && this.recognition.lang !== targetLang) {

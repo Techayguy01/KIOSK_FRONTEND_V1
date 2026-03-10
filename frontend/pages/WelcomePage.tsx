@@ -1,13 +1,20 @@
-import React, { useEffect, useId, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import { useUIState } from '../state/uiContext';
 import { useFadeIn } from '../hooks/useAnimation';
 import { usePrefersReducedMotion } from '../hooks/usePrefersReducedMotion';
-import { Keyboard, Mic, CalendarCheck, BedDouble, HelpCircle, StopCircle } from 'lucide-react';
+import { Keyboard, Mic, CalendarCheck, BedDouble, HelpCircle, StopCircle, Languages, RefreshCw, X } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { Button } from '../components/ui/button';
 import { Orb, OrbState } from '../components/ui/orb';
 import AnimatedGradientBackground from '../components/ui/animated-gradient-background';
 import HoverRevealCards from '../components/ui/hover-reveal-cards';
+import {
+  getAvailableTenantLanguages,
+  getCurrentTenantLanguage,
+  getDefaultTenantLanguage,
+  setCurrentTenantLanguage,
+  SupportedTenantLanguage,
+} from '../services/tenantContext';
 import { VoiceRuntime, VoiceTurnState } from '../voice/VoiceRuntime'; // Phase 8.4 Turn Control
 
 // Local type for UI logic (compatible with OrbState via mapping)
@@ -23,10 +30,11 @@ interface WelcomePageProps {
 }
 
 export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }) => {
-  const { data, emit, loading, tenant } = useUIState();
+  const { data, emit, loading, tenant, refreshTenant } = useUIState();
   const tenantName = tenant?.name || "Nexus";
   const prefersReducedMotion = usePrefersReducedMotion();
   const micStatusId = useId();
+  const longPressTimerRef = useRef<number | null>(null);
 
   // Internal animation state only - NOT navigational state
   const [interactionState, setInteractionState] = useState<AgentState>(null);
@@ -35,8 +43,17 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
 
   // Phase 8.4: Track voice turn state for UI control
   const [turnState, setTurnState] = useState<VoiceTurnState>("IDLE");
+  const [isLanguagePanelOpen, setIsLanguagePanelOpen] = useState(false);
+  const [isSyncingTenant, setIsSyncingTenant] = useState(false);
+  const [languageMessage, setLanguageMessage] = useState<string | null>(null);
+  const [selectedLanguage, setSelectedLanguage] = useState<SupportedTenantLanguage>(getCurrentTenantLanguage());
 
   const fade = useFadeIn(200);
+  const availableLanguages = getAvailableTenantLanguages();
+
+  useEffect(() => {
+    setSelectedLanguage(getCurrentTenantLanguage());
+  }, [tenant]);
 
   // Subscribe to VoiceRuntime for visual feedback only
   useEffect(() => {
@@ -102,6 +119,14 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
     };
   }, []);
 
+  useEffect(() => {
+    return () => {
+      if (longPressTimerRef.current) {
+        window.clearTimeout(longPressTimerRef.current);
+      }
+    };
+  }, []);
+
 
 
   // Calculate the effective state of the agent for Orb animation
@@ -135,14 +160,141 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
     if (isSessionActive) {
       VoiceRuntime.endSession();
     } else {
-      await VoiceRuntime.startSession();
+      await VoiceRuntime.startSession(getCurrentTenantLanguage());
     }
+  };
+
+  const clearLongPressTimer = () => {
+    if (longPressTimerRef.current) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
+  const beginSecretLongPress = () => {
+    clearLongPressTimer();
+    longPressTimerRef.current = window.setTimeout(() => {
+      setIsLanguagePanelOpen(true);
+      setLanguageMessage(null);
+      longPressTimerRef.current = null;
+    }, 3200);
+  };
+
+  const handleLanguageSelect = async (language: SupportedTenantLanguage) => {
+    const appliedLanguage = setCurrentTenantLanguage(language);
+    setSelectedLanguage(appliedLanguage);
+    setLanguageMessage(`Language set to ${getLanguageLabel(appliedLanguage)}.`);
+
+    if (isSessionActive) {
+      VoiceRuntime.endSession();
+      await VoiceRuntime.startSession(appliedLanguage);
+    }
+  };
+
+  const handleTenantSync = async () => {
+    setIsSyncingTenant(true);
+    setLanguageMessage(null);
+    try {
+      await refreshTenant();
+      const effectiveLanguage = getCurrentTenantLanguage();
+      setSelectedLanguage(effectiveLanguage);
+      setLanguageMessage(`Synced. Active language is ${getLanguageLabel(effectiveLanguage)}.`);
+    } catch {
+      setLanguageMessage("Sync failed. Tenant config was not refreshed.");
+    } finally {
+      setIsSyncingTenant(false);
+    }
+  };
+
+  const SecretTrigger = ({ className = "" }: { className?: string }) => (
+    <button
+      type="button"
+      className={className}
+      onPointerDown={beginSecretLongPress}
+      onPointerUp={clearLongPressTimer}
+      onPointerLeave={clearLongPressTimer}
+      onPointerCancel={clearLongPressTimer}
+      aria-label="Hidden language controls"
+    >
+      {tenantName}
+    </button>
+  );
+
+  const LanguagePanel = () => {
+    if (!isLanguagePanelOpen) return null;
+
+    return (
+      <div className="absolute inset-0 z-40 flex items-start justify-start bg-slate-950/30 backdrop-blur-[2px]">
+        <div className="m-5 w-[320px] rounded-3xl border border-white/10 bg-slate-950/95 p-5 text-white shadow-2xl shadow-black/50">
+          <div className="mb-4 flex items-start justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-2 text-sm font-semibold uppercase tracking-[0.24em] text-cyan-300">
+                <Languages size={14} />
+                Language Control
+              </div>
+              <p className="mt-2 text-sm text-slate-300">
+                Hidden operator panel. Available languages come from tenant config.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsLanguagePanelOpen(false)}
+              className="rounded-full border border-white/10 p-2 text-slate-400 transition hover:border-white/20 hover:text-white"
+              aria-label="Close language controls"
+            >
+              <X size={16} />
+            </button>
+          </div>
+
+          <div className="mb-4 space-y-2">
+            {availableLanguages.map((language) => {
+              const isActive = selectedLanguage === language;
+              return (
+                <button
+                  key={language}
+                  type="button"
+                  onClick={() => void handleLanguageSelect(language)}
+                  className={`flex w-full items-center justify-between rounded-2xl border px-4 py-3 text-left transition ${
+                    isActive
+                      ? 'border-cyan-400/80 bg-cyan-500/10 text-white'
+                      : 'border-white/10 bg-white/[0.03] text-slate-300 hover:border-white/20 hover:bg-white/[0.06]'
+                  }`}
+                >
+                  <span className="font-medium">{getLanguageLabel(language)}</span>
+                  <span className="text-xs uppercase tracking-[0.2em] text-slate-400">
+                    {isActive ? 'Active' : 'Select'}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => void handleTenantSync()}
+            disabled={isSyncingTenant}
+            className="flex w-full items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white/[0.05] px-4 py-3 text-sm font-medium text-white transition hover:border-white/20 hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <RefreshCw size={16} className={isSyncingTenant ? 'animate-spin' : ''} />
+            {isSyncingTenant ? 'Syncing...' : 'Sync Config'}
+          </button>
+
+          <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-xs text-slate-400">
+            <div>Default: {getLanguageLabel(getDefaultTenantLanguage())}</div>
+            <div className="mt-1">Current session: {getLanguageLabel(selectedLanguage)}</div>
+            {languageMessage && <div className="mt-2 text-cyan-300">{languageMessage}</div>}
+          </div>
+        </div>
+      </div>
+    );
   };
 
   const ManualMode = () => (
     <div className={`flex flex-col items-center justify-center h-full w-full max-w-4xl mx-auto p-6 ${fade}`}>
       <div className="text-center mb-12">
-        <h2 className="text-4xl font-light text-white mb-4">Welcome to {tenantName}</h2>
+        <h2 className="text-4xl font-light text-white mb-4">
+          Welcome to <SecretTrigger className="rounded-xl px-3 py-1 transition hover:bg-white/5" />
+        </h2>
         <p className="text-slate-400 text-lg">How would you like to proceed?</p>
       </div>
 
@@ -179,7 +331,7 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
       <div className="mt-16">
         <Button
           variant="ghost"
-          onClick={() => VoiceRuntime.startSession()} // Use Runtime directly
+          onClick={() => VoiceRuntime.startSession(getCurrentTenantLanguage())} // Use Runtime directly
           aria-label="Switch to voice mode"
           className="flex items-center gap-2 text-slate-500 hover:text-white"
         >
@@ -197,6 +349,7 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
         <div className="relative z-10 w-full h-full">
           <ManualMode />
         </div>
+        <LanguagePanel />
       </div>
     );
   }
@@ -209,7 +362,7 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
       {/* 1. TOP BAR */}
       <div className="flex-none h-24 w-full px-8 flex items-center justify-between z-20">
         <div className="text-sm text-white/80 tracking-wide">
-          {tenantName}
+          <SecretTrigger className="rounded-xl px-3 py-2 transition hover:bg-white/5" />
         </div>
         <Button
           variant="outline"
@@ -273,6 +426,8 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
         </div>
       </div>
 
+      <LanguagePanel />
+
       {/* 3. BOTTOM - TRANSCRIPT & CONTROLS */}
       <div className="flex-none w-full pb-12 px-6 flex flex-col items-center gap-8 z-20">
 
@@ -318,3 +473,15 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
     </div>
   );
 };
+
+function getLanguageLabel(language: SupportedTenantLanguage): string {
+  switch (language) {
+    case "hi":
+      return "Hindi";
+    case "mr":
+      return "Marathi";
+    case "en":
+    default:
+      return "English";
+  }
+}

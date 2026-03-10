@@ -25,14 +25,42 @@ except Exception as e:
     sarvam_client = None
     sarvam_async_client = None
 
+LANGUAGE_ALIASES = {
+    "english": "en",
+    "en": "en",
+    "en-in": "en",
+    "hindi": "hi",
+    "hi": "hi",
+    "hi-in": "hi",
+    "marathi": "mr",
+    "mr": "mr",
+    "mr-in": "mr",
+}
+
+SARVAM_LANGUAGE_CODES = {
+    "en": "en-IN",
+    "hi": "hi-IN",
+    "mr": "mr-IN",
+}
+
+
 def normalize_language_code(lang: str) -> str:
-    """Helper to ensure language code is formatted correctly."""
-    if not lang:
-        return "en-IN"
-    lang = lang.lower().strip()
-    if lang.startswith("hi"):
-        return "hi-IN"
-    return "en-IN"
+    """Normalize DB/UI/provider language values to canonical internal codes."""
+    normalized = str(lang or "").strip().lower()
+    return LANGUAGE_ALIASES.get(normalized, "en")
+
+
+def normalize_language_list(languages: list[str] | None) -> list[str]:
+    normalized = [normalize_language_code(language) for language in (languages or [])]
+    deduped: list[str] = []
+    for language in normalized:
+        if language not in deduped:
+            deduped.append(language)
+    return deduped
+
+
+def resolve_sarvam_language_code(lang: str) -> str:
+    return SARVAM_LANGUAGE_CODES.get(normalize_language_code(lang), "en-IN")
 
 def _chunk_to_bytes(chunk) -> bytes:
     """Helper to convert the generator yield into raw bytes safely."""
@@ -59,7 +87,7 @@ class VoiceProvider:
         if not sarvam_async_client:
             raise ValueError("[Voice] AsyncSarvamAI client not initialized")
             
-        lang_code = "hi-IN" if language.startswith("hi") else "en-IN"
+        lang_code = resolve_sarvam_language_code(language)
         transcript = ""
         
         try:
@@ -108,7 +136,7 @@ class VoiceProvider:
         if not SARVAM_API_KEY:
             raise ValueError("[Voice] SARVAM_API_KEY not found in environment")
             
-        lang_code = "hi-IN" if language.startswith("hi") else "en-IN"
+        lang_code = resolve_sarvam_language_code(language)
         url = "https://api.sarvam.ai/text-to-speech"
         
         # Phase 2 Upgrade: Use Bulbul v3 as suggested

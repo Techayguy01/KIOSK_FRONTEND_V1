@@ -6,7 +6,7 @@ import { SpeechOutputController } from "../voice/SpeechOutputController";
 import { TTSController } from "../voice/TTSController";
 import { StateMachine } from "../state/uiState.machine";
 import { UIState } from "@contracts/backend.contract";
-import { buildTenantApiUrl, getTenantHeaders, getTenant, getTenantSlug } from "../services/tenantContext";
+import { buildTenantApiUrl, getCurrentTenantLanguage, getTenantHeaders, getTenant, getTenantSlug } from "../services/tenantContext";
 import { normalizeBackendStateFromResponse, normalizeStateForBackendChat } from "../services/uiStateInterop";
 import { buildCacheKey, getCachedFaqAnswer, putCachedFaqAnswer } from "../services/faqCache.service";
 
@@ -377,7 +377,7 @@ class AgentAdapterService {
             if (VoiceRuntime.getMode() !== "idle") return;
             if (TTSController.isSpeaking()) return;
 
-            VoiceRuntime.startListening(this.language).catch((error) => {
+            VoiceRuntime.startListening(getCurrentTenantLanguage(this.language)).catch((error) => {
                 console.warn("[AgentAdapter] Failed to restart listening:", error);
             });
         }, delayMs);
@@ -1142,6 +1142,7 @@ class AgentAdapterService {
                 : buildTenantApiUrl("chat");
             const backendCurrentState = normalizeStateForBackendChat(this.state);
             const tenantSlug = getTenantSlug();
+            const activeLanguage = getCurrentTenantLanguage(this.language);
             const cacheKey = buildCacheKey(tenantSlug, transcript);
             const faqCacheEligible = shouldUseFaqCache(transcript, this.state);
             console.log(`[AgentAdapter][FAQCache] eligibility=${faqCacheEligible} key=${cacheKey}`);
@@ -1164,6 +1165,7 @@ class AgentAdapterService {
                         isComplete: false,
                         answerSource: "FAQ_CACHE",
                         faqId: cachedFaq.faqId ?? null,
+                        language: activeLanguage,
                     };
                     console.log(`[AgentAdapter][FAQCache] HIT key=${cacheKey} faqId=${decision.faqId || "none"}`);
                 } else {
@@ -1182,6 +1184,7 @@ class AgentAdapterService {
                         currentState: backendCurrentState,
                         sessionId: sessionId || this.getSessionId(),
                         tenantSlug,
+                        language: activeLanguage,
                         activeSlot: this.slotContext.activeSlot,
                         expectedType: this.slotContext.expectedType,
                         lastSystemPrompt: this.slotContext.promptAsked || undefined,
@@ -1791,7 +1794,7 @@ class AgentAdapterService {
     public speak(text: string): void {
         this.maybeTrackSlotFromPrompt(text);
         this.pendingAiSpeechText = text;
-        void VoiceRuntime.speak(text, this.language);
+        void VoiceRuntime.speak(text, getCurrentTenantLanguage(this.language));
     }
 
     private withTenantName(text: string): string {

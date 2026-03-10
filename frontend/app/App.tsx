@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { UIContext } from '../state/uiContext';
 // Agent Authority
@@ -79,6 +79,29 @@ const TenantKioskApp: React.FC = () => {
   const [tenant, setTenant] = useState<TenantPayload | null>(null);
   const [journeyMode, setJourneyMode] = useState<JourneyMode>(null);
   const previousStateRef = useRef<UiState>('IDLE');
+
+  const refreshTenant = useCallback(async () => {
+    const safeTenantSlug = tenantSlug || '';
+
+    try {
+      const response = await fetch(buildTenantApiUrl("tenant"), { headers: getTenantHeaders() });
+
+      if (!response.ok) {
+        throw new Error(`Tenant resolve failed (${response.status})`);
+      }
+
+      const payload = await response.json();
+      const resolvedTenant = (payload?.tenant || null) as TenantPayload | null;
+
+      setTenant(resolvedTenant);
+      setTenantContext(safeTenantSlug, resolvedTenant);
+    } catch (e) {
+      console.error('[App] Failed to resolve tenant', e);
+      setTenant(null);
+      setTenantContext(safeTenantSlug, null);
+      throw e;
+    }
+  }, [tenantSlug]);
 
   // 1. CONNECT TO AGENT BRAIN
   useEffect(() => {
@@ -174,37 +197,25 @@ const TenantKioskApp: React.FC = () => {
 
   // Resolve tenant object once slug is known and expose it globally
   useEffect(() => {
-    const safeTenantSlug = tenantSlug || '';
     let alive = true;
+    const safeTenantSlug = tenantSlug || '';
 
     setTenantContext(safeTenantSlug, null);
+    setTenant(null);
 
     (async () => {
       try {
-        const response = await fetch(buildTenantApiUrl("tenant"), { headers: getTenantHeaders() });
-
-        if (!response.ok) {
-          throw new Error(`Tenant resolve failed (${response.status})`);
-        }
-
-        const payload = await response.json();
-        const resolvedTenant = (payload?.tenant || null) as TenantPayload | null;
+        await refreshTenant();
         if (!alive) return;
-
-        setTenant(resolvedTenant);
-        setTenantContext(safeTenantSlug, resolvedTenant);
       } catch (e) {
-        console.error('[App] Failed to resolve tenant', e);
         if (!alive) return;
-        setTenant(null);
-        setTenantContext(safeTenantSlug, null);
       }
     })();
 
     return () => {
       alive = false;
     };
-  }, [tenantSlug]);
+  }, [refreshTenant]);
 
   const renderPage = () => {
     switch (effectiveState) {
@@ -252,7 +263,7 @@ const TenantKioskApp: React.FC = () => {
   };
 
   return (
-    <UIContext.Provider value={{ state, data, emit, loading, transcript: '', tenantSlug: tenantSlug || '', tenant }}>
+    <UIContext.Provider value={{ state, data, emit, loading, transcript: '', tenantSlug: tenantSlug || '', tenant, refreshTenant }}>
       <div className="antialiased w-full h-full relative">
 
         {/* Global Navigation Controls (Visibility controlled implicitly by page rendering, backing is Agent driven) */}

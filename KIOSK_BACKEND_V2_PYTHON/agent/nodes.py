@@ -25,6 +25,16 @@ LANGUAGE_DISPLAY_NAMES = {
 def _response_language_instruction(language: str) -> str:
     code = (language or "en").strip().lower()
     language_name = LANGUAGE_DISPLAY_NAMES.get(code, code)
+    if code == "hi":
+        return (
+            "Respond in conversational Indian Hindi with natural hotel terms. "
+            "Light Hinglish is allowed. Avoid overly formal or literary Hindi."
+        )
+    if code == "mr":
+        return (
+            "Respond in conversational Marathi with natural hotel vocabulary. "
+            "Keep the tone local, clear, and not overly formal."
+        )
     return f"Respond in {language_name} (language code: {code})."
 
 

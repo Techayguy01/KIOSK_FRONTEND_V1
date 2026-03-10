@@ -10,7 +10,7 @@
  */
 
 import { AgentAdapter } from "../agent/adapter";
-import { buildTenantApiUrl, getTenantHeaders, getTenantSlug } from "./tenantContext";
+import { buildTenantApiUrl, getCurrentTenantLanguage, getTenantHeaders, getTenantSlug } from "./tenantContext";
 import type { BookingChatResponseDTO, ChatRequestDTO, ChatResponseDTO } from "@contracts/api.contract";
 import { normalizeBackendStateFromResponse, normalizeStateForBackendChat } from "./uiStateInterop";
 import { buildCacheKey, getCachedFaqAnswer, putCachedFaqAnswer } from "./faqCache.service";
@@ -138,6 +138,7 @@ export async function sendToBrain(
     const url = buildTenantApiUrl("chat");
     const backendCurrentState = normalizeStateForBackendChat(currentState);
     const tenantSlug = getTenantSlug();
+    const activeLanguage = getCurrentTenantLanguage();
     const cacheKey = buildCacheKey(tenantSlug, transcript);
 
     console.log(`[BrainService] Sending to V2 Brain: "${transcript}" (State: ${backendCurrentState})`);
@@ -154,6 +155,7 @@ export async function sendToBrain(
                 answerSource: "FAQ_CACHE",
                 faqId: cachedFaq.faqId ?? null,
                 sessionId,
+                language: activeLanguage,
             };
             console.log(`[BrainService][FAQCache] HIT key=${cacheKey} faqId=${cachedResponse.faqId || "none"}`);
             notifyListeners(cachedResponse);
@@ -171,6 +173,7 @@ export async function sendToBrain(
         current_ui_screen: backendCurrentState,
         tenant_id: "default",
         tenant_slug: tenantSlug,
+        language: activeLanguage,
     };
 
     // Pass along extra context if available (V2 can use this for memory)

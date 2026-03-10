@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, Mic, MicOff, PauseCircle, Volume2 } from "lucide-react";
 import { UiState } from "../agent";
+import { getCurrentTenantLanguage } from "../services/tenantContext";
 import { VoiceRuntime, VoiceMode } from "../voice/VoiceRuntime";
 import { VoiceSessionErrorReason } from "../voice/voice.types";
 import { TTSController } from "../voice/TTSController";
@@ -170,7 +171,7 @@ export const VoiceStatusIndicator: React.FC<VoiceStatusIndicatorProps> = ({ curr
         }
         if (mode === "idle") {
             setUnavailableReason(null);
-            void VoiceRuntime.startSession();
+            void VoiceRuntime.startSession(getCurrentTenantLanguage());
         }
     };
 

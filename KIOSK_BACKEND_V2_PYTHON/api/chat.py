@@ -13,13 +13,14 @@ from uuid import UUID
 from urllib.parse import urlparse
 from agent.graph import kiosk_agent
 from agent.state import KioskState, ConversationTurn, RoomInventoryItem, UIScreen
-from core.voice import normalize_language_code
+from core.voice import normalize_language_code, normalize_language_list
 from core.database import get_session
 from core import database as database_runtime
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel import select
 from models.tenant import Tenant
 from models.room import RoomType
+from models.tenant_config import TenantConfig
 from services.faq_service import (
     FAQ_MATCH_THRESHOLD,
     find_best_faq_match,
@@ -215,6 +216,35 @@ async def _load_room_inventory(session: AsyncSession, resolved_tenant_id: Option
     ]
 
 
+async def _load_tenant_config(session: AsyncSession, resolved_tenant_id: Optional[str]) -> Optional[TenantConfig]:
+    tenant_uuid = _parse_uuid(resolved_tenant_id)
+    if not tenant_uuid:
+        return None
+
+    config_result = await session.exec(
+        select(TenantConfig).where(TenantConfig.tenant_id == tenant_uuid)
+    )
+    return config_result.first()
+
+
+def _resolve_effective_language(requested_language: Optional[str], tenant_config: Optional[TenantConfig]) -> str:
+    requested = normalize_language_code(requested_language or "")
+    if not tenant_config:
+        return requested
+
+    allowed_languages = normalize_language_list(tenant_config.available_lang or [])
+    default_language = normalize_language_code(tenant_config.default_lang or "en")
+
+    if allowed_languages:
+        if requested in allowed_languages:
+            return requested
+        if default_language in allowed_languages:
+            return default_language
+        return allowed_languages[0]
+
+    return default_language
+
+
 class ChatRequest(BaseModel):
     """
     Accepts the frontend adapter's camelCase payload via aliases.
@@ -282,6 +312,8 @@ async def chat(
     try:
         requested_tenant_slug = req.tenant_slug or x_tenant_slug
         resolved_tenant_id = await _resolve_tenant_id(session, req.tenant_id, requested_tenant_slug)
+        tenant_config = await _load_tenant_config(session, resolved_tenant_id)
+        effective_language = _resolve_effective_language(req.language, tenant_config)
         room_inventory = await _load_room_inventory(session, resolved_tenant_id)
         normalized_ui_screen = _normalize_ui_screen(req.current_ui_screen)
         print(
@@ -289,6 +321,7 @@ async def chat(
             f"session={req.session_id} "
             f"screen={normalized_ui_screen} "
             f"tenant={resolved_tenant_id or req.tenant_id} "
+            f"language={effective_language} "
             f"rooms={len(room_inventory)} "
             f"db={_database_target_hint()}"
         )
@@ -299,7 +332,7 @@ async def chat(
                 session_id=req.session_id,
                 tenant_id=resolved_tenant_id or req.tenant_id,
                 current_ui_screen=normalized_ui_screen,
-                language=normalize_language_code(req.language),
+                language=effective_language,
                 tenant_room_inventory=room_inventory,
             )
 
@@ -308,7 +341,7 @@ async def chat(
         # Update state with current request data
         state.latest_transcript = req.transcript
         state.current_ui_screen = normalized_ui_screen
-        state.language = normalize_language_code(req.language)
+        state.language = effective_language
         state.tenant_id = resolved_tenant_id or state.tenant_id
         state.tenant_room_inventory = [RoomInventoryItem(**room) for room in room_inventory]
 
