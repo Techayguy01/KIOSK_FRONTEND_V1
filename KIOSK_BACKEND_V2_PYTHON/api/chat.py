@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, get_args
 from uuid import UUID
 from urllib.parse import urlparse
+import re
 from agent.graph import kiosk_agent
 from agent.state import KioskState, ConversationTurn, RoomInventoryItem, UIScreen
 from core.voice import normalize_language_code
@@ -20,6 +21,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel import select
 from models.tenant import Tenant
 from models.room import RoomType
+from services.faq_service import find_best_faq_match, FAQ_MATCH_THRESHOLD
 
 router = APIRouter()
 
@@ -52,6 +54,31 @@ UI_STATE_ALIASES = {
     "BOOKINGSUMMARY": "BOOKING_SUMMARY",
     "KEY-DISPENSING": "KEY_DISPENSING",
 }
+
+FAQ_BLOCKED_SCREENS = {
+    "SCAN_ID",
+    "ID_VERIFY",
+    "CHECK_IN_SUMMARY",
+    "ROOM_SELECT",
+    "BOOKING_COLLECT",
+    "BOOKING_SUMMARY",
+    "PAYMENT",
+    "KEY_DISPENSING",
+    "COMPLETE",
+}
+
+TRANSACTIONAL_INTENT_PATTERN = re.compile(
+    r"\b("
+    r"check[\s-]?in|check[\s-]?out|"
+    r"book|booking|reserve|reservation|"
+    r"confirm|cancel|modify|change|"
+    r"pay|payment|card|"
+    r"scan|id|passport|"
+    r"guest[s]?|adult[s]?|child(?:ren)?|"
+    r"date[s]?|night[s]?"
+    r")\b",
+    flags=re.IGNORECASE,
+)
 
 
 def _to_contract_slot_name(slot_name: Optional[str]) -> Optional[str]:
@@ -128,6 +155,20 @@ def _normalize_ui_screen(raw_screen: Optional[str]) -> UIScreen:
 
     print(f"[ChatAPI] Unknown current_ui_screen='{raw_screen}', defaulting to WELCOME")
     return "WELCOME"
+
+
+def _should_attempt_faq(transcript: str, normalized_ui_screen: UIScreen) -> bool:
+    if normalized_ui_screen in FAQ_BLOCKED_SCREENS:
+        return False
+
+    cleaned = (transcript or "").strip()
+    if not cleaned:
+        return False
+
+    if TRANSACTIONAL_INTENT_PATTERN.search(cleaned):
+        return False
+
+    return True
 
 
 async def _resolve_tenant_id(
@@ -212,6 +253,8 @@ class ChatResponse(BaseModel):
     isComplete: bool
     persistedBookingId: Optional[str] = None
     error: Optional[str] = None
+    answerSource: str = "LLM"
+    faqId: Optional[str] = None
     sessionId: str
     language: str
 
@@ -267,6 +310,61 @@ async def chat(
         state.language = normalize_language_code(req.language)
         state.tenant_id = resolved_tenant_id or state.tenant_id
         state.tenant_room_inventory = [RoomInventoryItem(**room) for room in room_inventory]
+
+        # Deterministic FAQ retrieval layer (tenant-scoped), only for non-transactional turns.
+        if _should_attempt_faq(req.transcript, normalized_ui_screen):
+            print(
+                "[ChatAPI][FAQ] attempt "
+                f"session={req.session_id} "
+                f"tenant={resolved_tenant_id or req.tenant_id}"
+            )
+            faq_match = await find_best_faq_match(
+                session=session,
+                tenant_id=resolved_tenant_id or req.tenant_id,
+                user_query=req.transcript,
+            )
+            if faq_match and faq_match.confidence >= FAQ_MATCH_THRESHOLD:
+                print(
+                    "[ChatAPI][FAQ] matched "
+                    f"session={req.session_id} "
+                    f"faq_id={faq_match.faq_id} "
+                    f"confidence={faq_match.confidence:.3f}"
+                )
+                faq_response = faq_match.answer.strip() or "Please ask a different question."
+                state.history = state.history + [
+                    ConversationTurn(role="user", content=state.latest_transcript),
+                    ConversationTurn(role="assistant", content=faq_response),
+                ]
+                state.speech_response = faq_response
+                state.resolved_intent = "GENERAL_QUERY"
+                state.confidence = faq_match.confidence
+                state.next_ui_screen = normalized_ui_screen
+                _sessions[req.session_id] = state
+
+                return ChatResponse(
+                    speech=faq_response,
+                    intent="GENERAL_QUERY",
+                    confidence=faq_match.confidence,
+                    nextUiScreen=normalized_ui_screen,
+                    accumulatedSlots=state.booking_slots.model_dump(by_alias=True),
+                    extractedSlots={},
+                    missingSlots=[],
+                    nextSlotToAsk=None,
+                    selectedRoom=state.selected_room.model_dump(by_alias=True) if state.selected_room else None,
+                    isComplete=state.booking_slots.is_complete(),
+                    persistedBookingId=_persisted_booking_by_session.get(req.session_id),
+                    error=None,
+                    answerSource="FAQ_DB",
+                    faqId=faq_match.faq_id,
+                    sessionId=req.session_id,
+                    language=state.language,
+                )
+
+            print(
+                "[ChatAPI][FAQ] fallback "
+                f"session={req.session_id} "
+                f"reason={'no_match' if not faq_match else f'low_confidence:{faq_match.confidence:.3f}'}"
+            )
 
         # Run LangGraph agent
         # ainvoke() returns a dict of the final state fields
@@ -396,6 +494,8 @@ async def chat(
             isComplete=is_complete,
             persistedBookingId=persisted_booking_id,
             error=persistence_error,
+            answerSource="LLM",
+            faqId=None,
             sessionId=req.session_id,
             language=updated_state.language,
         )

@@ -105,6 +105,8 @@ export interface ChatResponseDTO {
   intent: string;
   confidence: number;
   nextUiScreen?: UIState;
+  answerSource?: "FAQ_DB" | "FAQ_CACHE" | "LLM";
+  faqId?: string | null;
   sessionId?: string;
   language?: string;
 }
