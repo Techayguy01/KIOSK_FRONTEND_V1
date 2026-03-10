@@ -388,6 +388,7 @@ async def route_intent(state: KioskState) -> dict:
 
 GENERAL_CHAT_SYSTEM_PROMPT = """
 You are "Siya", a warm and professional AI concierge at a luxury hotel kiosk.
+Siya is a female assistant. If you refer to yourself, do so naturally as a woman.
 Your role is to assist guests with information about the hotel.
 
 You can:
@@ -463,7 +464,7 @@ def build_booking_prompt(state: KioskState) -> str:
     today_iso = date.today().isoformat()
 
     return f"""
-You are "Siya", a hotel booking assistant. You are collecting booking information from a guest.
+You are "Siya", a female hotel booking assistant. You are collecting booking information from a guest.
 
 Already collected:
 {json.dumps(filled, indent=2) if filled else "Nothing yet."}
@@ -508,6 +509,21 @@ Rules:
 - is_complete is true ONLY when all required slots (room_type, adults, check_in_date, check_out_date, guest_name) are available (combining already collected + newly extracted).
 - next_slot_to_ask is null if is_complete is true.
 """
+
+
+def _is_initial_booking_turn(state: KioskState) -> bool:
+    return state.resolved_intent == "BOOK_ROOM" and state.current_ui_screen in {
+        "WELCOME",
+        "AI_CHAT",
+        "MANUAL_MENU",
+    }
+
+
+def _transcript_explicitly_identifies_room(
+    transcript: str,
+    room_inventory: list[RoomInventoryItem],
+) -> Optional[RoomInventoryItem]:
+    return _find_room_from_inventory(room_inventory, transcript)
 
 
 async def booking_logic(state: KioskState) -> dict:
@@ -565,15 +581,17 @@ async def booking_logic(state: KioskState) -> dict:
         result = json.loads(raw.strip())
     except Exception:
         print("[BookingLogic] Failed to parse JSON response.")
+        fallback_screen = "ROOM_SELECT" if _is_initial_booking_turn(state) else "BOOKING_COLLECT"
         return {
             "speech_response": "I'm sorry, I did not quite catch that. Could you repeat?",
-            "next_ui_screen": "BOOKING_COLLECT",
+            "next_ui_screen": fallback_screen,
         }
 
     extracted = result.get("extracted_slots", {})
     speech = result.get("speech", "Let me note that down.")
     room_inventory = state.tenant_room_inventory or []
     selected_room = state.selected_room
+    transcript_room_match = _transcript_explicitly_identifies_room(state.latest_transcript, room_inventory)
 
     # VALIDATION LAYER: tenant-aware room check using DB-backed room inventory.
     if extracted.get("room_type"):
@@ -608,6 +626,20 @@ async def booking_logic(state: KioskState) -> dict:
     is_complete = result.get("is_complete", False) or updated_slots.is_complete()
     next_slot = _normalize_slot_name(result.get("next_slot_to_ask"))
 
+    # First booking turn must stay on ROOM_SELECT unless the guest actually named a valid room.
+    if _is_initial_booking_turn(state) and not transcript_room_match:
+        if updated_slots.room_type is not None:
+            print(
+                "[BookingLogic] Guard forcing ROOM_SELECT on initial booking turn "
+                f"transcript='{state.latest_transcript}' extracted_room='{updated_slots.room_type}'"
+            )
+        updated_slots = updated_slots.model_copy(update={"room_type": None, "total_price": None})
+        selected_room = None
+        is_complete = False
+        next_slot = "room_type"
+        if not str(speech or "").strip():
+            speech = _fallback_booking_prompt("room_type", None)
+
     missing_required = updated_slots.missing_required_slots()
     if not is_complete:
         if not next_slot or next_slot not in missing_required:
@@ -623,7 +655,14 @@ async def booking_logic(state: KioskState) -> dict:
     # Determine next screen based on what's still missing
     next_screen = _determine_next_screen(updated_slots, is_complete)
 
-    print(f"[BookingLogic] Slots: {updated_slots.model_dump()} | Complete: {is_complete} | Screen: {next_screen}")
+    print(
+        "[BookingLogic] "
+        f"transcript_room_match={transcript_room_match.name if transcript_room_match else 'none'} "
+        f"extracted_room={extracted.get('room_type')} "
+        f"selected_room={selected_room.name if selected_room else 'none'} "
+        f"slots={updated_slots.model_dump()} "
+        f"complete={is_complete} screen={next_screen}"
+    )
 
     return {
         "speech_response": speech,

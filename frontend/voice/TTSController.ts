@@ -15,6 +15,14 @@ import { PremiumAudioPlayer } from "./premiumPlayer";
 
 const VOICE_QUALITY_HINTS = ["google", "microsoft", "samantha", "hindi", "india"];
 
+function normalizeTtsLanguage(language?: string): string {
+    const normalized = String(language || "").trim().toLowerCase();
+    if (normalized.startsWith("hi") || normalized === "hindi") return "hi-IN";
+    if (normalized.startsWith("mr") || normalized === "marathi") return "mr-IN";
+    if (normalized.startsWith("en") || normalized === "english") return "en-IN";
+    return "en-IN";
+}
+
 type TTSQueueItem = {
     text: string;
     resolve: () => void;
@@ -87,7 +95,7 @@ class TTSControllerService {
         // Cancel any existing speech immediately
         this.hardStop("state_change");
 
-        const currentLang = language || this.selectedVoice?.lang.split("-")[0] || "en";
+        const currentLang = normalizeTtsLanguage(language || this.selectedVoice?.lang || "en-IN");
         const normalizedText = text.trim();
         this.isCancelling = false;
         this.activeText = normalizedText;
@@ -113,15 +121,22 @@ class TTSControllerService {
                 return;
             }
 
-            console.warn("[TTSController] Premium voice failed. Text shown on screen instead:", err);
-            this.state = "IDLE";
-            this.emit({
-                type: "TTS_ERROR",
-                error: err instanceof Error ? err.message : "premium_tts_failed",
-                text: this.activeText || normalizedText,
-                fallbackToText: true,
-            });
-            this.activeText = null;
+            console.warn("[TTSController] Premium voice failed. Trying browser fallback:", err);
+            try {
+                await this.speakWithBrowserFallback(normalizedText, currentLang);
+                this.activeText = null;
+                return;
+            } catch (fallbackError) {
+                console.warn("[TTSController] Browser TTS fallback failed. Text shown on screen instead:", fallbackError);
+                this.state = "IDLE";
+                this.emit({
+                    type: "TTS_ERROR",
+                    error: fallbackError instanceof Error ? fallbackError.message : "browser_tts_fallback_failed",
+                    text: this.activeText || normalizedText,
+                    fallbackToText: true,
+                });
+                this.activeText = null;
+            }
         }
     }
 
@@ -197,6 +212,72 @@ class TTSControllerService {
         this.hardStop();
         this.listeners = [];
         console.log("[TTSController] Destroyed (HMR cleanup)");
+    }
+
+    private async speakWithBrowserFallback(text: string, language: string): Promise<void> {
+        const synth = window.speechSynthesis;
+        const targetLang = normalizeTtsLanguage(language);
+        const voice = this.findBestVoiceForLanguage(targetLang);
+
+        return new Promise((resolve, reject) => {
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = targetLang;
+            if (voice) {
+                utterance.voice = voice;
+            }
+            utterance.rate = 1.0;
+            utterance.pitch = 1.0;
+            utterance.volume = 1.0;
+            this.currentUtterance = utterance;
+
+            utterance.onstart = () => {
+                this.state = "SPEAKING";
+                this.emit({ type: "TTS_STARTED", text });
+            };
+
+            utterance.onend = () => {
+                this.state = "IDLE";
+                this.currentUtterance = null;
+                this.emit({ type: "TTS_ENDED", text });
+                resolve();
+            };
+
+            utterance.onerror = (event) => {
+                const errorCode = String(event.error || "browser_tts_failed");
+                if (errorCode === "interrupted" || errorCode === "canceled") {
+                    this.state = "IDLE";
+                    this.currentUtterance = null;
+                    resolve();
+                    return;
+                }
+                this.state = "IDLE";
+                this.currentUtterance = null;
+                reject(new Error(errorCode));
+            };
+
+            synth.speak(utterance);
+        });
+    }
+
+    private findBestVoiceForLanguage(targetLang: string): SpeechSynthesisVoice | null {
+        const voices = window.speechSynthesis.getVoices();
+        if (voices.length === 0) {
+            return this.selectedVoice;
+        }
+
+        const preferredByExact = voices.find((voice) => voice.lang.toLowerCase() === targetLang.toLowerCase());
+        if (preferredByExact) return preferredByExact;
+
+        const prefix = targetLang.split("-")[0].toLowerCase();
+        const preferredByPrefix = voices.find((voice) => voice.lang.toLowerCase().startsWith(prefix));
+        if (preferredByPrefix) return preferredByPrefix;
+
+        const qualityVoice = voices.find((voice) => {
+            const lowerName = voice.name.toLowerCase();
+            return VOICE_QUALITY_HINTS.some((hint) => lowerName.includes(hint));
+        });
+
+        return qualityVoice || this.selectedVoice || voices[0];
     }
 }
 

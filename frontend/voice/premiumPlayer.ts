@@ -11,6 +11,9 @@ class PremiumAudioPlayerService {
     private currentAudio: HTMLAudioElement | null = null;
     private onEndCallback: (() => void) | null = null;
     private activeReject: ((error: Error) => void) | null = null;
+    private activeController: AbortController | null = null;
+    private activeTimeout: ReturnType<typeof setTimeout> | null = null;
+    private stopRequested = false;
 
     /**
      * Fetch and play TTS audio from the backend.
@@ -22,11 +25,12 @@ class PremiumAudioPlayerService {
     ): Promise<void> {
         this.stop();
 
-        // Timeout: Don't let the user wait in silence forever.
-        // 12s allows Sarvam to synthesize longer sentences without aborting.
-        const PREMIUM_TTS_TIMEOUT_MS = 12000;
+        // Timeout: short kiosk prompts should fail fast and fall back instead of creating long silence.
+        const PREMIUM_TTS_TIMEOUT_MS = 6000;
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), PREMIUM_TTS_TIMEOUT_MS);
+        this.activeController = controller;
+        this.stopRequested = false;
+        this.activeTimeout = setTimeout(() => controller.abort(), PREMIUM_TTS_TIMEOUT_MS);
 
         try {
             const url = buildTenantApiUrl("voice/tts");
@@ -40,7 +44,7 @@ class PremiumAudioPlayerService {
                 signal: controller.signal,
             });
 
-            clearTimeout(timeout);
+            this.clearPendingRequest();
 
             if (!response.ok) {
                 throw new Error(`TTS API failed: ${response.status}`);
@@ -80,8 +84,12 @@ class PremiumAudioPlayerService {
                 });
             });
         } catch (error) {
-            clearTimeout(timeout);
+            const stopped = this.stopRequested;
+            this.clearPendingRequest();
             const isTimeout = error instanceof DOMException && error.name === 'AbortError';
+            if (stopped) {
+                throw new Error("playback_stopped");
+            }
             console.error(`[PremiumPlayer] ${isTimeout ? 'Timeout' : 'Error'}:`, error);
             throw error;
         }
@@ -91,6 +99,12 @@ class PremiumAudioPlayerService {
      * Stop the current audio playback instantly.
      */
     public stop(): void {
+        this.stopRequested = true;
+        if (this.activeController) {
+            this.activeController.abort();
+        }
+        this.clearPendingRequest();
+
         if (this.currentAudio) {
             this.currentAudio.pause();
             this.cleanup();
@@ -115,6 +129,14 @@ class PremiumAudioPlayerService {
             URL.revokeObjectURL(this.currentAudio.src);
             this.currentAudio = null;
         }
+    }
+
+    private clearPendingRequest(): void {
+        if (this.activeTimeout) {
+            clearTimeout(this.activeTimeout);
+            this.activeTimeout = null;
+        }
+        this.activeController = null;
     }
 }
 

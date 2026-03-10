@@ -2,6 +2,7 @@ import { VoiceEvent } from "./voice.types";
 import { WebSpeechClient } from "./webSpeechClient";
 import { normalizeTranscript } from "./normalizeTranscript";
 import { TTSController } from "./TTSController";
+import { getCurrentTenantLanguage } from "../services/tenantContext";
 
 /**
  * Voice Runtime (Phase 10 - Production Hardening)
@@ -126,6 +127,11 @@ class VoiceRuntimeService {
             if (this.mode === "listening" && transcript) {
                 this.hasReceivedAnyTranscript = true;
                 this.clearNoSpeechTimer();
+                // Long utterances may stream partials for several seconds before a final commit.
+                // Refresh the no-result window on every partial so booking details spoken in one go
+                // do not get cut off mid-sentence.
+                this.clearNoResultTimer();
+                this.startNoResultTimer();
                 this.resetWatchdog();
                 this.transcriptBuffer.push(transcript);
                 this.emit({ type: "VOICE_TRANSCRIPT_PARTIAL", transcript });
@@ -142,6 +148,8 @@ class VoiceRuntimeService {
             this.resetWatchdog();
 
             const normalized = normalizeTranscript(accumulatedTranscript);
+            console.log(`[VoiceRuntime] Final raw: "${accumulatedTranscript}"`);
+            console.log(`[VoiceRuntime] Final normalized: "${normalized}"`);
             this.transcriptBuffer.push(normalized);
 
             // Log STT latency (dev only)
@@ -169,7 +177,7 @@ class VoiceRuntimeService {
             this.consecutiveSilentTurns = 0;
             this.metrics.turnCount++;
 
-            console.log(`[VoiceRuntime] Final: "${normalized}"`);
+            console.log(`[VoiceRuntime] Final accepted: "${normalized}"`);
             this.emit({ type: "VOICE_TRANSCRIPT_READY", transcript: normalized });
         };
 
@@ -275,7 +283,18 @@ class VoiceRuntimeService {
             this.hardStopAll();
         } else if (this.consecutiveSilentTurns >= CONFIG.WARN_SILENT_TURNS) {
             // Speak warning
-            this.speak("I didn't catch that. Please speak or tap the screen.");
+            this.speak(this.getSilentTurnPrompt(), getCurrentTenantLanguage());
+        }
+    }
+
+    private getSilentTurnPrompt(): string {
+        switch (getCurrentTenantLanguage()) {
+            case "hi":
+                return "मैं समझ नहीं पाई। कृपया फिर से बोलिए या स्क्रीन पर टैप कीजिए।";
+            case "mr":
+                return "मला नीट समजले नाही. कृपया पुन्हा बोला किंवा स्क्रीनवर टॅप करा.";
+            default:
+                return "I didn't catch that. Please speak or tap the screen.";
         }
     }
 

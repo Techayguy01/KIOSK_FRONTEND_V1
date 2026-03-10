@@ -383,37 +383,76 @@ class AgentAdapterService {
         }, delayMs);
     }
 
+    private getPromptLanguage(): string {
+        return getCurrentTenantLanguage(this.language);
+    }
+
+    private pickLocalizedText(options: { en: string; hi: string; mr: string }): string {
+        switch (this.getPromptLanguage()) {
+            case "hi":
+                return options.hi;
+            case "mr":
+                return options.mr;
+            default:
+                return options.en;
+        }
+    }
+
     private getSilenceReengagementPlan(): { delayMs: number; prompt: string } | null {
         switch (this.state) {
             case "WELCOME":
                 return {
                     delayMs: 2200,
-                    prompt: "I can help you check in, book a room, or call for help.",
+                    prompt: this.pickLocalizedText({
+                        en: "I can help you check in, book a room, or call for help.",
+                        hi: "मैं check in, room booking, या मदद में आपकी सहायता कर सकती हूँ।",
+                        mr: "मी check in, room booking किंवा मदत यासाठी तुमची मदत करू शकते.",
+                    }),
                 };
             case "AI_CHAT":
                 return {
                     delayMs: 2400,
-                    prompt: "I'm listening. You can say check in, book room, or help.",
+                    prompt: this.pickLocalizedText({
+                        en: "I'm listening. You can say check in, book room, or help.",
+                        hi: "मैं सुन रही हूँ। आप check in, room book, या help कह सकते हैं।",
+                        mr: "मी ऐकत आहे. तुम्ही check in, room book किंवा help म्हणू शकता.",
+                    }),
                 };
             case "MANUAL_MENU":
                 return {
                     delayMs: 3200,
-                    prompt: "You can continue by voice or tap an option on screen.",
+                    prompt: this.pickLocalizedText({
+                        en: "You can continue by voice or tap an option on screen.",
+                        hi: "आप voice से जारी रख सकते हैं या screen पर कोई option चुन सकते हैं।",
+                        mr: "तुम्ही voice ने पुढे जाऊ शकता किंवा screen वरचा option निवडू शकता.",
+                    }),
                 };
             case "ROOM_SELECT":
                 return {
                     delayMs: 6500,
-                    prompt: "Take your time. Say the room name when you're ready.",
+                    prompt: this.pickLocalizedText({
+                        en: "Take your time. Say the room name when you're ready.",
+                        hi: "आराम से चुनिए। तैयार होने पर room का नाम बोलिए।",
+                        mr: "निवांत निवडा. तयार झाल्यावर room चे नाव सांगा.",
+                    }),
                 };
             case "BOOKING_COLLECT":
                 return {
                     delayMs: 8000,
-                    prompt: "When you're ready, tell me the next booking detail.",
+                    prompt: this.pickLocalizedText({
+                        en: "When you're ready, tell me the next booking detail.",
+                        hi: "जब आप तैयार हों, booking की अगली detail बताइए।",
+                        mr: "तयार झाल्यावर booking ची पुढची detail सांगा.",
+                    }),
                 };
             case "BOOKING_SUMMARY":
                 return {
                     delayMs: 9000,
-                    prompt: "Review the summary and say confirm booking when ready.",
+                    prompt: this.pickLocalizedText({
+                        en: "Review the summary and say confirm booking when ready.",
+                        hi: "Summary देख लीजिए और तैयार होने पर confirm booking कहिए।",
+                        mr: "Summary पाहा आणि तयार झाल्यावर confirm booking म्हणा.",
+                    }),
                 };
             default:
                 return null;
@@ -452,6 +491,9 @@ class AgentAdapterService {
 
             this.reengageCooldownUntil = Date.now() + this.SILENCE_REENGAGE_COOLDOWN_MS;
             console.log(`[AgentAdapter] Silence re-engagement prompt (${sourceReason}) for state=${this.state}`);
+            if (this.state === "ROOM_SELECT") {
+                this.setActiveSlot("roomType", "string", plan.prompt);
+            }
             this.speak(plan.prompt);
         }, finalDelay);
     }
@@ -747,13 +789,25 @@ class AgentAdapterService {
             .filter(Boolean)
             .slice(0, 4);
         if (names.length === 0) {
-            return "Please tell me which room you would like to book.";
+            return this.pickLocalizedText({
+                en: "Please tell me which room you would like to book.",
+                hi: "कृपया बताइए, आप कौन सा room book करना चाहेंगे?",
+                mr: "कृपया सांगा, तुम्हाला कोणता room book करायचा आहे?",
+            });
         }
         if (names.length === 1) {
-            return `I found ${names[0]}. Would you like to book it?`;
+            return this.pickLocalizedText({
+                en: `I found ${names[0]}. Would you like to book it?`,
+                hi: `मेरे पास ${names[0]} उपलब्ध है। क्या आप इसे book करना चाहेंगे?`,
+                mr: `माझ्याकडे ${names[0]} उपलब्ध आहे. तुम्हाला ते book करायचे आहे का?`,
+            });
         }
         const readable = `${names.slice(0, -1).join(", ")}, or ${names[names.length - 1]}`;
-        return `Available rooms are ${readable}. Which room would you like to book?`;
+        return this.pickLocalizedText({
+            en: `Available rooms are ${readable}. Which room would you like to book?`,
+            hi: `Available rooms हैं ${readable}. आप कौन सा room book करना चाहेंगे?`,
+            mr: `Available rooms आहेत ${readable}. तुम्हाला कोणता room book करायचा आहे?`,
+        });
     }
 
     private buildBookingCollectPrompt(): string {
@@ -762,19 +816,39 @@ class AgentAdapterService {
 
         if (slots.adults == null) {
             return selectedRoomName
-                ? `Great choice. ${selectedRoomName} is selected. How many adults will be staying?`
-                : "Great. How many adults will be staying?";
+                ? this.pickLocalizedText({
+                    en: `Great choice. ${selectedRoomName} is selected. How many adults will be staying?`,
+                    hi: `बहुत बढ़िया। ${selectedRoomName} select हो गया है। कितने adults stay करेंगे?`,
+                    mr: `छान निवड. ${selectedRoomName} select झाले आहे. किती adults stay करणार आहेत?`,
+                })
+                : this.pickLocalizedText({
+                    en: "Great. How many adults will be staying?",
+                    hi: "ठीक है। कितने adults stay करेंगे?",
+                    mr: "छान. किती adults stay करणार आहेत?",
+                });
         }
 
         if (!slots.checkInDate || !slots.checkOutDate) {
-            return "Please tell me your check in and check out dates.";
+            return this.pickLocalizedText({
+                en: "Please tell me your check in and check out dates.",
+                hi: "कृपया अपनी check in और check out dates बताइए।",
+                mr: "कृपया तुमच्या check in आणि check out dates सांगा.",
+            });
         }
 
         if (!slots.guestName) {
-            return "What name should I use for this booking?";
+            return this.pickLocalizedText({
+                en: "What name should I use for this booking?",
+                hi: "इस booking के लिए मैं कौन सा नाम उपयोग करूँ?",
+                mr: "या booking साठी मी कोणते नाव वापरू?",
+            });
         }
 
-        return "Please review the details. Say confirm booking when you are ready.";
+        return this.pickLocalizedText({
+            en: "Please review the details. Say confirm booking when you are ready.",
+            hi: "कृपया details देख लीजिए। तैयार होने पर confirm booking कहिए।",
+            mr: "कृपया details पाहा. तयार झाल्यावर confirm booking म्हणा.",
+        });
     }
 
     private normalizeBookingSlotKey(raw: unknown): BookingSlotKey | null {
@@ -835,22 +909,66 @@ class AgentAdapterService {
         const selectedRoomName = this.getCanonicalSelectedRoomLabel();
         switch (slot) {
             case "roomType":
-                return "Please tell me which room you would like to book.";
+                return this.pickLocalizedText({
+                    en: "Please tell me which room you would like to book.",
+                    hi: "कृपया बताइए, आप कौन सा room book करना चाहेंगे?",
+                    mr: "कृपया सांगा, तुम्हाला कोणता room book करायचा आहे?",
+                });
             case "adults":
                 return selectedRoomName
-                    ? `Great choice. ${selectedRoomName} is selected. How many adults will be staying?`
-                    : "How many adults will be staying?";
+                    ? this.pickLocalizedText({
+                        en: `Great choice. ${selectedRoomName} is selected. How many adults will be staying?`,
+                        hi: `बहुत बढ़िया। ${selectedRoomName} select हो गया है। कितने adults stay करेंगे?`,
+                        mr: `छान निवड. ${selectedRoomName} select झाले आहे. किती adults stay करणार आहेत?`,
+                    })
+                    : this.pickLocalizedText({
+                        en: "How many adults will be staying?",
+                        hi: "कितने adults stay करेंगे?",
+                        mr: "किती adults stay करणार आहेत?",
+                    });
             case "checkInDate":
-                return "What is your check in date?";
+                return this.pickLocalizedText({
+                    en: "What is your check in date?",
+                    hi: "आपकी check in date क्या है?",
+                    mr: "तुमची check in date काय आहे?",
+                });
             case "checkOutDate":
-                return "What is your check out date?";
+                return this.pickLocalizedText({
+                    en: "What is your check out date?",
+                    hi: "आपकी check out date क्या है?",
+                    mr: "तुमची check out date काय आहे?",
+                });
             case "guestName":
-                return "What name should I use for this booking?";
+                return this.pickLocalizedText({
+                    en: "What name should I use for this booking?",
+                    hi: "इस booking के लिए मैं कौन सा नाम उपयोग करूँ?",
+                    mr: "या booking साठी मी कोणते नाव वापरू?",
+                });
             case "children":
-                return "How many children will be staying?";
+                return this.pickLocalizedText({
+                    en: "How many children will be staying?",
+                    hi: "कितने children stay करेंगे?",
+                    mr: "किती children stay करणार आहेत?",
+                });
             default:
                 return this.buildBookingCollectPrompt();
         }
+    }
+
+    private maybeSpeakRoomSelectionGuidance(payload?: any): boolean {
+        if (this.state !== "ROOM_SELECT") return false;
+        if (!this.hasVoiceAuthority()) return false;
+        if (TTSController.isSpeaking()) return false;
+
+        const backendSpeech = String(payload?.speech || "").trim();
+        const roomList = Array.isArray(payload?.rooms) ? payload.rooms : [];
+        const prompt = backendSpeech || (roomList.length > 0 ? this.buildRoomSelectionPrompt(roomList) : "");
+        if (!prompt) return false;
+
+        this.hasAnnouncedRoomOptions = true;
+        this.setActiveSlot("roomType", "string", prompt);
+        this.speak(prompt);
+        return true;
     }
 
     private maybeSpeakBookingCollectGuidance(payload?: any, options?: { preferBackendSpeech?: boolean }): boolean {
@@ -1632,8 +1750,7 @@ class AgentAdapterService {
                 payload.rooms.length > 0 &&
                 !this.hasAnnouncedRoomOptions
             ) {
-                this.hasAnnouncedRoomOptions = true;
-                this.speak(this.buildRoomSelectionPrompt(payload.rooms));
+                this.maybeSpeakRoomSelectionGuidance(payload);
             }
             console.log(`[AgentAdapter] No Transition: ${this.state} + ${intent} -> ${nextState}`);
         }
@@ -1702,6 +1819,9 @@ class AgentAdapterService {
         // Notify Listeners
         this.notifyListeners();
 
+        const spokeRoomGuidance = this.state === "ROOM_SELECT"
+            ? this.maybeSpeakRoomSelectionGuidance(payload)
+            : false;
         const spokeBookingGuidance = this.state === "BOOKING_COLLECT"
             ? this.maybeSpeakBookingCollectGuidance(payload, { preferBackendSpeech: true })
             : false;
@@ -1712,15 +1832,19 @@ class AgentAdapterService {
             if (nextState === 'WELCOME' && previousState === 'IDLE') {
                 // First contact: Greet the guest, THEN listen.
                 const tenantName = getTenant()?.name || "our hotel";
-                const greeting = `Welcome to ${tenantName}. How may I assist you today?`;
+                const greeting = this.pickLocalizedText({
+                    en: `Welcome to ${tenantName}. How may I assist you today?`,
+                    hi: `${tenantName} में आपका स्वागत है। मैं आज आपकी कैसे सहायता कर सकती हूँ?`,
+                    mr: `${tenantName} मध्ये तुमचे स्वागत आहे. आज मी तुमची कशी मदत करू शकते?`,
+                });
                 this.speak(greeting);
                 // VoiceRuntime will start listening automatically after TTS ends (via TTS_ENDED handler)
-            } else if (!spokeBookingGuidance) {
+            } else if (!spokeRoomGuidance && !spokeBookingGuidance) {
                 // No guided prompt was spoken on this transition, so bootstrap listening directly.
                 // If TTS is in-flight, TTS lifecycle owns the restart path.
                 this.scheduleListeningRestart(500, "state_transition");
             } else {
-                console.debug("[AgentAdapter] BOOKING_COLLECT guidance spoken; waiting for TTS lifecycle to restart listening.");
+                console.debug("[AgentAdapter] Transition guidance spoken; waiting for TTS lifecycle to restart listening.");
             }
         }
 
