@@ -2,10 +2,12 @@
 api/voice.py
 
 REST endpoints for the frontend to access Sarvam AI's STT and TTS.
-These are only called by the frontend when in a non-English language mode.
 """
 
-from fastapi import APIRouter, HTTPException, Response, Depends, Header
+from time import perf_counter
+from uuid import uuid4
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Response
 from pydantic import BaseModel
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -17,12 +19,15 @@ from models.tenant_config import TenantConfig
 
 router = APIRouter()
 
+
 class STTRequest(BaseModel):
-    audio: str      # Base64 encoded audio (WAV)
-    language: str   # e.g., "hi"
+    audio: str
+    language: str
+
 
 class STTResponse(BaseModel):
     transcript: str
+
 
 class TTSRequest(BaseModel):
     text: str
@@ -60,6 +65,7 @@ async def _resolve_effective_tenant_language(
 
     return default_language
 
+
 @router.post("/stt", response_model=STTResponse)
 async def speech_to_text(
     req: STTRequest,
@@ -72,19 +78,21 @@ async def speech_to_text(
     try:
         if not req.audio:
             raise ValueError("No audio data provided")
-            
+
         effective_language = await _resolve_effective_tenant_language(session, x_tenant_slug, req.language)
         transcript = await VoiceProvider.transcribe_audio(
-            audio_base64=req.audio, 
-            language=effective_language
+            audio_base64=req.audio,
+            language=effective_language,
         )
         return STTResponse(transcript=transcript)
-        
+
     except Exception as e:
         import traceback
-        print(f"[VoiceAPI] ❌ STT Error: {e}")
+
+        print(f"[VoiceAPI] STT error: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.post("/tts")
 async def text_to_speech(
@@ -96,21 +104,39 @@ async def text_to_speech(
     Receives text, calls Sarvam TTS, returns raw WAV audio bytes.
     Content-Type is 'audio/wav'.
     """
+    request_id = uuid4().hex[:8]
+    started_at = perf_counter()
+
     try:
         if not req.text:
             raise ValueError("No text provided")
-            
+
         effective_language = await _resolve_effective_tenant_language(session, x_tenant_slug, req.language)
+        print(
+            "[VoiceAPI] TTS request "
+            f"id={request_id} "
+            f"tenant={x_tenant_slug or 'unknown'} "
+            f"language={effective_language} "
+            f"chars={len(req.text.strip())}"
+        )
         audio_bytes = VoiceProvider.generate_speech(
             text=req.text,
-            language=effective_language
+            language=effective_language,
+            request_id=request_id,
         )
-        
-        # Return binary response
+        duration_ms = round((perf_counter() - started_at) * 1000, 1)
+        print(
+            "[VoiceAPI] TTS success "
+            f"id={request_id} "
+            f"bytes={len(audio_bytes)} "
+            f"durationMs={duration_ms}"
+        )
         return Response(content=audio_bytes, media_type="audio/wav")
-        
+
     except Exception as e:
         import traceback
-        print(f"[VoiceAPI] ❌ TTS Error: {e}")
+
+        duration_ms = round((perf_counter() - started_at) * 1000, 1)
+        print(f"[VoiceAPI] TTS error id={request_id} durationMs={duration_ms}: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))

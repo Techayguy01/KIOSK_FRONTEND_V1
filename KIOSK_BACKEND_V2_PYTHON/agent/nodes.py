@@ -301,6 +301,23 @@ def _is_summary_modify_transcript(transcript: str) -> bool:
     return bool(re.search(r"\b(change|modify|edit|update|wrong|not correct|go back)\b", text))
 
 
+def _is_room_change_request(transcript: str) -> bool:
+    text = (transcript or "").strip().lower()
+    if not text:
+        return False
+
+    references_room = bool(
+        re.search(r"\b(room|suite)\b", text)
+        or re.search(r"\broom selection\b", text)
+    )
+    wants_change = bool(
+        re.search(r"\b(change|modify|switch|different|another|edit|update|replace)\b", text)
+        or re.search(r"\bgo back\b", text)
+    )
+
+    return references_room and wants_change
+
+
 def _looks_like_check_in_request(transcript: str) -> bool:
     text = (transcript or "").strip().lower()
     if not text:
@@ -569,6 +586,27 @@ async def booking_logic(state: KioskState) -> dict:
                 "history": updated_history,
                 "next_ui_screen": "BOOKING_COLLECT",
             }
+
+    if state.resolved_intent == "MODIFY_BOOKING" and _is_room_change_request(state.latest_transcript):
+        speech = "Sure. Let's change your room. Please choose another room to continue."
+        updated_history = state.history + [
+            ConversationTurn(role="user", content=state.latest_transcript),
+            ConversationTurn(role="assistant", content=speech),
+        ]
+        updated_slots = state.booking_slots.model_copy(
+            update={
+                "room_type": None,
+                "total_price": None,
+            }
+        )
+        return {
+            "speech_response": speech,
+            "booking_slots": updated_slots,
+            "active_slot": "room_type",
+            "selected_room": None,
+            "history": updated_history,
+            "next_ui_screen": "ROOM_SELECT",
+        }
 
     messages = [
         {"role": "system", "content": build_booking_prompt(state)},

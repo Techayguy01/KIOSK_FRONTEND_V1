@@ -9,6 +9,7 @@ For Indian languages (default: Hindi), this module calls Sarvam AI.
 import os
 import base64
 from typing import Optional
+from time import perf_counter
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -123,7 +124,7 @@ class VoiceProvider:
         return transcript.strip()
 
     @staticmethod
-    def generate_speech(text: str, language: str = "hi") -> bytes:
+    def generate_speech(text: str, language: str = "hi", request_id: Optional[str] = None) -> bytes:
         """
         Converts text to speech using Sarvam TTS (Direct REST API).
         Returns the raw audio bytes (WAV format).
@@ -153,7 +154,14 @@ class VoiceProvider:
         }
 
         try:
-            print(f"[Voice] Requesting Premium (v3) TTS for: \"{text[:30]}...\"")
+            started_at = perf_counter()
+            request_label = request_id or "none"
+            print(
+                "[Voice] Requesting Premium (v3) TTS "
+                f"id={request_label} "
+                f"lang={lang_code} "
+                f"chars={len(text.strip())}"
+            )
             req = urllib.request.Request(
                 url, 
                 data=json.dumps(payload).encode("utf-8"), 
@@ -172,11 +180,29 @@ class VoiceProvider:
                 if "audios" in resp_json and len(resp_json["audios"]) > 0:
                     # Sarvam v3 returns a list of base64 strings
                     b64_str = resp_json["audios"][0]
-                    return base64.b64decode(b64_str)
+                    audio_bytes = base64.b64decode(b64_str)
+                    print(
+                        "[Voice] Premium TTS success "
+                        f"id={request_label} "
+                        f"bytes={len(audio_bytes)} "
+                        f"durationMs={round((perf_counter() - started_at) * 1000, 1)}"
+                    )
+                    return audio_bytes
                 
                 # Fallback in case of raw stream (legacy)
-                return raw_resp.encode("latin-1")
+                audio_bytes = raw_resp.encode("latin-1")
+                print(
+                    "[Voice] Premium TTS legacy response "
+                    f"id={request_label} "
+                    f"bytes={len(audio_bytes)} "
+                    f"durationMs={round((perf_counter() - started_at) * 1000, 1)}"
+                )
+                return audio_bytes
                 
         except Exception as e:
-            print(f"[Voice] Direct Sarvam TTS failed: {e}")
+            print(
+                "[Voice] Direct Sarvam TTS failed "
+                f"id={request_id or 'none'} "
+                f"error={e}"
+            )
             raise e
