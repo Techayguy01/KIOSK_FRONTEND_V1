@@ -1,4 +1,4 @@
-﻿import { Intent } from "@contracts/intents";
+import { Intent } from "@contracts/intents";
 import { UiState, VOICE_COMMAND_MAP, STATE_INPUT_MODES, STATE_SPEECH_MAP } from "./index";
 import { VoiceRuntime } from "../voice/VoiceRuntime";
 import { VoiceEvent } from "../voice/voice.types";
@@ -186,6 +186,25 @@ const SLOT_PROMPT_LOOKUP: Array<{
         },
     ];
 
+function getBookingProgressRank(state: UiState): number {
+    switch (state) {
+        case "ROOM_SELECT":
+            return 1;
+        case "BOOKING_COLLECT":
+            return 2;
+        case "BOOKING_SUMMARY":
+            return 3;
+        case "PAYMENT":
+            return 4;
+        case "KEY_DISPENSING":
+            return 5;
+        case "COMPLETE":
+            return 6;
+        default:
+            return 0;
+    }
+}
+
 class AgentAdapterService {
     private state: UiState = "IDLE";
     private viewData: Record<string, any> = {};
@@ -233,6 +252,8 @@ class AgentAdapterService {
     private reengageCooldownUntil = 0;
     private voiceLifecycleEpoch = 0;
     private llmRequestCounter = 0;
+    private confirmRequestCounter = 0;
+    private pendingConfirmToken: number | null = null;
     private pendingAiSpeechText: string | null = null;
     private lastBookingPromptFingerprint: string | null = null;
     private lastBookingPromptAt = 0;
@@ -1590,7 +1611,44 @@ class AgentAdapterService {
             if (decision.nextUiScreen && !serverState) {
                 console.warn(`[AgentAdapter] Ignoring unknown backend nextUiScreen: ${decision.nextUiScreen}`);
             }
-            const willTransition = Boolean(serverState && serverState !== this.state);
+            const missingSlots = Array.isArray(decision?.missingSlots) ? decision.missingSlots : [];
+            const hasBackendError = Boolean(decision?.error);
+            const isIncomplete = decision?.isComplete === false || missingSlots.length > 0;
+
+            if (strictEvent === "CONFIRM_BOOKING" && requestState === "BOOKING_SUMMARY") {
+                // Any backend response for confirm should cancel the timeout guard.
+                this.pendingConfirmToken = null;
+
+                if (serverState === "BOOKING_COLLECT" && (isIncomplete || hasBackendError)) {
+                    const errorMessage = decision?.error
+                        || "Booking details are incomplete. Please modify and confirm again.";
+                    this.applyPayloadData(strictEvent, {
+                        ...decision,
+                        error: errorMessage,
+                        backendDecision: true,
+                    }, requestState);
+                    this.notifyListeners();
+                    return;
+                }
+            }
+
+            const isRegressiveConfirmTransition =
+                strictEvent === "CONFIRM_BOOKING" &&
+                serverState === "BOOKING_COLLECT" &&
+                getBookingProgressRank(requestState) >= getBookingProgressRank("BOOKING_SUMMARY") &&
+                !isIncomplete &&
+                !hasBackendError;
+            if (isRegressiveConfirmTransition) {
+                console.warn(
+                    `[AgentAdapter] Ignoring regressive confirm transition: ${requestState} -> ${serverState}`
+                );
+            }
+
+            const willTransition = Boolean(
+                serverState &&
+                serverState !== this.state &&
+                !isRegressiveConfirmTransition
+            );
 
             // Execute Transition or Data Update
             if (willTransition && serverState) {
@@ -1878,6 +1936,10 @@ class AgentAdapterService {
             merged.bookingError = null;
         }
 
+        if (payload && Object.prototype.hasOwnProperty.call(payload, "persistedBookingId")) {
+            merged.persistedBookingId = payload.persistedBookingId || null;
+        }
+
         this.syncDerivedBookingData(merged);
         this.syncBookingFlowHints(merged);
 
@@ -2066,13 +2128,33 @@ class AgentAdapterService {
         if (intent === "CONFIRM_PAYMENT" && this.state === "BOOKING_SUMMARY") {
             console.log("[AgentAdapter] BOOKING_SUMMARY touch confirm -> backend CONFIRM_BOOKING turn");
             const expectedState = this.state;
+            const token = ++this.confirmRequestCounter;
+            this.pendingConfirmToken = token;
             void this.processWithLLMBrain("confirm booking", this.getSessionId());
             setTimeout(() => {
+                if (this.pendingConfirmToken !== token) return;
                 if (this.state === expectedState && !this.viewData?.bookingError) {
-                    console.warn("[AgentAdapter] Backend confirm timeout; using touch fallback transition to PAYMENT");
-                    this.transitionTo("PAYMENT", "CONFIRM_PAYMENT", { touchFallback: true });
+                    console.warn("[AgentAdapter] Backend confirm timeout; staying on BOOKING_SUMMARY");
+                    this.applyPayloadData("CONFIRM_PAYMENT", {
+                        backendDecision: true,
+                        error: "Booking confirmation timed out. Please confirm again."
+                    }, this.state);
+                    this.notifyListeners();
                 }
             }, 2200);
+            return;
+        }
+
+        // Never allow payment completion without a confirmed persisted booking id.
+        if (intent === "CONFIRM_PAYMENT" && this.state === "PAYMENT" && !this.viewData?.persistedBookingId) {
+            console.warn("[AgentAdapter] Blocking PAYMENT confirmation: missing persistedBookingId");
+            this.applyPayloadData("CONFIRM_PAYMENT", {
+                backendDecision: true,
+                error: "Booking is not confirmed in backend yet. Please confirm booking again."
+            }, "BOOKING_SUMMARY");
+            this.transitionTo("BOOKING_SUMMARY", "BACK_REQUESTED", {
+                error: "Booking is not confirmed in backend yet. Please confirm booking again."
+            });
             return;
         }
 

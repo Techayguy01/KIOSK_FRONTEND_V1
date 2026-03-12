@@ -153,6 +153,79 @@ def _resolve_room_capacity_limit(selected_room_payload: Optional[dict], key: str
         return None
 
 
+def _merge_filled_slots(state: KioskState, filled_slots: dict, room_inventory: list[dict]) -> None:
+    """
+    Sync frontend state overrides (like manual touch input) into the backend session logic.
+    Only overwrites backend state if the frontend actually provided a value.
+    """
+    if not filled_slots:
+        return
+
+    # Map camelCase from React to snake_case for Pydantic
+    slot_mapping = {
+        "roomType": "room_type",
+        "adults": "adults",
+        "children": "children",
+        "checkInDate": "check_in_date",
+        "checkOutDate": "check_out_date",
+        "guestName": "guest_name",
+        "nights": "nights"
+    }
+
+    current_slots = state.booking_slots.model_dump()
+    has_updates = False
+
+    for frontend_key, backend_key in slot_mapping.items():
+        val = filled_slots.get(frontend_key)
+        if val is not None and str(val).strip() != "":
+            # Convert numeric fields
+            if backend_key in ["adults", "children", "nights"]:
+                try:
+                    current_slots[backend_key] = int(val)
+                    has_updates = True
+                except ValueError:
+                    pass
+            else:
+                current_slots[backend_key] = val
+                has_updates = True
+
+    if has_updates:
+        # Rebuild the model to ensure validation
+        from agent.state import BookingSlots
+        state.booking_slots = BookingSlots(**current_slots)
+        print(f"[ChatAPI][SlotSync] Merged frontend slots: {current_slots}")
+
+    # If frontend told us the room type, ensure selected_room is populated
+    # so capacity constraints use the correct limits.
+    target_room_name = current_slots.get("room_type")
+    if target_room_name:
+        normalized_target = target_room_name.strip().lower()
+        if not state.selected_room or (state.selected_room.name or "").lower() != normalized_target:
+            import difflib
+            # Find the best match in the inventory
+            for room in room_inventory:
+                room_name = (room.get("name") or "").strip().lower()
+                room_code = (room.get("code") or "").strip().lower()
+                
+                if normalized_target == room_name or (room_code and normalized_target == room_code):
+                    from agent.state import RoomInventoryItem
+                    state.selected_room = RoomInventoryItem(**room)
+                    print(f"[ChatAPI][SlotSync] Auto-selected room from payload: {state.selected_room.name}")
+                    break
+            else:
+                # Fallback to fuzzy match if exact fails
+                room_names = [r.get("name") for r in room_inventory if r.get("name")]
+                matches = difflib.get_close_matches(normalized_target, room_names, n=1, cutoff=0.6)
+                if matches:
+                    best_match = matches[0]
+                    for room in room_inventory:
+                        if room.get("name") == best_match:
+                            from agent.state import RoomInventoryItem
+                            state.selected_room = RoomInventoryItem(**room)
+                            print(f"[ChatAPI][SlotSync] Fuzzy auto-selected room from payload: {state.selected_room.name}")
+                            break
+
+
 def _validate_booking_constraints(
     slots_dict: dict,
     selected_room_payload: Optional[dict],
@@ -472,6 +545,11 @@ async def chat(
         state.language = effective_language
         state.tenant_id = resolved_tenant_id or state.tenant_id
         state.tenant_room_inventory = [RoomInventoryItem(**room) for room in room_inventory]
+
+        # Sync frontend-filled slots into session so manual (touch) booking path
+        # keeps backend slot state coherent with UI state.
+        if req.filled_slots:
+            _merge_filled_slots(state, req.filled_slots, room_inventory)
 
         # Deterministic FAQ retrieval layer (tenant-scoped), only for non-transactional turns.
         if _should_attempt_faq(req.transcript, normalized_ui_screen):

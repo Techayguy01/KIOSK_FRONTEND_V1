@@ -11,6 +11,8 @@
         "install:all": "npm install && npm install --prefix frontend && npm install --prefix backend"
     },
     "devDependencies": {
-        "concurrently": "^8.2.0"
+        "concurrently": "^8.2.0",
+        "postcss": "^8.5.8",
+        "tailwindcss": "^4.2.1"
     }
 }
