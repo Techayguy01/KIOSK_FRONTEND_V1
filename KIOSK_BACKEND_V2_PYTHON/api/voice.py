@@ -119,7 +119,9 @@ async def text_to_speech(
             f"language={effective_language} "
             f"chars={len(req.text.strip())}"
         )
-        audio_bytes = VoiceProvider.generate_speech(
+        from fastapi.concurrency import run_in_threadpool
+        audio_bytes = await run_in_threadpool(
+            VoiceProvider.generate_speech,
             text=req.text,
             language=effective_language,
             request_id=request_id,

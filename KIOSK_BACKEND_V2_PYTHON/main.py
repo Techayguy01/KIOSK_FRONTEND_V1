@@ -8,6 +8,8 @@ from api.voice import router as voice_router
 from api.rooms import router as rooms_router
 from api.tenant import router as tenant_router
 from api.ocr import router as ocr_router
+from api.faqs import router as faqs_router
+from api.utility import router as utility_router
 
 app = FastAPI(
     title="Kiosk AI Backend V2",
@@ -31,6 +33,8 @@ app.include_router(voice_router, prefix="/api/voice", tags=["Voice"])
 app.include_router(rooms_router, prefix="/api", tags=["Rooms"])
 app.include_router(tenant_router, prefix="/api", tags=["Tenant"])
 app.include_router(ocr_router, prefix="/api", tags=["OCR"])
+app.include_router(faqs_router, prefix="/api", tags=["FAQs"])
+app.include_router(utility_router, prefix="/api/utility", tags=["Utility"])
 
 @app.get("/health")
 async def health_check():

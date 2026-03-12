@@ -115,8 +115,9 @@ export interface ChatResponseDTO {
   intent: string;
   confidence: number;
   nextUiScreen?: UIState;
-  answerSource?: "FAQ_DB" | "FAQ_CACHE" | "LLM";
+  answerSource?: "FAQ_DB" | "FAQ_CACHE" | "LLM" | "LOCAL_SIMILARITY" | "FAQ_FALLBACK";
   faqId?: string | null;
+  normalizedQuery?: string;
   sessionId?: string;
   language?: string;
 }

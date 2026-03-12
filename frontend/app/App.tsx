@@ -25,6 +25,7 @@ import { VoiceStatusIndicator } from '../components/VoiceStatusIndicator';
 import { SiyaMiniOrb } from '../components/SiyaMiniOrb';
 import AnimatedGradientBackground from '../components/ui/animated-gradient-background';
 import { buildTenantApiUrl, getTenantHeaders, setTenantContext, TenantPayload } from '../services/tenantContext';
+import { prewarmTenantFaqsInIndexedDb } from '../services/faqBootstrap.service';
 
 // Tenant slug is derived from the URL route parameter only. No hardcoded default.
 
@@ -96,6 +97,11 @@ const TenantKioskApp: React.FC = () => {
 
       setTenant(resolvedTenant);
       setTenantContext(safeTenantSlug, resolvedTenant);
+      try {
+        await prewarmTenantFaqsInIndexedDb();
+      } catch (prewarmError) {
+        console.warn("[App] FAQ prewarm failed", prewarmError);
+      }
     } catch (e) {
       console.error('[App] Failed to resolve tenant', e);
       setTenant(null);

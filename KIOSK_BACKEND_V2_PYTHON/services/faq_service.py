@@ -7,49 +7,15 @@ Deterministic tenant-scoped FAQ retrieval without embeddings.
 from __future__ import annotations
 
 import re
+import json
 from dataclasses import dataclass
-from difflib import SequenceMatcher
 from typing import Optional
 from uuid import UUID
 
 from sqlmodel import select
-from sqlmodel.ext.asyncio.session import AsyncSession
-
+import numpy as np
 from models.faq import FAQ
-
-_WHITESPACE_RE = re.compile(r"\s+")
-_NON_ALNUM_RE = re.compile(r"[^a-z0-9\s]")
-_CHECKIN_VARIANT_RE = re.compile(r"\bcheck[\s-]*in\b")
-_CHECKOUT_VARIANT_RE = re.compile(r"\bcheck[\s-]*out\b")
-_CHECKING_TIME_RE = re.compile(r"\bchecking time\b")
-_FILLER_PHRASES_RE = re.compile(
-    r"\b(i would like to know|i want to know|can you tell me|please tell me|for this hotel|in this hotel|of this hotel)\b"
-)
-_QUESTION_SCAFFOLD_RE = re.compile(
-    r"\b(what is|what s|when is|what time is|what are|tell me|the|your|our|hotel|standard)\b"
-)
-_FAQ_CANDIDATE_RE = re.compile(
-    r"\b(what|when|where|which|who|how|do you|can you tell me|please tell me|i want to know|i would like to know)\b"
-)
-_CHECKIN_INFO_RE = re.compile(
-    r"(?:\b(what|when)\b.*\bcheckin\b|\bcheckin\b.*\b(time|timing|hours?)\b|\b(second time|check and time)\b)"
-)
-_CHECKOUT_INFO_RE = re.compile(
-    r"(?:\b(what|when)\b.*\bcheckout\b|\bcheckout\b.*\b(time|timing|hours?)\b)"
-)
-
-FAQ_ALIAS_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("checkin time", ("check and time", "second time", "checkin timing", "check in timing", "checkin hours", "check in hours")),
-    ("checkout time", ("checkout timing", "check out timing", "checkout hours", "check out hours")),
-    ("breakfast time", ("breakfast timing", "what time is breakfast")),
-    ("wifi", ("wi fi", "internet", "wireless internet")),
-    ("parking", ("car parking", "parking facility", "parking available")),
-    ("pool", ("swimming pool", "pool timing", "pool hours")),
-)
-
-# Fuzzy score threshold for direct FAQ answer.
-FAQ_MATCH_THRESHOLD = 0.84
-
+from core.llm import get_llm_response, get_embedding, translate_to_english, rephrase_faq_answer, generate_polite_rejection
 
 @dataclass
 class FAQMatchResult:
@@ -67,71 +33,175 @@ class FAQLookupResult:
     match: Optional[FAQMatchResult]
 
 
-def _apply_aliases(text: str) -> str:
-    normalized = text
-    for canonical, aliases in FAQ_ALIAS_PATTERNS:
-        for alias in aliases:
-            normalized = normalized.replace(alias, canonical)
-    return normalized
+_WHITESPACE_RE = re.compile(r"\s+")
+_NON_ALNUM_RE = re.compile(r"[^\w\s]", flags=re.UNICODE)
+
+# Thresholds
+FAQ_MATCH_THRESHOLD = 0.75  # Requirement: 0.75
+
+_FAQ_CANDIDATE_RE = re.compile(
+    r"\b(can|how|what|when|where|why|is|do|does|tell|info|information)\b", 
+    re.IGNORECASE
+)
+_CHECKIN_INFO_RE = re.compile(r"check[ -]?in", re.IGNORECASE)
+_CHECKOUT_INFO_RE = re.compile(r"check[ -]?out", re.IGNORECASE)
 
 
 def normalize_faq_query(text: str) -> str:
-    lowered = (text or "").strip().lower()
-    normalized = _CHECKIN_VARIANT_RE.sub("checkin", lowered)
-    normalized = _CHECKOUT_VARIANT_RE.sub("checkout", normalized)
-    normalized = _CHECKING_TIME_RE.sub("checkin time", normalized)
-    normalized = _NON_ALNUM_RE.sub(" ", normalized)
-    normalized = _FILLER_PHRASES_RE.sub(" ", normalized)
-    normalized = _apply_aliases(normalized)
-    normalized = _QUESTION_SCAFFOLD_RE.sub(" ", normalized)
-    normalized = normalized.replace("timing", "time")
-    cleaned = normalized
-    return _WHITESPACE_RE.sub(" ", cleaned).strip()
+    """Basic normalization for keyword checks."""
+    if not text:
+        return ""
+    # Remove punctuation
+    text = _NON_ALNUM_RE.sub(" ", text)
+    # Collapse whitespace
+    text = _WHITESPACE_RE.sub(" ", text).strip()
+    return text.lower()
+
+# In-memory cache for FAQ embeddings to avoid redundant API calls
+# Structure: {faq_id: embedding_vector}
+_FAQ_EMBEDDING_CACHE: dict[str, list[float]] = {}
 
 
-def _token_key(text: str) -> str:
-    tokens = [token for token in text.split(" ") if token]
-    return " ".join(sorted(tokens))
-
-
-def _fuzzy_score(query: str, candidate: str) -> float:
-    query_norm = normalize_faq_query(query)
-    candidate_norm = normalize_faq_query(candidate)
-    if not query_norm or not candidate_norm:
+def cosine_similarity(v1: list[float], v2: list[float]) -> float:
+    """Calculates cosine similarity between two vectors."""
+    if not v1 or not v2:
         return 0.0
+    vec1 = np.array(v1)
+    vec2 = np.array(v2)
+    dot_product = np.dot(vec1, vec2)
+    norm1 = np.linalg.norm(vec1)
+    norm2 = np.linalg.norm(vec2)
+    if norm1 == 0 or norm2 == 0:
+        return 0.0
+    return float(dot_product / (norm1 * norm2))
 
-    char_ratio = SequenceMatcher(None, query_norm, candidate_norm).ratio()
-    token_ratio = SequenceMatcher(None, _token_key(query_norm), _token_key(candidate_norm)).ratio()
 
-    query_tokens = set(query_norm.split(" "))
-    candidate_tokens = set(candidate_norm.split(" "))
-    overlap = len(query_tokens & candidate_tokens)
-    union = len(query_tokens | candidate_tokens) or 1
-    jaccard = overlap / union
-
-    score = (0.5 * char_ratio) + (0.35 * token_ratio) + (0.15 * jaccard)
-
-    # Strong partial overlap (same phrase with minor additions) deserves a modest boost.
-    if len(query_norm) >= 12 and (query_norm in candidate_norm or candidate_norm in query_norm):
-        score = min(1.0, score + 0.05)
-
-    return round(score, 4)
+def _get_cached_faq_embedding(faq: FAQ) -> list[float]:
+    faq_id_str = str(faq.id)
+    if faq_id_str not in _FAQ_EMBEDDING_CACHE:
+        print(f"[FAQService] Generating embedding for FAQ: {faq.question}")
+        _FAQ_EMBEDDING_CACHE[faq_id_str] = get_embedding(faq.question)
+    return _FAQ_EMBEDDING_CACHE[faq_id_str]
 
 
 def is_faq_candidate_query(transcript: str) -> bool:
+    raw = (transcript or "").strip().lower()
     normalized = normalize_faq_query(transcript)
-    if not normalized:
+    if not raw and not normalized:
         return False
-    if _FAQ_CANDIDATE_RE.search(normalized):
+        
+    # Check if the query is actually a question or a general info request
+    faq_keywords = (
+        "checkin", "checkout", "breakfast", "wifi", "internet", "parking", 
+        "pool", "timing", "hours", "time", "password", "facility", 
+        "restaurant", "gym", "spa", "kiosk", "manager", "help", "support"
+    )
+    
+    # Candidate phrasing ("what/when/how...") must be checked on raw text.
+    if _FAQ_CANDIDATE_RE.search(raw):
         return True
-    # Explicit guard for the common "what is check in time" family.
-    if _CHECKIN_INFO_RE.search(normalized):
+    if "?" in raw:
         return True
-    if _CHECKOUT_INFO_RE.search(normalized):
+    if _CHECKIN_INFO_RE.search(raw) or _CHECKOUT_INFO_RE.search(raw):
         return True
-    if any(alias in normalized for alias in ("breakfast time", "wifi", "parking", "pool")):
+        
+    # Check for FAQ keywords in normalized text
+    if any(keyword in normalized for keyword in faq_keywords):
         return True
+        
     return False
+
+
+def _is_irrelevant_query(user_query: str, normalized_query: str) -> bool:
+    """Detect queries that are clearly out of hotel scope."""
+    # This is a simple heuristic. In a real system, this would be an LLM call or a larger keyword set.
+    irrelevant_keywords = (
+        "rocket", "mars", "politics", "president", "weather in", "movie", "song",
+        "calculate", "who is", "what is the capital"
+    )
+    # But wait, "who is the manager" is relevant. So we check against some safe ones.
+    relevant_context = ("hotel", "room", "stay", "booking", "checkin", "checkout", "kiosk")
+    
+    q = normalized_query.lower()
+    if any(kw in q for kw in irrelevant_keywords):
+        if not any(ctx in q for ctx in relevant_context):
+            return True
+    return False
+
+
+def _safe_json_loads(text: str) -> Optional[dict]:
+    if not text:
+        return None
+    raw = text.strip()
+    if not raw:
+        return None
+    # Allow the model to wrap JSON in prose.
+    first = raw.find("{")
+    last = raw.rfind("}")
+    if first == -1 or last == -1 or last <= first:
+        return None
+    try:
+        return json.loads(raw[first : last + 1])
+    except Exception:
+        return None
+
+
+def _llm_pick_faq_id(user_query: str, faqs: list[FAQ]) -> tuple[Optional[str], float]:
+    """
+    Constrained LLM selector: returns (faq_id | None, confidence).
+    This avoids language/phrasing hardcoding while keeping outputs bounded.
+    """
+    if not user_query.strip() or not faqs:
+        return None, 0.0
+
+    shortlist = faqs[:_LLM_MAX_FAQS]
+    faq_lines = "\n".join(
+        f"- id: {str(faq.id)} | q: {faq.question}"
+        for faq in shortlist
+        if faq.question
+    )
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a strict FAQ matcher. Given a user question and a list of FAQs, "
+                "pick the single best matching FAQ id. If none match, return null. "
+                "Respond with JSON only: {\"faqId\": string|null, \"confidence\": number}."
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"User question:\n{user_query}\n\nFAQs:\n{faq_lines}",
+        },
+    ]
+
+    # temperature=0.0 for stability; selection should be deterministic.
+    raw = get_llm_response(messages=messages, temperature=0.0)
+    parsed = _safe_json_loads(raw) or {}
+    faq_id = parsed.get("faqId", None)
+    confidence = parsed.get("confidence", 0.0)
+
+    if faq_id is not None:
+        faq_id = str(faq_id).strip()
+        if not faq_id:
+            faq_id = None
+
+    try:
+        confidence_val = float(confidence)
+    except Exception:
+        confidence_val = 0.0
+    confidence_val = max(0.0, min(1.0, confidence_val))
+
+    if faq_id is None:
+        return None, confidence_val
+
+    # Validate that the returned id exists in the provided set.
+    allowed = {str(faq.id) for faq in shortlist}
+    if faq_id not in allowed:
+        return None, 0.0
+
+    return faq_id, confidence_val
 
 
 async def find_best_faq_match(
@@ -139,54 +209,103 @@ async def find_best_faq_match(
     tenant_id: Optional[str],
     user_query: str,
 ) -> FAQLookupResult:
-    normalized_query = normalize_faq_query(user_query)
+    # --- STEP 0: MANDATORY TENANT-SCOPED GUARD ---
+    # We must filter by tenant before any LLM/embedding calls.
     if not tenant_id or tenant_id == "default":
-        return FAQLookupResult(normalized_query=normalized_query, faq_count=0, match=None)
+        return FAQLookupResult(normalized_query=user_query, faq_count=0, match=None)
 
     try:
         tenant_uuid = UUID(str(tenant_id))
     except Exception:
-        return FAQLookupResult(normalized_query=normalized_query, faq_count=0, match=None)
+        return FAQLookupResult(normalized_query=user_query, faq_count=0, match=None)
 
+    # Fetch candidate pool first
     stmt = select(FAQ).where(FAQ.tenant_id == tenant_uuid, FAQ.is_active.is_(True))
     faq_result = await session.exec(stmt)
     faqs = faq_result.all()
+    
+    # If no FAQs exist for this tenant, exit immediately.
     if not faqs:
-        return FAQLookupResult(normalized_query=normalized_query, faq_count=0, match=None)
+        print(f"[FAQService] Guard: No FAQs found for tenant {tenant_id}. Stopping pipeline.")
+        return FAQLookupResult(normalized_query=user_query, faq_count=0, match=None)
 
-    if not normalized_query:
-        return FAQLookupResult(normalized_query=normalized_query, faq_count=len(faqs), match=None)
+    # --- STEP 1: TRANSLATION & NORMALIZATION (LLM CALLS DISALLOWED BEFORE GUARD) ---
+    print(f"[FAQService] Normalizing query: '{user_query}'")
+    try:
+        translated_query = translate_to_english(user_query)
+    except Exception as e:
+        print(f"[FAQService] Translation failed: {e}")
+        translated_query = user_query
+    print(f"[FAQService] Translated/Normalized query: '{translated_query}'")
 
-    # Deterministic first pass: exact normalized match.
+    # Detect irrelevance on the translated text
+    if _is_irrelevant_query(user_query, translated_query):
+        return FAQLookupResult(
+            normalized_query=translated_query,
+            faq_count=len(faqs),
+            match=FAQMatchResult(
+                faq_id="irrelevant",
+                question=user_query,
+                answer="I apologize, but I can only assist with questions related to your hotel stay and booking. I don't have information about that topic.",
+                confidence=1.0,
+                match_type="irrelevant",
+            ),
+        )
+
+    # 2. Semantic Search Layer (Embeddings)
+    try:
+        query_embedding = get_embedding(translated_query)
+    except Exception as e:
+        print(f"[FAQService] Embedding generation failed: {e}. Falling back to fuzzy matching.")
+        # Minimal legacy fallback if embedding service is down
+        return FAQLookupResult(normalized_query=translated_query, faq_count=len(faqs), match=None)
+
+    best_match: Optional[FAQMatchResult] = None
+    max_similarity = -1.0
+
     for faq in faqs:
-        faq_question_normalized = normalize_faq_query(faq.question)
-        if faq_question_normalized and faq_question_normalized == normalized_query:
-            return FAQLookupResult(
-                normalized_query=normalized_query,
-                faq_count=len(faqs),
-                match=FAQMatchResult(
+        try:
+            faq_embedding = _get_cached_faq_embedding(faq)
+            similarity = cosine_similarity(query_embedding, faq_embedding)
+
+            if similarity > max_similarity:
+                max_similarity = similarity
+                best_match = FAQMatchResult(
                     faq_id=str(faq.id),
                     question=faq.question,
                     answer=faq.answer,
-                    confidence=1.0,
-                    match_type="exact",
-                ),
-            )
+                    confidence=similarity,
+                    match_type="semantic",
+                )
+        except Exception as e:
+            print(f"[FAQService] Error comparing against FAQ {faq.id}: {e}")
 
-    best_match: Optional[FAQMatchResult] = None
-    for faq in faqs:
-        score = _fuzzy_score(user_query, faq.question)
-        if not best_match or score > best_match.confidence:
-            best_match = FAQMatchResult(
-                faq_id=str(faq.id),
-                question=faq.question,
-                answer=faq.answer,
-                confidence=score,
-                match_type="fuzzy",
-            )
+    # 3. Threshold Check
+    if best_match and best_match.confidence >= FAQ_MATCH_THRESHOLD:
+        print(f"[FAQService] Semantic Hit: score={best_match.confidence:.3f} match='{best_match.question}'")
+        
+        # Tailor the answer to the guest's original phrasing
+        tailored_answer = rephrase_faq_answer(user_query, best_match.answer)
+        best_match.answer = tailored_answer
+        
+        return FAQLookupResult(
+            normalized_query=translated_query,
+            faq_count=len(faqs),
+            match=best_match
+        )
 
+    print(f"[FAQService] Semantic Miss: top_score={max_similarity:.3f}")
+    
+    # Generate a polite rejection instead of returning None
+    rejection_answer = generate_polite_rejection(user_query)
     return FAQLookupResult(
-        normalized_query=normalized_query,
+        normalized_query=translated_query,
         faq_count=len(faqs),
-        match=best_match,
+        match=FAQMatchResult(
+            faq_id="no-match",
+            question=user_query,
+            answer=rejection_answer,
+            confidence=max_similarity if max_similarity > 0 else 0.0,
+            match_type="rejection",
+        )
     )

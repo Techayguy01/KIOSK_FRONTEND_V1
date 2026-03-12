@@ -47,7 +47,7 @@ const CONFIG = {
     MAX_RECONNECTS_PER_MINUTE: 5,
 
     // Phase 10: Production Hardening
-    VOICE_SESSION_WATCHDOG_MS: 20000,  // 20s max without activity
+    VOICE_SESSION_WATCHDOG_MS: 30000,  // 30s max without activity
     MAX_SILENT_TURNS: 3,               // After 3 silent turns → reset
     WARN_SILENT_TURNS: 2,              // After 2 → play warning
     NETWORK_RETRY_DELAY_MS: 1000,      // Wait before retry
@@ -99,6 +99,9 @@ class VoiceRuntimeService {
 
     // Phase 10: Silence Loop Protection
     private consecutiveSilentTurns: number = 0;
+
+    // Phase 10: Watchdog state
+    private isWatchdogPaused: boolean = false;
 
     // Phase 10: Network retry
     private isRetrying: boolean = false;
@@ -302,6 +305,8 @@ class VoiceRuntimeService {
 
     private startWatchdog(): void {
         this.clearWatchdog();
+        if (this.isWatchdogPaused) return;
+
         this.watchdogTimer = setTimeout(() => {
             if (this.isListeningActive || this.mode === "speaking") {
                 console.log("[VoiceRuntime] WATCHDOG: Session stalled, aborting");
@@ -309,6 +314,18 @@ class VoiceRuntimeService {
                 this.hardStopAll();
             }
         }, CONFIG.VOICE_SESSION_WATCHDOG_MS);
+    }
+
+    public pauseWatchdog(): void {
+        console.log("[VoiceRuntime] Watchdog PAUSED");
+        this.isWatchdogPaused = true;
+        this.clearWatchdog();
+    }
+
+    public resumeWatchdog(): void {
+        console.log("[VoiceRuntime] Watchdog RESUMED");
+        this.isWatchdogPaused = false;
+        this.resetWatchdog();
     }
 
     private resetWatchdog(): void {

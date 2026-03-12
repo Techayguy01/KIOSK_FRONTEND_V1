@@ -329,7 +329,16 @@ def _should_attempt_faq(transcript: str, normalized_ui_screen: UIScreen) -> bool
         )
         return False
 
-    is_candidate = is_faq_candidate_query(transcript)
+    # Do not rely on language-specific candidate detection; instead attempt FAQ
+    # retrieval on allowed screens and let the matcher decide.
+    cleaned = (transcript or "").strip()
+    if not cleaned:
+        return False
+    # Avoid running FAQ retrieval on very long turns (likely conversational/transactional).
+    if len(cleaned) > 240:
+        return False
+
+    is_candidate = True
     print(
         "[ChatAPI][FAQ] candidate "
         f"screen={normalized_ui_screen} "
@@ -487,6 +496,7 @@ class ChatResponse(BaseModel):
     error: Optional[str] = None
     answerSource: str = "LLM"
     faqId: Optional[str] = None
+    normalizedQuery: Optional[str] = None
     sessionId: str
     language: str
 
@@ -611,15 +621,46 @@ async def chat(
                     error=None,
                     answerSource="FAQ_DB",
                     faqId=faq_match.faq_id,
+                    normalizedQuery=faq_lookup.normalized_query,
                     sessionId=req.session_id,
                     language=state.language,
                 )
 
+            # Deterministic fallback for FAQ-style questions with no tenant FAQ match.
+            # Avoid hallucinated policy answers from the LLM path.
+            fallback_text = "I don't have information for that right now."
+            state.history = state.history + [
+                ConversationTurn(role="user", content=state.latest_transcript),
+                ConversationTurn(role="assistant", content=fallback_text),
+            ]
+            state.speech_response = fallback_text
+            state.resolved_intent = "GENERAL_QUERY"
+            state.confidence = 1.0
+            state.next_ui_screen = normalized_ui_screen
+            _sessions[req.session_id] = state
             print(
                 "[ChatAPI][FAQ] fallback "
                 f"session={req.session_id} "
                 f"reason={'no_match' if not faq_match else f'low_confidence:{faq_match.confidence:.3f}'} "
                 f"faq_count={faq_lookup.faq_count}"
+            )
+            return ChatResponse(
+                speech=fallback_text,
+                intent="GENERAL_QUERY",
+                confidence=1.0,
+                nextUiScreen=normalized_ui_screen,
+                accumulatedSlots=state.booking_slots.model_dump(by_alias=True),
+                extractedSlots={},
+                missingSlots=[],
+                nextSlotToAsk=None,
+                selectedRoom=state.selected_room.model_dump(by_alias=True) if state.selected_room else None,
+                isComplete=state.booking_slots.is_complete(),
+                persistedBookingId=_persisted_booking_by_session.get(req.session_id),
+                error=None,
+                answerSource="FAQ_FALLBACK",
+                faqId=None,
+                sessionId=req.session_id,
+                language=state.language,
             )
 
         # Run LangGraph agent

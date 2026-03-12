@@ -1,23 +1,12 @@
-import React, { useEffect } from 'react';
+import React from 'react';
 import { useUIState } from '../state/uiContext';
 import { ProgressBar } from '../components/ProgressBar';
 import { Key, RotateCcw } from 'lucide-react';
-import confetti from 'canvas-confetti';
 import AnimatedGradientBackground from '../components/ui/animated-gradient-background';
 
 export const CompletePage: React.FC = () => {
   const { data, emit, loading } = useUIState();
   const progress = data.progress || { currentStep: 4, totalSteps: 4, steps: ['Key'] };
-
-  useEffect(() => {
-    confetti({
-      particleCount: 100,
-      spread: 70,
-      origin: { y: 0.6 },
-      colors: ['#3b82f6', '#60a5fa', '#ffffff']
-    });
-    // No auto-reset timer here. User must explicitly leave.
-  }, []);
 
   return (
     <div className="h-screen w-full overflow-hidden relative">
@@ -30,7 +19,7 @@ export const CompletePage: React.FC = () => {
          />
          
          <div className="flex-1 flex flex-col items-center justify-center text-center">
-           <div className="w-32 h-32 bg-green-500 rounded-full flex items-center justify-center mb-8 shadow-[0_0_40px_rgba(34,197,94,0.4)] animate-scale-in">
+           <div className="w-32 h-32 bg-green-500 rounded-full flex items-center justify-center mb-8 shadow-[0_0_40px_rgba(34,197,94,0.4)]">
               <Key size={64} className="text-white" />
            </div>
 
@@ -49,15 +38,6 @@ export const CompletePage: React.FC = () => {
          </div>
        </div>
 
-       <style>{`
-        @keyframes scale-in {
-          from { transform: scale(0); opacity: 0; }
-          to { transform: scale(1); opacity: 1; }
-        }
-        .animate-scale-in {
-          animation: scale-in 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
-        }
-       `}</style>
     </div>
   );
 };

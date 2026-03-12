@@ -12,7 +12,7 @@ class PremiumAudioPlayerService {
     private activeReject: ((error: Error) => void) | null = null;
     private activeController: AbortController | null = null;
     private activeTimeout: ReturnType<typeof setTimeout> | null = null;
-    private activeAbortReason: "timeout" | "superseded" | "stop" | null = null;
+    private activeAbortReasons = new Map<number, "timeout" | "superseded" | "stop">();
     private requestSequence = 0;
 
     /**
@@ -26,17 +26,18 @@ class PremiumAudioPlayerService {
         this.stop("superseded");
 
         // Timeout: short kiosk prompts should fail fast and fall back instead of creating long silence.
-        const PREMIUM_TTS_TIMEOUT_MS = 12000;
+        const PREMIUM_TTS_TIMEOUT_MS = 25000;
         const requestId = ++this.requestSequence;
         const controller = new AbortController();
         this.activeController = controller;
-        this.activeAbortReason = null;
         const startedAt = Date.now();
+
         console.log(
             `[PremiumPlayer][${requestId}] Request start lang=${language} chars=${text.trim().length} timeoutMs=${PREMIUM_TTS_TIMEOUT_MS}`
         );
+
         this.activeTimeout = setTimeout(() => {
-            this.activeAbortReason = "timeout";
+            this.activeAbortReasons.set(requestId, "timeout");
             controller.abort();
         }, PREMIUM_TTS_TIMEOUT_MS);
 
@@ -84,6 +85,7 @@ class PremiumAudioPlayerService {
                     this.cleanup();
                     hooks?.onEnd?.();
                     console.log(`[PremiumPlayer][${requestId}] Playback ended totalMs=${Date.now() - startedAt}`);
+                    this.activeAbortReasons.delete(requestId);
                     resolve();
                 };
 
@@ -91,18 +93,22 @@ class PremiumAudioPlayerService {
                     this.activeReject = null;
                     this.cleanup();
                     console.warn(`[PremiumPlayer][${requestId}] Audio playback failed`);
+                    this.activeAbortReasons.delete(requestId);
                     reject(new Error("Audio playback failed"));
                 };
 
                 audio.play().catch((error) => {
                     this.activeReject = null;
                     this.cleanup();
+                    this.activeAbortReasons.delete(requestId);
                     reject(error instanceof Error ? error : new Error("Audio playback failed"));
                 });
             });
         } catch (error) {
-            const abortReason = this.activeAbortReason;
+            const abortReason = this.activeAbortReasons.get(requestId);
+            this.activeAbortReasons.delete(requestId);
             this.clearPendingRequest();
+
             const isTimeout = error instanceof DOMException && error.name === 'AbortError';
             if (abortReason === "superseded" || abortReason === "stop") {
                 console.debug(`[PremiumPlayer][${requestId}] Request stopped reason=${abortReason}`);
@@ -124,7 +130,11 @@ class PremiumAudioPlayerService {
      * Stop the current audio playback instantly.
      */
     public stop(reason: "superseded" | "stop" = "stop"): void {
-        this.activeAbortReason = reason;
+        const requestId = this.requestSequence;
+        if (requestId > 0) {
+            this.activeAbortReasons.set(requestId, reason);
+        }
+
         if (this.activeController) {
             this.activeController.abort();
         }
@@ -138,6 +148,8 @@ class PremiumAudioPlayerService {
         if (this.activeReject) {
             const reject = this.activeReject;
             this.activeReject = null;
+            // Removed: this.activeAbortReasons.delete(requestId); 
+            // The catch block in play() will handle cleanup after reading the reason.
             reject(new Error("playback_stopped"));
         }
     }

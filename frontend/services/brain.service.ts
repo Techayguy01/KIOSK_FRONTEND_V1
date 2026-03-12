@@ -159,7 +159,9 @@ export async function sendToBrain(
             dispatchFromConfidence(cachedResponse);
             return cachedResponse;
         }
-        console.log(`[BrainService][FAQCache] MISS key=${cacheKey}`);
+
+        // Exact cache MISS -> Send to backend for semantic matching
+        console.log(`[BrainService][FAQCache] MISS key=${cacheKey} -> Searching backend semantic engine`);
     }
 
     // V2 Python backend payload - note snake_case fields to match FastAPI ChatRequest

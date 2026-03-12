@@ -1441,11 +1441,34 @@ class AgentAdapterService {
     }
 
     /**
+     * Phase 10: Normalize transcript for better cache hits.
+     */
+    private async normalizeTranscriptWithBrain(transcript: string): Promise<string> {
+        try {
+            const url = buildTenantApiUrl("utility/normalize");
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getTenantHeaders() },
+                body: JSON.stringify({ text: transcript })
+            });
+            if (!response.ok) return transcript; // Fallback to raw
+            const data = await response.json();
+            return data.normalizedText || transcript;
+        } catch (error) {
+            console.warn("[AgentAdapter] Normalization failed, using raw transcript:", error);
+            return transcript;
+        }
+    }
+
+    /**
      * Phase 9.4 + 9.5: Process transcript with LLM Brain
      * Calls /api/chat, maps intent, and mediates transitions.
      */
     public async processWithLLMBrain(transcript: string, sessionId?: string): Promise<void> {
         if (!transcript || transcript.trim().length < 2) return;
+
+        // Phase 11: Pause watchdog during active Brain processing to allow for Hinglish latency
+        VoiceRuntime.pauseWatchdog();
 
         try {
             if (this.pendingCancelConfirmation) {
@@ -1484,16 +1507,17 @@ class AgentAdapterService {
                 ? buildTenantApiUrl("chat/booking")
                 : buildTenantApiUrl("chat");
             const backendCurrentState = normalizeStateForBackendChat(this.state);
+            const normalizedTranscript = await this.normalizeTranscriptWithBrain(transcript);
             const tenantSlug = getTenantSlug();
             const activeLanguage = getCurrentTenantLanguage(this.language);
-            const cacheKey = buildCacheKey(tenantSlug, transcript);
-            const faqCacheEligible = shouldUseFaqCache(transcript, this.state);
+            const cacheKey = buildCacheKey(tenantSlug, normalizedTranscript);
+            const faqCacheEligible = shouldUseFaqCache(normalizedTranscript, this.state);
             console.log(`[AgentAdapter][FAQCache] eligibility=${faqCacheEligible} key=${cacheKey}`);
 
             let decision: any;
 
             if (faqCacheEligible) {
-                const cachedFaq = await getCachedFaqAnswer(tenantSlug, transcript);
+                const cachedFaq = await getCachedFaqAnswer(tenantSlug, normalizedTranscript);
                 if (cachedFaq) {
                     decision = {
                         speech: cachedFaq.answer,
@@ -1546,7 +1570,7 @@ class AgentAdapterService {
                     console.log(`[AgentAdapter][FAQCache] WRITE_PATH key=${cacheKey}`);
                     await putCachedFaqAnswer({
                         tenantSlug,
-                        transcript,
+                        transcript: decision.normalizedQuery || normalizedTranscript,
                         answer: decision.speech,
                         faqId: decision.faqId ?? null,
                         confidence: decision.confidence,
@@ -1707,6 +1731,9 @@ class AgentAdapterService {
         } catch (error) {
             console.error("[AgentAdapter] LLM Error:", error);
             this.speak("Please use the touch screen.");
+        } finally {
+            // Phase 11: Always resume watchdog after Brain processing attempt finishes.
+            VoiceRuntime.resumeWatchdog();
         }
     }
 

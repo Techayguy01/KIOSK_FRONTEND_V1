@@ -88,15 +88,21 @@ export function getNodeApiBaseUrl(): string {
   return NODE_API_BASE_URL;
 }
 
-export function buildTenantApiUrl(route: "chat" | "chat/booking" | "tenant" | "rooms" | "ocr" | "voice/tts" | "voice/stt"): string {
+export function buildTenantApiUrl(route: "chat" | "chat/booking" | "tenant" | "rooms" | "faqs" | "ocr" | "voice/tts" | "voice/stt" | "utility/normalize"): string {
   if (route === "chat" || route === "chat/booking") {
     return `${PYTHON_API_BASE_URL}/api/chat`;
+  }
+  if (route === "utility/normalize") {
+    return `${PYTHON_API_BASE_URL}/api/utility/normalize`;
   }
   if (route === "rooms") {
     return `${PYTHON_API_BASE_URL}/api/rooms?slug=${currentTenantSlug}`;
   }
   if (route === "tenant") {
     return `${PYTHON_API_BASE_URL}/api/tenant?slug=${currentTenantSlug}`;
+  }
+  if (route === "faqs") {
+    return `${PYTHON_API_BASE_URL}/api/faqs?slug=${currentTenantSlug}`;
   }
   if (route === "voice/tts") {
     return `${PYTHON_API_BASE_URL}/api/voice/tts`;
