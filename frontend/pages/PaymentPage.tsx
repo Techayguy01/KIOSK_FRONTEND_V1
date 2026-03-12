@@ -3,10 +3,12 @@ import { useUIState } from '../state/uiContext';
 import { ProgressBar } from '../components/ProgressBar';
 import { CreditCard, Lock, Wifi, Loader2 } from 'lucide-react';
 import AnimatedGradientBackground from '../components/ui/animated-gradient-background';
+import { optimizeCloudinaryUrl } from '../lib/cloudinary';
 
 export const PaymentPage: React.FC = () => {
   const { data, emit, loading } = useUIState();
   const room = data.selectedRoom || {};
+  const optimizedRoomImage = optimizeCloudinaryUrl(room.image || "");
   const bill = data.bill || { nights: 0, subtotal: '0.00', taxes: '0.00', total: '0.00', currencySymbol: '$' };
   const progress = data.progress || { currentStep: 3, totalSteps: 4, steps: ['Payment'] };
 
@@ -31,7 +33,7 @@ export const PaymentPage: React.FC = () => {
             <h3 className="text-slate-400 text-sm font-medium uppercase tracking-wider mb-6">Reservation Summary</h3>
             
             <div className="flex items-start gap-4 mb-6">
-              <img src={room.image} alt="Room" className="w-24 h-24 rounded-lg object-cover" />
+              <img src={optimizedRoomImage} alt="Room" className="w-24 h-24 rounded-lg object-cover" />
               <div>
                 <h4 className="text-white font-bold text-xl">{room.name}</h4>
                 <p className="text-slate-400 text-sm">{bill.nights} Nights • 2 Guests</p>

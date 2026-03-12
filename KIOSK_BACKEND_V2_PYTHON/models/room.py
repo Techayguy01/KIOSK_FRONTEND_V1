@@ -19,5 +19,11 @@ class RoomType(SQLModel, table=True):
     code: str = Field(sa_column=Column(String(60)))
     price: Decimal = Field(sa_column=Column(Numeric))
     amenities: List[str] = Field(default_factory=list, sa_column=Column(ARRAY(String)))
+    # Shared schema update: RoomType now stores Cloudinary URLs in an array column.
+    # Prisma field is `imageUrls`, so we map to that DB column explicitly.
+    image_urls: List[str] = Field(
+        default_factory=list,
+        sa_column=Column("imageUrls", ARRAY(String), nullable=True),
+    )
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True)))
     updated_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
