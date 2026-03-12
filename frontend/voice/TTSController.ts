@@ -14,6 +14,7 @@ import { TtsEvent, TtsState } from "./tts.types";
 import { PremiumAudioPlayer } from "./premiumPlayer";
 
 const VOICE_QUALITY_HINTS = ["google", "microsoft", "samantha", "hindi", "india"];
+const FEMALE_VOICE_HINTS = ["female", "woman", "zira", "hazel", "heera", "samantha", "neerja", "aditi", "ritu", "anushka"];
 
 function normalizeTtsLanguage(language?: string): string {
     const normalized = String(language || "").trim().toLowerCase();
@@ -36,18 +37,10 @@ function shouldUseBrowserFallbackForPremiumError(error: unknown): boolean {
     );
 }
 
-type TTSQueueItem = {
-    text: string;
-    resolve: () => void;
-    reject: (error: Error) => void;
-};
-
 class TTSControllerService {
     private listeners: ((event: TtsEvent) => void)[] = [];
     private state: TtsState = "IDLE";
-    private currentUtterance: SpeechSynthesisUtterance | null = null;
     private selectedVoice: SpeechSynthesisVoice | null = null;
-    private pendingQueue: TTSQueueItem[] = [];
     private isCancelling = false;
     private activeText: string | null = null;
 
@@ -71,11 +64,11 @@ class TTSControllerService {
 
             let selected = voices.find(v =>
                 (v.lang === "en-IN" || v.lang === "hi-IN") &&
-                (v.name.includes("Female") || v.name.includes("Neerja") || v.name.includes("Aditi"))
+                this.isLikelyFemaleVoice(v)
             );
 
             if (!selected) {
-                selected = voices.find(v => v.name.includes("Female") || v.name.includes("Samantha"));
+                selected = voices.find(v => this.isLikelyFemaleVoice(v));
             }
 
             if (!selected) {
@@ -191,11 +184,7 @@ class TTSControllerService {
 
         PremiumAudioPlayer.stop();
 
-        this.pendingQueue.forEach(item => item.resolve());
-        this.pendingQueue = [];
-
         this.state = "IDLE";
-        this.currentUtterance = null;
         this.activeText = null;
 
         if (wasSpeaking) {
@@ -254,16 +243,17 @@ class TTSControllerService {
             utterance.rate = 1.0;
             utterance.pitch = 1.0;
             utterance.volume = 1.0;
-            this.currentUtterance = utterance;
 
             utterance.onstart = () => {
                 this.state = "SPEAKING";
+                console.log(
+                    `[TTSController] Browser fallback voice: ${utterance.voice?.name || "default"} (${utterance.voice?.lang || targetLang})`
+                );
                 this.emit({ type: "TTS_STARTED", text });
             };
 
             utterance.onend = () => {
                 this.state = "IDLE";
-                this.currentUtterance = null;
                 this.emit({ type: "TTS_ENDED", text });
                 resolve();
             };
@@ -272,12 +262,10 @@ class TTSControllerService {
                 const errorCode = String(event.error || "browser_tts_failed");
                 if (errorCode === "interrupted" || errorCode === "canceled") {
                     this.state = "IDLE";
-                    this.currentUtterance = null;
                     resolve();
                     return;
                 }
                 this.state = "IDLE";
-                this.currentUtterance = null;
                 reject(new Error(errorCode));
             };
 
@@ -291,12 +279,25 @@ class TTSControllerService {
             return this.selectedVoice;
         }
 
+        const preferredByExactFemale = voices.find(
+            (voice) => voice.lang.toLowerCase() === targetLang.toLowerCase() && this.isLikelyFemaleVoice(voice)
+        );
+        if (preferredByExactFemale) return preferredByExactFemale;
+
         const preferredByExact = voices.find((voice) => voice.lang.toLowerCase() === targetLang.toLowerCase());
         if (preferredByExact) return preferredByExact;
 
         const prefix = targetLang.split("-")[0].toLowerCase();
+        const preferredByPrefixFemale = voices.find(
+            (voice) => voice.lang.toLowerCase().startsWith(prefix) && this.isLikelyFemaleVoice(voice)
+        );
+        if (preferredByPrefixFemale) return preferredByPrefixFemale;
+
         const preferredByPrefix = voices.find((voice) => voice.lang.toLowerCase().startsWith(prefix));
         if (preferredByPrefix) return preferredByPrefix;
+
+        const fallbackFemale = voices.find((voice) => this.isLikelyFemaleVoice(voice));
+        if (fallbackFemale) return fallbackFemale;
 
         const qualityVoice = voices.find((voice) => {
             const lowerName = voice.name.toLowerCase();
@@ -304,6 +305,11 @@ class TTSControllerService {
         });
 
         return qualityVoice || this.selectedVoice || voices[0];
+    }
+
+    private isLikelyFemaleVoice(voice: SpeechSynthesisVoice): boolean {
+        const lowerName = String(voice.name || "").toLowerCase();
+        return FEMALE_VOICE_HINTS.some((hint) => lowerName.includes(hint));
     }
 }
 

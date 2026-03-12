@@ -1,7 +1,25 @@
-import { buildTenantApiUrl, getNodeApiBaseUrl, getTenantHeaders } from "./tenantContext";
-import type { RoomsResponseDTO, RoomDTO } from "@contracts/api.contract";
+import { buildTenantApiUrl, getNodeApiBaseUrl, getTenantHeaders, getTenantSlug } from "./tenantContext";
+import type { RoomDTO } from "@contracts/api.contract";
 
 export type { RoomDTO };
+
+const ROOM_CACHE_TTL_MS = Number(import.meta.env.VITE_ROOMS_CACHE_TTL_MS || 60000);
+const PRIMARY_FETCH_TIMEOUT_MS = Number(import.meta.env.VITE_ROOMS_PRIMARY_TIMEOUT_MS || 3000);
+const FALLBACK_FETCH_TIMEOUT_MS = Number(import.meta.env.VITE_ROOMS_FALLBACK_TIMEOUT_MS || 3000);
+
+type RoomCacheEntry = {
+  tenantSlug: string;
+  rooms: RoomDTO[];
+  fetchedAt: number;
+};
+
+type InflightFetch = {
+  tenantSlug: string;
+  promise: Promise<RoomDTO[]>;
+};
+
+let roomCache: RoomCacheEntry | null = null;
+let inflightFetch: InflightFetch | null = null;
 
 export class RoomServiceError extends Error {
   status: number;
@@ -15,35 +33,127 @@ export class RoomServiceError extends Error {
   }
 }
 
-export const RoomService = {
-  getAvailableRooms: async (): Promise<RoomDTO[]> => {
-    const headers = {
-      ...getTenantHeaders(),
-    };
+function normalizeRooms(payload: any): RoomDTO[] {
+  const rawRooms: any[] = Array.isArray(payload?.data)
+    ? payload.data
+    : Array.isArray(payload?.rooms)
+      ? payload.rooms
+      : [];
 
-    const primaryResponse = await fetch(buildTenantApiUrl("rooms"), { headers });
-    const response = primaryResponse.ok
-      ? primaryResponse
-      : await fetch(`${getNodeApiBaseUrl()}/api/rooms`, {
-        headers: {
-          ...headers,
-        },
-      });
+  return rawRooms.map((room: any) => ({
+    id: room.id,
+    name: room.name,
+    code: room.code,
+    price: typeof room.price === "number" ? room.price : Number(room.price),
+    currency: room.currency ?? "INR",
+    image: room.image ?? room.image_url ?? "",
+    features: Array.isArray(room.features)
+      ? room.features
+      : Array.isArray(room.amenities)
+        ? room.amenities
+        : [],
+  }));
+}
 
-    if (!response.ok) {
-      let errorCode: string | undefined;
-      let errorMessage = `Failed to load rooms (${response.status})`;
-      try {
-        const payload = await response.json();
-        errorCode = payload?.error?.code;
-        if (payload?.error?.message) {
-          errorMessage = payload.error.message;
-        }
-      } catch {
-        // ignore JSON parse failures and keep fallback message
-      }
-      throw new RoomServiceError(errorMessage, response.status, errorCode);
+async function fetchWithTimeout(url: string, headers: Record<string, string>, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, { headers, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function toRoomServiceError(response: Response): Promise<RoomServiceError> {
+  let code: string | undefined;
+  let message = `Failed to load rooms (${response.status})`;
+
+  try {
+    const payload = await response.json();
+    code = payload?.error?.code;
+    if (payload?.error?.message) {
+      message = payload.error.message;
     }
+  } catch {
+    // Ignore parse errors and keep fallback message
+  }
+
+  return new RoomServiceError(message, response.status, code);
+}
+
+function isCacheValid(entry: RoomCacheEntry | null, tenantSlug: string): boolean {
+  if (!entry) return false;
+  if (entry.tenantSlug !== tenantSlug) return false;
+  return Date.now() - entry.fetchedAt < ROOM_CACHE_TTL_MS;
+}
+
+function getTenantCacheKey(): string {
+  const slug = getTenantSlug();
+  return slug || "default";
+}
+
+export const RoomService = {
+  async getAvailableRooms(options?: { forceRefresh?: boolean }): Promise<RoomDTO[]> {
+    const tenantKey = getTenantCacheKey();
+    const forceRefresh = Boolean(options?.forceRefresh);
+
+    if (!forceRefresh && isCacheValid(roomCache, tenantKey)) {
+      return roomCache!.rooms;
+    }
+
+    if (!forceRefresh && inflightFetch && inflightFetch.tenantSlug === tenantKey) {
+      return inflightFetch.promise;
+    }
+
+    const headers = { ...getTenantHeaders() };
+    const primaryUrl = buildTenantApiUrl("rooms");
+    const fallbackUrl = `${getNodeApiBaseUrl()}/api/rooms`;
+
+    const requestPromise = (async () => {
+      let primaryError: Error | null = null;
+
+      try {
+        const primaryResponse = await fetchWithTimeout(primaryUrl, headers, PRIMARY_FETCH_TIMEOUT_MS);
+        if (primaryResponse.ok) {
+          const payload = await primaryResponse.json();
+          const rooms = normalizeRooms(payload);
+          roomCache = { tenantSlug: tenantKey, rooms, fetchedAt: Date.now() };
+          return rooms;
+        }
+        primaryError = await toRoomServiceError(primaryResponse);
+      } catch (error) {
+        primaryError = error as Error;
+        console.warn("[RoomService] Primary room fetch failed, trying fallback:", error);
+      }
+
+      try {
+        const fallbackResponse = await fetchWithTimeout(fallbackUrl, headers, FALLBACK_FETCH_TIMEOUT_MS);
+        if (!fallbackResponse.ok) {
+          throw await toRoomServiceError(fallbackResponse);
+        }
+        const payload = await fallbackResponse.json();
+        const rooms = normalizeRooms(payload);
+        roomCache = { tenantSlug: tenantKey, rooms, fetchedAt: Date.now() };
+        return rooms;
+      } catch (fallbackError) {
+        if (primaryError instanceof RoomServiceError) throw primaryError;
+        if (fallbackError instanceof RoomServiceError) throw fallbackError;
+        if (primaryError) throw primaryError;
+        throw fallbackError;
+      }
+    })();
+
+    inflightFetch = { tenantSlug: tenantKey, promise: requestPromise };
+    try {
+      return await requestPromise;
+    } finally {
+      if (inflightFetch?.promise === requestPromise) {
+        inflightFetch = null;
+      }
+    }
+  },
 
     // V2 Python backend returns { rooms: [] }.
     // Old Node backend may return { data: [] }.

@@ -146,19 +146,25 @@ export const StateMachine = {
 
   /**
    * helper to find "previous" logical state for Back button
-   * (Simple stack logic for linear flows)
+   * Uses explicit journey-aware mappings instead of a single mixed linear flow.
    */
   getPreviousState: (current: UIState): UIState => {
-    // Phase 11.7: Simple Linear Flow for Demo
-    const flow: UIState[] = ['IDLE', 'WELCOME', 'SCAN_ID', 'ID_VERIFY', 'CHECK_IN_SUMMARY', 'ROOM_SELECT', 'BOOKING_COLLECT', 'BOOKING_SUMMARY', 'PAYMENT'];
-    const idx = flow.indexOf(current);
-    if (idx > 0) return flow[idx - 1];
+    const previousStateMap: Partial<Record<UIState, UIState>> = {
+      WELCOME: 'IDLE',
+      AI_CHAT: 'WELCOME',
+      MANUAL_MENU: 'WELCOME',
+      SCAN_ID: 'MANUAL_MENU',
+      ID_VERIFY: 'SCAN_ID',
+      CHECK_IN_SUMMARY: 'ID_VERIFY',
+      ROOM_SELECT: 'MANUAL_MENU',
+      BOOKING_COLLECT: 'ROOM_SELECT',
+      BOOKING_SUMMARY: 'BOOKING_COLLECT',
+      PAYMENT: 'BOOKING_SUMMARY',
+      KEY_DISPENSING: 'PAYMENT',
+      COMPLETE: 'WELCOME',
+      ERROR: 'WELCOME'
+    };
 
-    // Fallback for non-linear states
-    if (current === 'MANUAL_MENU') return 'WELCOME';
-    if (current === 'AI_CHAT') return 'WELCOME';
-    if (current === 'ERROR') return 'WELCOME';
-
-    return 'IDLE';
+    return previousStateMap[current] || 'IDLE';
   }
 };

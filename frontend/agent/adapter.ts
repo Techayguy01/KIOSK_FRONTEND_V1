@@ -9,6 +9,7 @@ import { UIState } from "@contracts/backend.contract";
 import { buildTenantApiUrl, getCurrentTenantLanguage, getTenantHeaders, getTenant, getTenantSlug } from "../services/tenantContext";
 import { normalizeBackendStateFromResponse, normalizeStateForBackendChat } from "../services/uiStateInterop";
 import { buildCacheKey, getCachedFaqAnswer, putCachedFaqAnswer } from "../services/faqCache.service";
+import { RoomService } from "../services/room.service";
 
 /**
  * AgentAdapter (Singleton) - Phase 9.4: TTS UX, Barge-In & Audio Authority
@@ -220,6 +221,7 @@ class AgentAdapterService {
         expectedType: null,
         promptAsked: "",
     };
+    private manualEditModeActive = false;
     private listeningRestartTimer: ReturnType<typeof setTimeout> | null = null;
     private silenceReengageTimer: ReturnType<typeof setTimeout> | null = null;
     private keyDispenseCompleteTimer: ReturnType<typeof setTimeout> | null = null;
@@ -572,7 +574,7 @@ class AgentAdapterService {
     // === Voice Authority Check ===
 
     private hasVoiceAuthority(): boolean {
-        return VOICE_AUTHORITY_MATRIX[this.state] ?? false;
+        return !this.manualEditModeActive && (VOICE_AUTHORITY_MATRIX[this.state] ?? false);
     }
 
     /**
@@ -719,9 +721,10 @@ class AgentAdapterService {
                 VoiceRuntime.setTurnState("IDLE");
                 this.resetVoiceLifecycle("session_aborted");
                 VoiceRuntime.clearSessionData();  // Privacy
-                // Transition to WELCOME for recovery
-                if (this.state !== "WELCOME" && this.state !== "ERROR") {
-                    this.dispatch("CANCEL_REQUESTED");
+                // Recovery should always reset the guest-facing flow back to WELCOME,
+                // not reuse generic back-navigation across mixed check-in/booking journeys.
+                if (this.state !== "WELCOME" && this.state !== "ERROR" && this.state !== "IDLE") {
+                    this.transitionTo("WELCOME", "CANCEL_REQUESTED", { voiceRecovery: true });
                 }
                 break;
 
@@ -888,6 +891,162 @@ class AgentAdapterService {
         });
     }
 
+    private formatSpeechDate(value: unknown): string | null {
+        const raw = String(value || "").trim();
+        if (!raw) return null;
+
+        const parsed = new Date(raw);
+        if (Number.isNaN(parsed.getTime())) {
+            return raw;
+        }
+
+        return parsed.toLocaleDateString("en-IN", {
+            month: "long",
+            day: "numeric",
+            year: "numeric",
+        });
+    }
+
+    private hasFilledBookingSlotValue(value: unknown): boolean {
+        return value !== null && value !== undefined && String(value).trim() !== "";
+    }
+
+    private getMissingBookingSlots(slots: Record<string, unknown>): BookingSlotKey[] {
+        return BOOKING_SLOT_PRIORITY.filter((slot) => !this.hasFilledBookingSlotValue(slots[slot]));
+    }
+
+    private pickFilledManualOverrides(slots: Record<string, unknown> | undefined): Record<string, unknown> {
+        const result: Record<string, unknown> = {};
+        if (!slots) return result;
+
+        for (const [key, value] of Object.entries(slots)) {
+            if (this.hasFilledBookingSlotValue(value)) {
+                result[key] = value;
+            }
+        }
+
+        return result;
+    }
+
+    private applyStoredManualBookingOverrides(merged: Record<string, any>): void {
+        if (merged.manualSelectedRoomOverride) {
+            merged.selectedRoom = merged.manualSelectedRoomOverride;
+        }
+
+        if (merged.manualBookingOverrides) {
+            merged.bookingSlots = {
+                ...(merged.bookingSlots || {}),
+                ...merged.manualBookingOverrides,
+            };
+        }
+    }
+
+    private calculateBookingNights(checkInDate: unknown, checkOutDate: unknown): number | null {
+        const checkIn = new Date(String(checkInDate || ""));
+        const checkOut = new Date(String(checkOutDate || ""));
+        if (Number.isNaN(checkIn.getTime()) || Number.isNaN(checkOut.getTime())) {
+            return null;
+        }
+
+        const diffMs = checkOut.getTime() - checkIn.getTime();
+        if (diffMs <= 0) {
+            return null;
+        }
+
+        return Math.round(diffMs / (1000 * 60 * 60 * 24));
+    }
+
+    private syncDerivedBookingData(merged: Record<string, any>): void {
+        const slots = { ...(merged.bookingSlots || {}) } as Record<string, unknown>;
+        const nights = this.calculateBookingNights(slots.checkInDate, slots.checkOutDate);
+        if (nights !== null) {
+            slots.nights = nights;
+        } else {
+            delete slots.nights;
+        }
+
+        const roomPrice = Number(merged?.selectedRoom?.price);
+        const existingBill = merged?.bill || {};
+        const previousSubtotal = Number(existingBill?.subtotal);
+        const previousTaxes = Number(existingBill?.taxes);
+        const taxRate = Number.isFinite(previousSubtotal) && previousSubtotal > 0 && Number.isFinite(previousTaxes)
+            ? previousTaxes / previousSubtotal
+            : 0;
+
+        const shouldRecalculateFinancials = Boolean(merged.manualBookingOverrides)
+            || !this.hasFilledBookingSlotValue(slots.totalPrice)
+            || !existingBill
+            || !this.hasFilledBookingSlotValue(existingBill.total);
+
+        if (nights !== null && Number.isFinite(roomPrice) && roomPrice > 0 && shouldRecalculateFinancials) {
+            const subtotal = roomPrice * nights;
+            const taxes = subtotal * taxRate;
+            const total = subtotal + taxes;
+
+            slots.totalPrice = Number(total.toFixed(2));
+            merged.bill = {
+                nights,
+                subtotal: subtotal.toFixed(2),
+                taxes: taxes.toFixed(2),
+                total: total.toFixed(2),
+                currencySymbol: merged?.selectedRoom?.currency === "USD" ? "$" : (merged?.selectedRoom?.currency || "INR"),
+            };
+        } else if (nights !== null && existingBill) {
+            merged.bill = {
+                ...existingBill,
+                nights,
+            };
+        }
+
+        merged.bookingSlots = slots;
+    }
+
+    private buildManualEditPrompt(): string {
+        return this.pickLocalizedText({
+            en: "You can manually enter or correct the room, guest name, and stay dates now. Tap save changes when you are ready.",
+            hi: "अब आप room, guest name और stay dates को manually enter या correct कर सकते हैं। तैयार होने पर save changes पर tap कीजिए।",
+            mr: "आता तुम्ही room, guest name आणि stay dates manually भरू किंवा दुरुस्त करू शकता. तयार झाल्यावर save changes वर tap करा.",
+        });
+    }
+
+    private buildManualReviewPrompt(slots: Record<string, unknown>, roomLike?: any): string {
+        const roomName = this.getCanonicalSelectedRoomLabel(roomLike) || String(slots.roomType || "").trim() || "your selected room";
+        const adults = this.hasFilledBookingSlotValue(slots.adults) ? `${slots.adults} adult${Number(slots.adults) === 1 ? "" : "s"}` : "the guest count";
+        const checkIn = this.formatSpeechDate(slots.checkInDate) || "the check in date";
+        const checkOut = this.formatSpeechDate(slots.checkOutDate) || "the check out date";
+        const guestName = this.hasFilledBookingSlotValue(slots.guestName) ? String(slots.guestName).trim() : "the guest name";
+
+        return this.pickLocalizedText({
+            en: `I updated the booking details. Room: ${roomName}. Guests: ${adults}. Check in: ${checkIn}. Check out: ${checkOut}. Guest name: ${guestName}. Please review everything once more and continue when ready.`,
+            hi: `मैंने booking details update कर दी हैं। Room: ${roomName}. Guests: ${adults}. Check in: ${checkIn}. Check out: ${checkOut}. Guest name: ${guestName}. कृपया details एक बार फिर देख लीजिए और तैयार होने पर आगे बढ़िए।`,
+            mr: `मी booking details update केल्या आहेत. Room: ${roomName}. Guests: ${adults}. Check in: ${checkIn}. Check out: ${checkOut}. Guest name: ${guestName}. कृपया details पुन्हा एकदा पाहा आणि तयार झाल्यावर पुढे जा.`,
+        });
+    }
+
+    private syncBookingFlowHints(merged: Record<string, any>): void {
+        const slots = (merged.bookingSlots || {}) as Record<string, unknown>;
+        const hasBookingContext = Boolean(merged.selectedRoom) || Object.keys(slots).length > 0;
+        if (!hasBookingContext) {
+            return;
+        }
+
+        const missingSlots = this.getMissingBookingSlots(slots);
+        merged.missingSlots = missingSlots;
+
+        const activeSlot = this.slotContext.activeSlot;
+        if (activeSlot && this.hasFilledBookingSlotValue(slots[activeSlot])) {
+            this.clearActiveSlot();
+        }
+
+        const hintedSlot = this.normalizeBookingSlotKey(merged.nextSlotToAsk);
+        if (hintedSlot && !this.hasFilledBookingSlotValue(slots[hintedSlot])) {
+            merged.nextSlotToAsk = hintedSlot;
+            return;
+        }
+
+        merged.nextSlotToAsk = missingSlots.length > 0 ? missingSlots[0] : null;
+    }
+
     private resolveNextBookingSlot(payload?: any): BookingSlotKey | null {
         const hinted = this.normalizeBookingSlotKey(payload?.nextSlotToAsk ?? this.viewData.nextSlotToAsk ?? this.slotContext.activeSlot);
         if (hinted) return hinted;
@@ -959,6 +1118,7 @@ class AgentAdapterService {
         if (this.state !== "ROOM_SELECT") return false;
         if (!this.hasVoiceAuthority()) return false;
         if (TTSController.isSpeaking()) return false;
+        if (payload?.suppressSpeech) return false;
 
         const backendSpeech = String(payload?.speech || "").trim();
         const roomList = Array.isArray(payload?.rooms) ? payload.rooms : [];
@@ -1439,6 +1599,19 @@ class AgentAdapterService {
      */
     private sessionId: string | null = null;
 
+    private releaseBackendChatSession(sessionId: string, reason: string, keepalive = false): void {
+        const url = `${buildTenantApiUrl("chat")}/${encodeURIComponent(sessionId)}`;
+        fetch(url, {
+            method: "DELETE",
+            headers: getTenantHeaders(),
+            keepalive,
+        }).then(() => {
+            console.log(`[AgentAdapter] Backend chat session cleared (${reason}): ${sessionId}`);
+        }).catch((error) => {
+            console.warn(`[AgentAdapter] Failed to clear backend chat session (${reason}):`, error);
+        });
+    }
+
     private getSessionId(): string {
         if (!this.sessionId) {
             this.sessionId = `session_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -1453,10 +1626,14 @@ class AgentAdapterService {
     /**
      * Clear session for privacy (called on WELCOME transition).
      */
-    public clearSession(): void {
+    public clearSession(reason = "manual_reset", options?: { keepalive?: boolean }): void {
+        const sessionToClear = this.sessionId;
         this.sessionId = null;
         this.clearActiveSlot();
-        console.log("[AgentAdapter] Session cleared for privacy");
+        if (sessionToClear) {
+            this.releaseBackendChatSession(sessionToClear, reason, Boolean(options?.keepalive));
+        }
+        console.log(`[AgentAdapter] Session cleared for privacy (${reason})`);
     }
 
     /**
@@ -1513,6 +1690,13 @@ class AgentAdapterService {
 
     private applyPayloadData(intent: string, payload?: any, nextState?: UiState): void {
         const merged: Record<string, any> = { ...this.viewData };
+        const resolvedState = nextState || this.state;
+
+        if (!["ROOM_SELECT", "BOOKING_COLLECT", "BOOKING_SUMMARY", "PAYMENT"].includes(resolvedState)) {
+            delete merged.manualBookingOverrides;
+            delete merged.manualSelectedRoomOverride;
+            this.manualEditModeActive = false;
+        }
 
         if (nextState === "SCAN_ID" && (intent === "RESCAN" || intent === "CHECK_IN_SELECTED")) {
             merged.ocr = null;
@@ -1529,6 +1713,10 @@ class AgentAdapterService {
             merged.selectedRoom = payload.selectedRoom;
         }
 
+        if (payload && Object.prototype.hasOwnProperty.call(payload, "selectedRoom") && payload.selectedRoom === null) {
+            merged.selectedRoom = null;
+        }
+
         if (Array.isArray(payload?.rooms)) {
             merged.rooms = payload.rooms;
         }
@@ -1537,6 +1725,22 @@ class AgentAdapterService {
             // Slot values come from backend extraction/validation, not transcript heuristics.
             merged.bookingSlots = { ...(merged.bookingSlots || {}), ...payload.slots };
             this.maybeClearFilledActiveSlot(payload.slots);
+        }
+
+        if (payload?.manualOverride) {
+            merged.manualBookingOverrides = {
+                ...(merged.manualBookingOverrides || {}),
+                ...this.pickFilledManualOverrides(payload.slots),
+            };
+            if (payload?.selectedRoom || payload?.room) {
+                merged.manualSelectedRoomOverride = payload.selectedRoom || payload.room;
+            }
+        }
+
+        this.applyStoredManualBookingOverrides(merged);
+
+        if (merged?.bookingSlots?.roomType == null) {
+            merged.selectedRoom = null;
         }
 
         const selectedRoomDisplay = this.getCanonicalSelectedRoomLabel(merged.selectedRoom);
@@ -1605,7 +1809,10 @@ class AgentAdapterService {
             merged.bookingError = null;
         }
 
-        const progressState = nextState || this.state;
+        this.syncDerivedBookingData(merged);
+        this.syncBookingFlowHints(merged);
+
+        const progressState = resolvedState;
         merged.progress = this.getProgress(progressState);
         this.viewData = merged;
     }
@@ -1674,6 +1881,10 @@ class AgentAdapterService {
         }
 
         if (intent === 'BACK_REQUESTED' || intent === 'CANCEL_REQUESTED') {
+            const machineResolved = StateMachine.transition(currentState as UIState, intent as any) as UiState;
+            if (machineResolved !== currentState) {
+                return machineResolved;
+            }
             return StateMachine.getPreviousState(currentState as UIState) as UiState;
         }
 
@@ -1692,6 +1903,36 @@ class AgentAdapterService {
     public handleIntent(intent: string, payload?: any) {
         console.log(`[AgentAdapter] ðŸ‘† Handle Intent (Touch Authority): ${intent}`, payload || '');
         this.resetInactivityTimer();
+
+        if (intent === "BOOKING_FIELDS_EDIT_STARTED" && this.state === "BOOKING_COLLECT") {
+            this.manualEditModeActive = true;
+            this.resetVoiceLifecycle(`interrupt:${intent}`);
+            TTSController.hardStop();
+            VoiceRuntime.stopListening();
+            this.speak(this.buildManualEditPrompt());
+            return;
+        }
+
+        if (intent === "BOOKING_FIELDS_EDIT_CANCELLED" && this.state === "BOOKING_COLLECT") {
+            this.manualEditModeActive = false;
+            this.resetVoiceLifecycle(`interrupt:${intent}`);
+            if (this.hasVoiceAuthority()) {
+                this.scheduleListeningRestart(300, "state_transition");
+            }
+            return;
+        }
+
+        if (intent === "BOOKING_FIELDS_UPDATED" && this.state === "BOOKING_COLLECT") {
+            console.log("[AgentAdapter] Applying manual booking field overrides.");
+            this.manualEditModeActive = false;
+            this.resetVoiceLifecycle(`interrupt:${intent}`);
+            TTSController.hardStop();
+            VoiceRuntime.stopListening();
+            this.applyPayloadData(intent, payload, this.state);
+            this.notifyListeners();
+            this.speak(this.buildManualReviewPrompt(this.getBookingSlots(), this.viewData.selectedRoom));
+            return;
+        }
 
         // BOOKING_SUMMARY touch-confirm should use the same backend confirmation path as voice.
         // This keeps persistence + transition semantics unified while preserving touch fallback.
@@ -1748,6 +1989,7 @@ class AgentAdapterService {
                 intent === "GENERAL_QUERY" &&
                 Array.isArray(payload?.rooms) &&
                 payload.rooms.length > 0 &&
+                !payload?.suppressSpeech &&
                 !this.hasAnnouncedRoomOptions
             ) {
                 this.maybeSpeakRoomSelectionGuidance(payload);
@@ -1764,6 +2006,11 @@ class AgentAdapterService {
      */
     private transitionTo(nextState: UiState, intent?: string, payload?: any) {
         console.log(`[Mediator] Requesting: ${this.state} -> ${nextState}`);
+
+        if (nextState === "ROOM_SELECT") {
+            // Warm room inventory so ROOM_SELECT can render without waiting on a cold request.
+            void RoomService.prefetchAvailableRooms();
+        }
 
         // ENTERPRISE RULE #1: Recursive Transitions are Valid
         // If the AI wants to stay on the same page to chat, LET IT.
@@ -1791,6 +2038,9 @@ class AgentAdapterService {
         const previousState = this.state;
         this.clearKeyDispenseTimer(`transition:${previousState}->${nextState}`);
         this.state = nextState;
+        if (nextState === "WELCOME" || nextState === "IDLE") {
+            this.clearSession(`transition:${previousState}->${nextState}`);
+        }
         if (nextState !== "BOOKING_COLLECT") {
             this.clearActiveSlot();
             this.lastBookingPromptFingerprint = null;
@@ -1950,6 +2200,7 @@ class AgentAdapterService {
     public hardStopAll(): void {
         this.resetVoiceLifecycle("hard_stop_all");
         this.clearKeyDispenseTimer("hard_stop_all");
+        this.clearSession("hard_stop_all");
         VoiceRuntime.hardStopAll();
     }
 

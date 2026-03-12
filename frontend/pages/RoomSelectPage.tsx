@@ -30,7 +30,7 @@ export const RoomSelectPage: React.FC = () => {
       .then((fetchedRooms) => {
         if (!active) return;
         setLiveRooms(fetchedRooms);
-        emit('GENERAL_QUERY', { rooms: fetchedRooms });
+        emit('GENERAL_QUERY', { rooms: fetchedRooms, suppressSpeech: true });
         setIsLoadingRooms(false);
       })
       .catch((error) => {
@@ -51,7 +51,7 @@ export const RoomSelectPage: React.FC = () => {
     return () => {
       active = false;
     };
-  }, []);
+  }, [emit]);
 
   const handleContinue = () => {
     if (selectedRoomId) {
