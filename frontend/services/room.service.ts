@@ -40,19 +40,64 @@ function normalizeRooms(payload: any): RoomDTO[] {
       ? payload.rooms
       : [];
 
-  return rawRooms.map((room: any) => ({
-    id: room.id,
-    name: room.name,
-    code: room.code,
-    price: typeof room.price === "number" ? room.price : Number(room.price),
-    currency: room.currency ?? "INR",
-    image: room.image ?? room.image_url ?? "",
-    features: Array.isArray(room.features)
-      ? room.features
-      : Array.isArray(room.amenities)
-        ? room.amenities
-        : [],
-  }));
+  const asNonEmptyString = (value: unknown): string => {
+    if (typeof value !== "string") return "";
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : "";
+  };
+
+  const normalized = rawRooms.map((room: any) => {
+    const directImage = asNonEmptyString(room.image);
+    const snakeImage = asNonEmptyString(room.image_url);
+    const camelImage = asNonEmptyString(room.imageUrl);
+    const imageUrlsFromArray = Array.isArray(room.imageUrls)
+      ? room.imageUrls.map((url: unknown) => asNonEmptyString(url)).filter(Boolean)
+      : [];
+    const imageUrlsFromSnakeArray = Array.isArray(room.image_urls)
+      ? room.image_urls.map((url: unknown) => asNonEmptyString(url)).filter(Boolean)
+      : [];
+    const imageUrlsFromCsv = (typeof room.image_urls === "string" && asNonEmptyString(room.image_urls))
+      ? asNonEmptyString(room.image_urls).split(",").map((url) => url.trim()).filter(Boolean)
+      : [];
+
+    const mergedImageUrls = Array.from(
+      new Set([
+        ...imageUrlsFromArray,
+        ...imageUrlsFromSnakeArray,
+        ...imageUrlsFromCsv,
+        directImage,
+        snakeImage,
+        camelImage,
+      ].filter(Boolean))
+    );
+
+    return {
+      id: room.id,
+      name: room.name,
+      code: room.code,
+      price: typeof room.price === "number" ? room.price : Number(room.price),
+      currency: room.currency ?? "INR",
+      image: mergedImageUrls[0] || "",
+      imageUrls: mergedImageUrls,
+      features: Array.isArray(room.features)
+        ? room.features
+        : Array.isArray(room.amenities)
+          ? room.amenities
+          : [],
+    } as RoomDTO;
+  });
+
+  if (import.meta.env.DEV) {
+    const roomSample = {
+      count: normalized.length,
+      firstRoom: normalized[0] || null,
+      rawFirstRoom: rawRooms[0] || null,
+    };
+    console.log("[RoomService] Rooms payload sample:", roomSample);
+    console.log("[RoomService] Rooms payload sample JSON:", JSON.stringify(roomSample, null, 2));
+  }
+
+  return normalized;
 }
 
 async function fetchWithTimeout(url: string, headers: Record<string, string>, timeoutMs: number): Promise<Response> {
@@ -153,73 +198,5 @@ export const RoomService = {
         inflightFetch = null;
       }
     }
-  },
-
-    // V2 Python backend returns { rooms: [] }.
-    // Old Node backend may return { data: [] }.
-    const payload = await response.json();
-    const rawRooms: any[] = Array.isArray(payload?.data) ? payload.data
-      : Array.isArray(payload?.rooms) ? payload.rooms
-        : [];
-
-    // Normalize to the RoomDTO shape the UI expects.
-    // Python returns `amenities` — map it to `features`.
-    // Add sensible defaults for image and currency which the DB doesn't store.
-    const asNonEmptyString = (value: unknown): string => {
-      if (typeof value !== "string") return "";
-      const trimmed = value.trim();
-      return trimmed.length > 0 ? trimmed : "";
-    };
-
-    const rooms: RoomDTO[] = rawRooms.map((r: any) => {
-      const directImage = asNonEmptyString(r.image);
-      const snakeImage = asNonEmptyString(r.image_url);
-      const camelImage = asNonEmptyString(r.imageUrl);
-      const imageUrlsFromArray = Array.isArray(r.imageUrls)
-        ? r.imageUrls.map((url: unknown) => asNonEmptyString(url)).filter(Boolean)
-        : [];
-      const imageUrlsFromSnakeArray = Array.isArray(r.image_urls)
-        ? r.image_urls.map((url: unknown) => asNonEmptyString(url)).filter(Boolean)
-        : [];
-      const imageUrlsFromCsv = (typeof r.image_urls === "string" && asNonEmptyString(r.image_urls))
-        ? asNonEmptyString(r.image_urls).split(",").map((url) => url.trim()).filter(Boolean)
-        : [];
-
-      const mergedImageUrls = Array.from(
-        new Set([
-          ...imageUrlsFromArray,
-          ...imageUrlsFromSnakeArray,
-          ...imageUrlsFromCsv,
-          directImage,
-          snakeImage,
-          camelImage,
-        ].filter(Boolean))
-      );
-
-      return {
-        id: r.id,
-        name: r.name,
-        code: r.code,
-        price: typeof r.price === "number" ? r.price : Number(r.price),
-        currency: r.currency ?? "INR",
-        image: mergedImageUrls[0] || "",
-        imageUrls: mergedImageUrls,
-        features: Array.isArray(r.features) ? r.features
-          : Array.isArray(r.amenities) ? r.amenities
-            : [],
-      };
-    });
-
-    if (import.meta.env.DEV) {
-      const roomSample = {
-        count: rooms.length,
-        firstRoom: rooms[0] || null,
-        rawFirstRoom: rawRooms[0] || null,
-      };
-      console.log("[RoomService] Rooms payload sample:", roomSample);
-      console.log("[RoomService] Rooms payload sample JSON:", JSON.stringify(roomSample, null, 2));
-    }
-
-    return rooms;
   },
 };
