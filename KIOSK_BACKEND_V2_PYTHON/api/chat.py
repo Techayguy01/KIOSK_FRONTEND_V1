@@ -13,6 +13,7 @@ from uuid import UUID
 from urllib.parse import urlparse
 from datetime import date, datetime
 from agent.graph import kiosk_agent
+from agent.nodes import _is_summary_confirmation_transcript
 from agent.state import KioskState, ConversationTurn, RoomInventoryItem, UIScreen
 from core.voice import normalize_language_code, normalize_language_list
 from core.database import get_session
@@ -28,12 +29,17 @@ from services.faq_service import (
     is_faq_candidate_query,
     normalize_faq_query,
 )
+from services.booking_guards import validate_booking_constraints
+from models.booking import Booking
+from models.room_instance import RoomInstance
 
 router = APIRouter()
 
 # In-memory session store (replace with Redis in production)
 _sessions: dict[str, KioskState] = {}
 _persisted_booking_by_session: dict[str, str] = {}
+_persisted_room_id_by_session: dict[str, str] = {}
+_persisted_room_number_by_session: dict[str, str] = {}
 
 SLOT_NAME_MAP = {
     "room_type": "roomType",
@@ -131,28 +137,6 @@ def _database_target_hint() -> str:
     return f"{parsed.scheme}://{host}:{port}/{database_name}"
 
 
-def _parse_iso_date(raw_value: Optional[str]) -> Optional[date]:
-    if not raw_value:
-        return None
-    try:
-        return datetime.strptime(str(raw_value), "%Y-%m-%d").date()
-    except Exception:
-        return None
-
-
-def _resolve_room_capacity_limit(selected_room_payload: Optional[dict], key: str) -> Optional[int]:
-    if not selected_room_payload:
-        return None
-    raw_value = selected_room_payload.get(key)
-    if raw_value is None:
-        return None
-    try:
-        parsed = int(raw_value)
-        return parsed if parsed >= 0 else None
-    except Exception:
-        return None
-
-
 def _merge_filled_slots(state: KioskState, filled_slots: dict, room_inventory: list[dict]) -> None:
     """
     Sync frontend state overrides (like manual touch input) into the backend session logic.
@@ -226,73 +210,86 @@ def _merge_filled_slots(state: KioskState, filled_slots: dict, room_inventory: l
                             break
 
 
-def _validate_booking_constraints(
-    slots_dict: dict,
-    selected_room_payload: Optional[dict],
-) -> tuple[Optional[str], Optional[str], str]:
-    today = date.today()
-    check_in = _parse_iso_date(slots_dict.get("check_in_date"))
-    check_out = _parse_iso_date(slots_dict.get("check_out_date"))
+async def _acquire_room_type_allocation_lock(
+    session: AsyncSession,
+    tenant_id: UUID,
+    room_type_id: UUID,
+) -> None:
+    await session.exec(
+        text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
+        params={"lock_key": f"{tenant_id}:{room_type_id}:room-allocation"},
+    )
 
-    if check_in and check_in < today:
-        return (
-            "Check-in date cannot be in the past. Please choose today or a future date.",
-            "checkInDate",
-            "BOOKING_COLLECT",
+
+async def _load_room_instances(
+    session: AsyncSession,
+    tenant_id: UUID,
+    room_type_id: UUID,
+) -> list[RoomInstance]:
+    result = await session.exec(
+        select(RoomInstance).where(
+            RoomInstance.tenant_id == tenant_id,
+            RoomInstance.room_type_id == room_type_id,
+            RoomInstance.status == "ACTIVE",
+        ).order_by(RoomInstance.room_number, RoomInstance.id)
+    )
+    return result.all()
+
+
+async def _find_overlapping_bookings_for_room_type(
+    session: AsyncSession,
+    tenant_id: UUID,
+    room_type_id: UUID,
+    check_in: date,
+    check_out: date,
+) -> list[Booking]:
+    result = await session.exec(
+        select(Booking).where(
+            Booking.tenant_id == tenant_id,
+            Booking.room_type_id == room_type_id,
+            Booking.status.in_(["CONFIRMED", "CHECKED_IN"]),
+            Booking.check_in_date < check_out,
+            Booking.check_out_date > check_in,
         )
+    )
+    return result.all()
 
-    if check_in and check_out and check_out <= check_in:
-        return (
-            "Check-out date must be after check-in date. Please update the dates.",
-            "checkOutDate",
-            "BOOKING_COLLECT",
-        )
 
-    adults = slots_dict.get("adults")
-    children = slots_dict.get("children")
-    max_adults = _resolve_room_capacity_limit(selected_room_payload, "maxAdults")
-    max_children = _resolve_room_capacity_limit(selected_room_payload, "maxChildren")
-    max_total_guests = _resolve_room_capacity_limit(selected_room_payload, "maxTotalGuests")
+async def _allocate_available_room_instance(
+    session: AsyncSession,
+    tenant_id: UUID,
+    room_type_id: UUID,
+    check_in: date,
+    check_out: date,
+) -> Optional[RoomInstance]:
+    room_instances = await _load_room_instances(session, tenant_id, room_type_id)
+    if not room_instances:
+        return None
 
-    try:
-        adult_count = int(adults) if adults is not None else None
-    except Exception:
-        adult_count = None
+    overlapping_bookings = await _find_overlapping_bookings_for_room_type(
+        session=session,
+        tenant_id=tenant_id,
+        room_type_id=room_type_id,
+        check_in=check_in,
+        check_out=check_out,
+    )
+    occupied_assigned_room_ids = {
+        booking.assigned_room_id
+        for booking in overlapping_bookings
+        if booking.assigned_room_id
+    }
+    available_instances = [
+        room_instance
+        for room_instance in room_instances
+        if room_instance.id not in occupied_assigned_room_ids
+    ]
+    legacy_unassigned_overlap_count = sum(
+        1 for booking in overlapping_bookings if not booking.assigned_room_id
+    )
+    if legacy_unassigned_overlap_count >= len(available_instances):
+        return None
 
-    try:
-        child_count = int(children) if children is not None else 0
-    except Exception:
-        child_count = 0
-
-    if max_adults is not None and adult_count is not None and adult_count > max_adults:
-        return (
-            f"This room allows up to {max_adults} adult{'s' if max_adults != 1 else ''}. "
-            "Please reduce the adult count or choose another room.",
-            "adults",
-            "BOOKING_COLLECT",
-        )
-
-    if max_children is not None and child_count > max_children:
-        return (
-            f"This room allows up to {max_children} child{'ren' if max_children != 1 else ''}. "
-            "Please reduce the child count or choose another room.",
-            "children",
-            "BOOKING_COLLECT",
-        )
-
-    if (
-        max_total_guests is not None
-        and adult_count is not None
-        and adult_count + child_count > max_total_guests
-    ):
-        return (
-            f"This room allows up to {max_total_guests} guest{'s' if max_total_guests != 1 else ''} in total. "
-            "Please adjust the guest count or choose another room.",
-            "adults",
-            "BOOKING_COLLECT",
-        )
-
-    return None, None, "BOOKING_SUMMARY"
+    return available_instances[legacy_unassigned_overlap_count]
 
 
 def _normalize_ui_screen(raw_screen: Optional[str]) -> UIScreen:
@@ -484,6 +481,8 @@ class ChatResponse(BaseModel):
     selectedRoom: Optional[dict] = None
     isComplete: bool
     persistedBookingId: Optional[str] = None
+    assignedRoomId: Optional[str] = None
+    assignedRoomNumber: Optional[str] = None
     error: Optional[str] = None
     answerSource: str = "LLM"
     faqId: Optional[str] = None
@@ -517,6 +516,9 @@ async def chat(
         effective_language = _resolve_effective_language(req.language, tenant_config)
         room_inventory = await _load_room_inventory(session, resolved_tenant_id)
         normalized_ui_screen = _normalize_ui_screen(req.current_ui_screen)
+        persisted_booking_id = _persisted_booking_by_session.get(req.session_id)
+        assigned_room_id = _persisted_room_id_by_session.get(req.session_id)
+        assigned_room_number = _persisted_room_number_by_session.get(req.session_id)
         print(
             "[ChatAPI] request "
             f"session={req.session_id} "
@@ -551,8 +553,33 @@ async def chat(
         if req.filled_slots:
             _merge_filled_slots(state, req.filled_slots, room_inventory)
 
+        summary_confirm_short_circuit = (
+            normalized_ui_screen == "BOOKING_SUMMARY"
+            and state.booking_slots.is_complete()
+            and _is_summary_confirmation_transcript(req.transcript)
+        )
+
+        updated_state: Optional[KioskState] = None
+
+        if summary_confirm_short_circuit:
+            speech = "Perfect. Your booking details are confirmed. Taking you to payment now."
+            updated_history = state.history + [
+                ConversationTurn(role="user", content=req.transcript),
+                ConversationTurn(role="assistant", content=speech),
+            ]
+            updated_state = state.model_copy(
+                update={
+                    "resolved_intent": "CONFIRM_BOOKING",
+                    "speech_response": speech,
+                    "active_slot": None,
+                    "history": updated_history,
+                    "next_ui_screen": "PAYMENT",
+                }
+            )
+            _sessions[req.session_id] = updated_state
+
         # Deterministic FAQ retrieval layer (tenant-scoped), only for non-transactional turns.
-        if _should_attempt_faq(req.transcript, normalized_ui_screen):
+        if not updated_state and _should_attempt_faq(req.transcript, normalized_ui_screen):
             normalized_transcript = normalize_faq_query(req.transcript)
             print(
                 "[ChatAPI][FAQ] attempt "
@@ -607,7 +634,9 @@ async def chat(
                     nextSlotToAsk=None,
                     selectedRoom=state.selected_room.model_dump(by_alias=True) if state.selected_room else None,
                     isComplete=state.booking_slots.is_complete(),
-                    persistedBookingId=_persisted_booking_by_session.get(req.session_id),
+                    persistedBookingId=persisted_booking_id,
+                    assignedRoomId=assigned_room_id,
+                    assignedRoomNumber=assigned_room_number,
                     error=None,
                     answerSource="FAQ_DB",
                     faqId=faq_match.faq_id,
@@ -622,13 +651,14 @@ async def chat(
                 f"faq_count={faq_lookup.faq_count}"
             )
 
-        # Run LangGraph agent
-        # ainvoke() returns a dict of the final state fields
-        result: dict = await kiosk_agent.ainvoke(state.model_dump())
+        if not updated_state:
+            # Run LangGraph agent
+            # ainvoke() returns a dict of the final state fields
+            result: dict = await kiosk_agent.ainvoke(state.model_dump())
 
-        # Reconstruct updated state from result dict
-        updated_state = KioskState(**result)
-        _sessions[req.session_id] = updated_state
+            # Reconstruct updated state from result dict
+            updated_state = KioskState(**result)
+            _sessions[req.session_id] = updated_state
 
         slots_dict = updated_state.booking_slots.model_dump()
         is_complete = updated_state.booking_slots.is_complete()
@@ -637,7 +667,6 @@ async def chat(
             for slot_name in updated_state.booking_slots.missing_required_slots()
         ]
         next_slot_to_ask = _to_contract_slot_name(updated_state.active_slot)
-        persisted_booking_id: Optional[str] = _persisted_booking_by_session.get(req.session_id)
         persistence_error: Optional[str] = None
         selected_room_payload = updated_state.selected_room.model_dump(by_alias=True) if updated_state.selected_room else None
         if selected_room_payload and selected_room_payload.get("name"):
@@ -645,7 +674,7 @@ async def chat(
         response_next_screen = updated_state.next_ui_screen or normalized_ui_screen
         response_speech = updated_state.speech_response or "I'm not sure how to help with that."
 
-        constraint_error, constraint_slot, constraint_screen = _validate_booking_constraints(
+        constraint_error, constraint_slot, constraint_screen = validate_booking_constraints(
             slots_dict,
             selected_room_payload,
         )
@@ -680,7 +709,6 @@ async def chat(
         )
         if should_persist_booking:
             if not persisted_booking_id:
-                from models.booking import Booking
                 print(
                     "[ChatAPI][PersistBooking] attempt "
                     f"session={req.session_id} "
@@ -707,9 +735,30 @@ async def chat(
                     if not nights_value:
                         nights_value = max(1, (check_out - check_in).days)
 
+                    await _acquire_room_type_allocation_lock(
+                        session=session,
+                        tenant_id=tenant_uuid,
+                        room_type_id=room_type_uuid,
+                    )
+
+                    assigned_room = await _allocate_available_room_instance(
+                        session=session,
+                        tenant_id=tenant_uuid,
+                        room_type_id=room_type_uuid,
+                        check_in=check_in,
+                        check_out=check_out,
+                    )
+                    if not assigned_room:
+                        raise ValueError(
+                            "No physical room is available for the selected dates. "
+                            "Please choose another room type or change your stay dates."
+                        )
+
                     new_booking = Booking(
                         tenant_id=tenant_uuid,
                         room_type_id=room_type_uuid,
+                        assigned_room_id=assigned_room.id,
+                        assigned_room_number=assigned_room.room_number,
                         guest_name=slots_dict.get("guest_name", "Unknown"),
                         check_in_date=check_in,
                         check_out_date=check_out,
@@ -721,11 +770,16 @@ async def chat(
                     session.add(new_booking)
                     await session.commit()
                     persisted_booking_id = str(new_booking.id)
+                    assigned_room_id = str(assigned_room.id)
+                    assigned_room_number = assigned_room.room_number
                     _persisted_booking_by_session[req.session_id] = persisted_booking_id
+                    _persisted_room_id_by_session[req.session_id] = assigned_room_id
+                    _persisted_room_number_by_session[req.session_id] = assigned_room_number
                     print(
                         "[ChatAPI][PersistBooking] success "
                         f"session={req.session_id} "
-                        f"booking_id={persisted_booking_id}"
+                        f"booking_id={persisted_booking_id} "
+                        f"assigned_room_number={assigned_room_number}"
                     )
                 except Exception as db_err:
                     await session.rollback()
@@ -766,6 +820,8 @@ async def chat(
             selectedRoom=selected_room_payload,
             isComplete=is_complete,
             persistedBookingId=persisted_booking_id,
+            assignedRoomId=assigned_room_id,
+            assignedRoomNumber=assigned_room_number,
             error=constraint_error or persistence_error,
             answerSource="LLM",
             faqId=None,
@@ -786,4 +842,6 @@ async def clear_session(session_id: str):
     if session_id in _sessions:
         del _sessions[session_id]
     _persisted_booking_by_session.pop(session_id, None)
+    _persisted_room_id_by_session.pop(session_id, None)
+    _persisted_room_number_by_session.pop(session_id, None)
     return {"status": "cleared", "session_id": session_id}

@@ -74,6 +74,7 @@ class MatchedBookingPayload(BaseModel):
     status: str
     roomTypeId: str
     roomName: Optional[str] = None
+    assignedRoomNumber: Optional[str] = None
 
 
 class OcrResponse(BaseModel):
@@ -321,6 +322,7 @@ async def _lookup_booking_match(
         status=chosen_booking.status,
         roomTypeId=str(chosen_booking.room_type_id),
         roomName=room_name,
+        assignedRoomNumber=chosen_booking.assigned_room_number,
     )
     return payload, False, len(scored)
 

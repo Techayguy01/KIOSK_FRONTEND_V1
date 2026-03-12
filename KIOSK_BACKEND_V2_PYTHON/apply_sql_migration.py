@@ -29,8 +29,13 @@ async def main() -> None:
     if not sql:
         raise RuntimeError(f"Migration file is empty: {migration_path}")
 
+    statements = [statement.strip() for statement in sql.split(";") if statement.strip()]
+    if not statements:
+        raise RuntimeError(f"Migration file has no executable statements: {migration_path}")
+
     async with AsyncSessionLocal() as session:
-        await session.exec(text(sql))
+        for statement in statements:
+            await session.exec(text(statement))
         await session.commit()
 
     print(f"Applied migration: {migration_path}")

@@ -16,6 +16,8 @@ class Booking(SQLModel, table=True):
     id: uuid.UUID = Field(sa_column=Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4))
     tenant_id: uuid.UUID = Field(sa_column=Column(UUID(as_uuid=True), nullable=False))
     room_type_id: uuid.UUID = Field(sa_column=Column(UUID(as_uuid=True), nullable=False))
+    assigned_room_id: Optional[uuid.UUID] = Field(default=None, sa_column=Column(UUID(as_uuid=True), nullable=True))
+    assigned_room_number: Optional[str] = Field(default=None, sa_column=Column(String(64), nullable=True))
     guest_name: str = Field(sa_column=Column(String(255)))
     check_in_date: date = Field(sa_column=Column(Date))
     check_out_date: date = Field(sa_column=Column(Date))

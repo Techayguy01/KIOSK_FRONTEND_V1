@@ -452,7 +452,6 @@ export const BookingCollectPage: React.FC = () => {
                             const isFilled = hasValue(value);
                             const isRequired = REQUIRED_SLOTS.includes(key);
 
-                            if (key === "children" && !isFilled) return null;
                             if ((key === "nights" || key === "totalPrice") && !isFilled) return null;
 
                             return (
@@ -474,6 +473,8 @@ export const BookingCollectPage: React.FC = () => {
                                             <span className="text-xs text-green-400">filled</span>
                                         ) : isRequired ? (
                                             <span className="text-xs text-amber-400/60">pending</span>
+                                        ) : key === "children" ? (
+                                            <span className="text-xs text-white/35">optional</span>
                                         ) : null}
                                     </div>
                                     <div className={`mt-1 text-sm ${isFilled ? "text-white" : "text-white/20"}`}>

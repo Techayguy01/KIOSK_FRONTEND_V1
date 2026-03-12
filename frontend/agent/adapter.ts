@@ -1940,6 +1940,14 @@ class AgentAdapterService {
             merged.persistedBookingId = payload.persistedBookingId || null;
         }
 
+        if (payload && Object.prototype.hasOwnProperty.call(payload, "assignedRoomId")) {
+            merged.assignedRoomId = payload.assignedRoomId || null;
+        }
+
+        if (payload && Object.prototype.hasOwnProperty.call(payload, "assignedRoomNumber")) {
+            merged.assignedRoomNumber = payload.assignedRoomNumber || null;
+        }
+
         this.syncDerivedBookingData(merged);
         this.syncBookingFlowHints(merged);
 

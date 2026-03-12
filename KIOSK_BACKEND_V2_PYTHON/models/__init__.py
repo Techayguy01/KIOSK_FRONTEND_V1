@@ -4,5 +4,6 @@ from sqlmodel import SQLModel
 from .tenant import Tenant
 from .tenant_config import TenantConfig
 from .room import RoomType
+from .room_instance import RoomInstance
 from .booking import Booking
 from .faq import FAQ

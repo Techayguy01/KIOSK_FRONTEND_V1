@@ -8,6 +8,20 @@ import AnimatedGradientBackground from '../components/ui/animated-gradient-backg
 export const CompletePage: React.FC = () => {
   const { data, emit, loading } = useUIState();
   const progress = data.progress || { currentStep: 4, totalSteps: 4, steps: ['Key'] };
+  const persistedBookingId = String(data?.persistedBookingId || '').trim();
+  const assignedRoomNumber = String(
+    data?.assignedRoomNumber ||
+    data?.matchedBooking?.assignedRoomNumber ||
+    ''
+  ).trim();
+  const resolvedRoomLabel = String(
+    data?.matchedBooking?.roomName ||
+    data?.selectedRoom?.displayName ||
+    data?.selectedRoom?.name ||
+    data?.selectedRoom?.code ||
+    ''
+  ).trim();
+  const looksLikeRoomNumber = /^[A-Za-z]?\d+[A-Za-z0-9-]*$/.test(resolvedRoomLabel);
 
   useEffect(() => {
     confetti({
@@ -35,8 +49,31 @@ export const CompletePage: React.FC = () => {
            </div>
 
            <h2 className="text-4xl font-light text-white mb-4">You're All Set!</h2>
-           <p className="text-xl text-slate-400 mb-2">Room <span className="text-white font-bold">204</span> is ready for you.</p>
+           {assignedRoomNumber ? (
+             <p className="text-xl text-slate-400 mb-2">
+               Room <span className="text-white font-bold">{assignedRoomNumber}</span> is ready for you.
+             </p>
+           ) : resolvedRoomLabel ? (
+             <p className="text-xl text-slate-400 mb-2">
+               {looksLikeRoomNumber ? (
+                 <>
+                   Room <span className="text-white font-bold">{resolvedRoomLabel}</span> is ready for you.
+                 </>
+               ) : (
+                 <>
+                   <span className="text-white font-bold">{resolvedRoomLabel}</span> is confirmed for your stay.
+                 </>
+               )}
+             </p>
+           ) : (
+             <p className="text-xl text-slate-400 mb-2">Your booking is confirmed and your key is ready below.</p>
+           )}
            <p className="text-slate-500">Your key has been dispensed below.</p>
+           {persistedBookingId && (
+             <p className="text-sm text-slate-500 mt-3">
+               Booking reference <span className="text-white">{persistedBookingId}</span>
+             </p>
+           )}
 
            <button 
              onClick={() => emit('RESET')}
