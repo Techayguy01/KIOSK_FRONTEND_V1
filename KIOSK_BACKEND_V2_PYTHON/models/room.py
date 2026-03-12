@@ -5,7 +5,7 @@ import uuid
 from typing import Optional, List
 from datetime import datetime
 from decimal import Decimal
-from sqlalchemy import Column, String, Numeric, DateTime
+from sqlalchemy import Column, String, Numeric, DateTime, Integer
 from sqlalchemy.dialects.postgresql import UUID, ARRAY
 from sqlmodel import Field, SQLModel
 
@@ -18,6 +18,9 @@ class RoomType(SQLModel, table=True):
     name: str = Field(sa_column=Column(String(255)))
     code: str = Field(sa_column=Column(String(60)))
     price: Decimal = Field(sa_column=Column(Numeric))
+    max_adults: Optional[int] = Field(default=None, sa_column=Column(Integer, nullable=True))
+    max_children: Optional[int] = Field(default=None, sa_column=Column(Integer, nullable=True))
+    max_total_guests: Optional[int] = Field(default=None, sa_column=Column(Integer, nullable=True))
     amenities: List[str] = Field(default_factory=list, sa_column=Column(ARRAY(String)))
     # Shared schema update: RoomType now stores Cloudinary URLs in an array column.
     # Prisma field is `imageUrls`, so we map to that DB column explicitly.

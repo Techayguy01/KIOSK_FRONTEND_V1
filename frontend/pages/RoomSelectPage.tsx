@@ -74,6 +74,7 @@ export const RoomSelectPage: React.FC = () => {
           <header className="mb-8 text-center">
             <h2 className="text-3xl font-light text-white mb-2">Select Your Room</h2>
             <p className="text-slate-400">We have prepared a selection based on your preferences.</p>
+            <p className="text-xs text-white/35 mt-2">This kiosk currently supports one room per booking.</p>
             {roomsError && <p className="text-amber-300 text-sm mt-2">{roomsError}</p>}
           </header>
 

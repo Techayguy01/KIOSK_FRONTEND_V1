@@ -232,6 +232,7 @@ class AgentAdapterService {
     private readonly KEY_DISPENSE_SIM_MS = 3500;
     private reengageCooldownUntil = 0;
     private voiceLifecycleEpoch = 0;
+    private llmRequestCounter = 0;
     private pendingAiSpeechText: string | null = null;
     private lastBookingPromptFingerprint: string | null = null;
     private lastBookingPromptAt = 0;
@@ -1455,6 +1456,8 @@ class AgentAdapterService {
                 return;
             }
 
+            const requestId = ++this.llmRequestCounter;
+            const requestState = this.state;
             const bookingStates: UiState[] = ['ROOM_SELECT', 'BOOKING_COLLECT', 'BOOKING_SUMMARY'];
             const targetUrl = bookingStates.includes(this.state)
                 ? buildTenantApiUrl("chat/booking")
@@ -1530,6 +1533,20 @@ class AgentAdapterService {
                     console.log(`[AgentAdapter][FAQCache] STORED key=${cacheKey} faqId=${decision.faqId || "none"}`);
                 }
             }
+            if (requestId !== this.llmRequestCounter) {
+                console.warn(
+                    `[AgentAdapter] Ignoring stale LLM response (requestId=${requestId}, latest=${this.llmRequestCounter})`
+                );
+                return;
+            }
+
+            if (this.state !== requestState) {
+                console.warn(
+                    `[AgentAdapter] Ignoring stale LLM response for ${requestState}; current state is ${this.state}`
+                );
+                return;
+            }
+
             console.log(`[AgentAdapter] LLM Decision:`, decision);
 
             // Sync language
@@ -1784,7 +1801,14 @@ class AgentAdapterService {
 
         this.applyStoredManualBookingOverrides(merged);
 
-        if (merged?.bookingSlots?.roomType == null) {
+        const selectedRoomLabelBeforeSlotSync = this.getCanonicalSelectedRoomLabel(merged.selectedRoom);
+        if (merged?.bookingSlots?.roomType == null && selectedRoomLabelBeforeSlotSync) {
+            merged.bookingSlots = {
+                ...(merged.bookingSlots || {}),
+                roomType: selectedRoomLabelBeforeSlotSync,
+            };
+        }
+        if (merged?.bookingSlots?.roomType == null && !selectedRoomLabelBeforeSlotSync) {
             merged.selectedRoom = null;
         }
 

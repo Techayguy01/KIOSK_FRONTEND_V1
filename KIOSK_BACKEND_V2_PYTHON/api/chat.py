@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, get_args
 from uuid import UUID
 from urllib.parse import urlparse
+from datetime import date, datetime
 from agent.graph import kiosk_agent
 from agent.state import KioskState, ConversationTurn, RoomInventoryItem, UIScreen
 from core.voice import normalize_language_code, normalize_language_list
@@ -18,8 +19,8 @@ from core.database import get_session
 from core import database as database_runtime
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel import select
+from sqlalchemy import text
 from models.tenant import Tenant
-from models.room import RoomType
 from models.tenant_config import TenantConfig
 from services.faq_service import (
     FAQ_MATCH_THRESHOLD,
@@ -130,6 +131,97 @@ def _database_target_hint() -> str:
     return f"{parsed.scheme}://{host}:{port}/{database_name}"
 
 
+def _parse_iso_date(raw_value: Optional[str]) -> Optional[date]:
+    if not raw_value:
+        return None
+    try:
+        return datetime.strptime(str(raw_value), "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+
+def _resolve_room_capacity_limit(selected_room_payload: Optional[dict], key: str) -> Optional[int]:
+    if not selected_room_payload:
+        return None
+    raw_value = selected_room_payload.get(key)
+    if raw_value is None:
+        return None
+    try:
+        parsed = int(raw_value)
+        return parsed if parsed >= 0 else None
+    except Exception:
+        return None
+
+
+def _validate_booking_constraints(
+    slots_dict: dict,
+    selected_room_payload: Optional[dict],
+) -> tuple[Optional[str], Optional[str], str]:
+    today = date.today()
+    check_in = _parse_iso_date(slots_dict.get("check_in_date"))
+    check_out = _parse_iso_date(slots_dict.get("check_out_date"))
+
+    if check_in and check_in < today:
+        return (
+            "Check-in date cannot be in the past. Please choose today or a future date.",
+            "checkInDate",
+            "BOOKING_COLLECT",
+        )
+
+    if check_in and check_out and check_out <= check_in:
+        return (
+            "Check-out date must be after check-in date. Please update the dates.",
+            "checkOutDate",
+            "BOOKING_COLLECT",
+        )
+
+    adults = slots_dict.get("adults")
+    children = slots_dict.get("children")
+    max_adults = _resolve_room_capacity_limit(selected_room_payload, "maxAdults")
+    max_children = _resolve_room_capacity_limit(selected_room_payload, "maxChildren")
+    max_total_guests = _resolve_room_capacity_limit(selected_room_payload, "maxTotalGuests")
+
+    try:
+        adult_count = int(adults) if adults is not None else None
+    except Exception:
+        adult_count = None
+
+    try:
+        child_count = int(children) if children is not None else 0
+    except Exception:
+        child_count = 0
+
+    if max_adults is not None and adult_count is not None and adult_count > max_adults:
+        return (
+            f"This room allows up to {max_adults} adult{'s' if max_adults != 1 else ''}. "
+            "Please reduce the adult count or choose another room.",
+            "adults",
+            "BOOKING_COLLECT",
+        )
+
+    if max_children is not None and child_count > max_children:
+        return (
+            f"This room allows up to {max_children} child{'ren' if max_children != 1 else ''}. "
+            "Please reduce the child count or choose another room.",
+            "children",
+            "BOOKING_COLLECT",
+        )
+
+    if (
+        max_total_guests is not None
+        and adult_count is not None
+        and adult_count + child_count > max_total_guests
+    ):
+        return (
+            f"This room allows up to {max_total_guests} guest{'s' if max_total_guests != 1 else ''} in total. "
+            "Please adjust the guest count or choose another room.",
+            "adults",
+            "BOOKING_COLLECT",
+        )
+
+    return None, None, "BOOKING_SUMMARY"
+
+
 def _normalize_ui_screen(raw_screen: Optional[str]) -> UIScreen:
     """
     Compatibility normalization between frontend `currentState` and backend UIScreen.
@@ -202,17 +294,53 @@ async def _load_room_inventory(session: AsyncSession, resolved_tenant_id: Option
         print(f"[ChatAPI] Skipping room inventory load; tenant_id is not UUID: {resolved_tenant_id}")
         return []
 
-    room_result = await session.exec(select(RoomType).where(RoomType.tenant_id == tenant_uuid))
-    rooms = room_result.all()
+    available_columns_result = await session.exec(
+        text(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'room_types'
+            """
+        )
+    )
+    available_columns = {row[0] for row in available_columns_result.all()}
+
+    select_fields = [
+        "id",
+        "name",
+        "code",
+        "price",
+    ]
+    if "max_adults" in available_columns:
+        select_fields.append("max_adults")
+    if "max_children" in available_columns:
+        select_fields.append("max_children")
+    if "max_total_guests" in available_columns:
+        select_fields.append("max_total_guests")
+
+    rooms_result = await session.exec(
+        text(
+            f"""
+            SELECT {", ".join(select_fields)}
+            FROM room_types
+            WHERE tenant_id = CAST(:tenant_id AS uuid)
+            """
+        ),
+        params={"tenant_id": str(tenant_uuid)},
+    )
+    rooms = rooms_result.all()
     return [
         {
-            "id": str(room.id),
-            "name": room.name,
-            "code": room.code,
-            "price": float(room.price),
+            "id": str(row._mapping.get("id")),
+            "name": row._mapping.get("name"),
+            "code": row._mapping.get("code"),
+            "price": float(row._mapping.get("price")),
             "currency": "INR",
+            "maxAdults": row._mapping.get("max_adults"),
+            "maxChildren": row._mapping.get("max_children"),
+            "maxTotalGuests": row._mapping.get("max_total_guests"),
         }
-        for room in rooms
+        for row in rooms
     ]
 
 
@@ -439,10 +567,28 @@ async def chat(
         response_next_screen = updated_state.next_ui_screen or normalized_ui_screen
         response_speech = updated_state.speech_response or "I'm not sure how to help with that."
 
+        constraint_error, constraint_slot, constraint_screen = _validate_booking_constraints(
+            slots_dict,
+            selected_room_payload,
+        )
+        if constraint_error:
+            is_complete = False
+            response_speech = constraint_error
+            response_next_screen = constraint_screen
+            next_slot_to_ask = constraint_slot
+            print(
+                "[ChatAPI][BookingValidation] rejected "
+                f"session={req.session_id} "
+                f"slot={constraint_slot} "
+                f"screen={constraint_screen} "
+                f"reason={constraint_error}"
+            )
+
         # Authoritative booking confirmation path:
         # confirm on BOOKING_SUMMARY + all slots complete => persist + move to PAYMENT.
         should_persist_booking = (
-            normalized_ui_screen == "BOOKING_SUMMARY"
+            not constraint_error
+            and normalized_ui_screen == "BOOKING_SUMMARY"
             and updated_state.resolved_intent == "CONFIRM_BOOKING"
             and is_complete
         )
@@ -457,7 +603,6 @@ async def chat(
         if should_persist_booking:
             if not persisted_booking_id:
                 from models.booking import Booking
-                from datetime import datetime
                 print(
                     "[ChatAPI][PersistBooking] attempt "
                     f"session={req.session_id} "
@@ -543,7 +688,7 @@ async def chat(
             selectedRoom=selected_room_payload,
             isComplete=is_complete,
             persistedBookingId=persisted_booking_id,
-            error=persistence_error,
+            error=constraint_error or persistence_error,
             answerSource="LLM",
             faqId=None,
             sessionId=req.session_id,

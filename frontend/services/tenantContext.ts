@@ -4,7 +4,7 @@ export type TenantPayload = TenantDTO;
 export type SupportedTenantLanguage = "en" | "hi" | "mr";
 
 const PYTHON_API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://localhost:8000").replace(/\/+$/, "");
-const NODE_API_BASE_URL = (import.meta.env.VITE_NODE_API_BASE_URL || "http://localhost:3002").replace(/\/+$/, "");
+const NODE_API_BASE_URL = (import.meta.env.VITE_NODE_API_BASE_URL || "").replace(/\/+$/, "");
 
 let currentTenantSlug = "";
 let currentTenant: TenantPayload | null = null;

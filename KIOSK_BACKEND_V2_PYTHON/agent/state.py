@@ -94,6 +94,12 @@ class RoomInventoryItem(BaseModel):
     code: Optional[str] = None
     price: Optional[float] = None
     currency: str = "INR"
+    max_adults: Optional[int] = Field(default=None, alias="maxAdults")
+    max_children: Optional[int] = Field(default=None, alias="maxChildren")
+    max_total_guests: Optional[int] = Field(default=None, alias="maxTotalGuests")
+
+    class Config:
+        populate_by_name = True
 
 
 class KioskState(BaseModel):

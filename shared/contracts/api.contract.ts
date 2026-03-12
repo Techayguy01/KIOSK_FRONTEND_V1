@@ -43,6 +43,9 @@ export interface RoomDTO {
   imageUrls?: string[];
   features: string[];
   code?: string;
+  maxAdults?: number | null;
+  maxChildren?: number | null;
+  maxTotalGuests?: number | null;
 }
 
 export interface RoomsResponseDTO {

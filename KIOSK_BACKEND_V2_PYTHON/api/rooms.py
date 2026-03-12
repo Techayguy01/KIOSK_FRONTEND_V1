@@ -95,6 +95,9 @@ async def get_rooms(
         has_image_url_single_snake = "image_url" in available_columns
         has_image_url_single_camel = "imageUrl" in available_columns
         has_image_single_plain = "image" in available_columns
+        has_max_adults = "max_adults" in available_columns
+        has_max_children = "max_children" in available_columns
+        has_max_total_guests = "max_total_guests" in available_columns
 
         select_fields = [
             "id",
@@ -103,6 +106,12 @@ async def get_rooms(
             "price",
             "amenities",
         ]
+        if has_max_adults:
+            select_fields.append("max_adults")
+        if has_max_children:
+            select_fields.append("max_children")
+        if has_max_total_guests:
+            select_fields.append("max_total_guests")
         if has_image_urls_array_camel:
             select_fields.append('"imageUrls" AS image_urls_array')
         if has_image_urls_array_snake:
@@ -153,6 +162,9 @@ async def get_rooms(
                     "code": row.get("code"),
                     "price": float(row.get("price")),
                     "currency": "INR",
+                    "maxAdults": row.get("max_adults"),
+                    "maxChildren": row.get("max_children"),
+                    "maxTotalGuests": row.get("max_total_guests"),
                     "image": image_urls[0] if image_urls else "",
                     "image_url": image_url_single,
                     "imageUrl": image_url_single_camel,

@@ -4,8 +4,9 @@ import type { RoomDTO } from "@contracts/api.contract";
 export type { RoomDTO };
 
 const ROOM_CACHE_TTL_MS = Number(import.meta.env.VITE_ROOMS_CACHE_TTL_MS || 60000);
-const PRIMARY_FETCH_TIMEOUT_MS = Number(import.meta.env.VITE_ROOMS_PRIMARY_TIMEOUT_MS || 3000);
-const FALLBACK_FETCH_TIMEOUT_MS = Number(import.meta.env.VITE_ROOMS_FALLBACK_TIMEOUT_MS || 3000);
+const PRIMARY_FETCH_TIMEOUT_MS = Number(import.meta.env.VITE_ROOMS_PRIMARY_TIMEOUT_MS || 8000);
+const PRIMARY_RETRY_TIMEOUT_MS = Number(import.meta.env.VITE_ROOMS_PRIMARY_RETRY_TIMEOUT_MS || 12000);
+const FALLBACK_FETCH_TIMEOUT_MS = Number(import.meta.env.VITE_ROOMS_FALLBACK_TIMEOUT_MS || 4000);
 
 type RoomCacheEntry = {
   tenantSlug: string;
@@ -77,6 +78,9 @@ function normalizeRooms(payload: any): RoomDTO[] {
       code: room.code,
       price: typeof room.price === "number" ? room.price : Number(room.price),
       currency: room.currency ?? "INR",
+      maxAdults: typeof room.maxAdults === "number" ? room.maxAdults : (typeof room.max_adults === "number" ? room.max_adults : null),
+      maxChildren: typeof room.maxChildren === "number" ? room.maxChildren : (typeof room.max_children === "number" ? room.max_children : null),
+      maxTotalGuests: typeof room.maxTotalGuests === "number" ? room.maxTotalGuests : (typeof room.max_total_guests === "number" ? room.max_total_guests : null),
       image: mergedImageUrls[0] || "",
       imageUrls: mergedImageUrls,
       features: Array.isArray(room.features)
@@ -128,6 +132,26 @@ async function toRoomServiceError(response: Response): Promise<RoomServiceError>
   return new RoomServiceError(message, response.status, code);
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
+function buildFallbackRoomsUrl(): string | null {
+  const nodeBaseUrl = getNodeApiBaseUrl();
+  if (!nodeBaseUrl) return null;
+
+  try {
+    const url = new URL("/api/rooms", nodeBaseUrl);
+    const slug = getTenantSlug();
+    if (slug) {
+      url.searchParams.set("slug", slug);
+    }
+    return url.toString();
+  } catch {
+    return `${nodeBaseUrl}/api/rooms`;
+  }
+}
+
 function isCacheValid(entry: RoomCacheEntry | null, tenantSlug: string): boolean {
   if (!entry) return false;
   if (entry.tenantSlug !== tenantSlug) return false;
@@ -154,7 +178,7 @@ export const RoomService = {
 
     const headers = { ...getTenantHeaders() };
     const primaryUrl = buildTenantApiUrl("rooms");
-    const fallbackUrl = `${getNodeApiBaseUrl()}/api/rooms`;
+    const fallbackUrl = buildFallbackRoomsUrl();
 
     const requestPromise = (async () => {
       let primaryError: Error | null = null;
@@ -170,8 +194,28 @@ export const RoomService = {
         primaryError = await toRoomServiceError(primaryResponse);
       } catch (error) {
         primaryError = error as Error;
-        console.warn("[RoomService] Primary room fetch failed, trying fallback:", error);
       }
+
+      if (isAbortError(primaryError)) {
+        try {
+          const retryResponse = await fetchWithTimeout(primaryUrl, headers, PRIMARY_RETRY_TIMEOUT_MS);
+          if (retryResponse.ok) {
+            const payload = await retryResponse.json();
+            const rooms = normalizeRooms(payload);
+            roomCache = { tenantSlug: tenantKey, rooms, fetchedAt: Date.now() };
+            return rooms;
+          }
+          primaryError = await toRoomServiceError(retryResponse);
+        } catch (retryError) {
+          primaryError = retryError as Error;
+        }
+      }
+
+      if (!fallbackUrl) {
+        throw primaryError ?? new RoomServiceError("Failed to load rooms.", 500);
+      }
+
+      console.warn("[RoomService] Primary room fetch failed, trying fallback:", primaryError);
 
       try {
         const fallbackResponse = await fetchWithTimeout(fallbackUrl, headers, FALLBACK_FETCH_TIMEOUT_MS);

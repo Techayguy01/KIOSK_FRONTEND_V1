@@ -22,6 +22,7 @@ type ManualBookingForm = {
     roomId: string;
     roomType: string;
     adults: string;
+    children: string;
     guestName: string;
     checkInDate: string;
     checkOutDate: string;
@@ -48,6 +49,85 @@ function toDateInputValue(value: unknown): string {
     const month = String(parsed.getMonth() + 1).padStart(2, "0");
     const day = String(parsed.getDate()).padStart(2, "0");
     return `${year}-${month}-${day}`;
+}
+
+function getTodayDateValue(): string {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    const day = String(now.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+}
+
+function parseCount(value: string): number | null {
+    const trimmed = String(value || "").trim();
+    if (!trimmed) return null;
+    if (!/^\d+$/.test(trimmed)) return null;
+    return Number(trimmed);
+}
+
+function validateBookingConstraints(input: {
+    room: any;
+    roomName: string;
+    adults: number | null;
+    children: number | null;
+    checkInDate: string;
+    checkOutDate: string;
+    guestName: string;
+}): string | null {
+    const { room, roomName, adults, children, checkInDate, checkOutDate, guestName } = input;
+    const today = getTodayDateValue();
+
+    if (!roomName) {
+        return "Select a room before continuing.";
+    }
+
+    if (adults === null || adults <= 0) {
+        return "Adults must be a positive number.";
+    }
+
+    if (children !== null && children < 0) {
+        return "Children cannot be negative.";
+    }
+
+    if (!guestName.trim()) {
+        return "Guest name is required before continuing.";
+    }
+
+    if (!checkInDate) {
+        return "Check-in date is required.";
+    }
+
+    if (checkInDate < today) {
+        return "Check-in date cannot be in the past.";
+    }
+
+    if (!checkOutDate) {
+        return "Check-out date is required.";
+    }
+
+    if (checkOutDate <= checkInDate) {
+        return "Check-out date must be after check-in date.";
+    }
+
+    const maxAdults = typeof room?.maxAdults === "number" ? room.maxAdults : null;
+    const maxChildren = typeof room?.maxChildren === "number" ? room.maxChildren : null;
+    const maxTotalGuests = typeof room?.maxTotalGuests === "number" ? room.maxTotalGuests : null;
+    const childCount = children ?? 0;
+
+    if (maxAdults !== null && adults > maxAdults) {
+        return `This room allows up to ${maxAdults} adult${maxAdults === 1 ? "" : "s"}.`;
+    }
+
+    if (maxChildren !== null && childCount > maxChildren) {
+        return `This room allows up to ${maxChildren} child${maxChildren === 1 ? "" : "ren"}.`;
+    }
+
+    if (maxTotalGuests !== null && adults + childCount > maxTotalGuests) {
+        return `This room allows up to ${maxTotalGuests} guest${maxTotalGuests === 1 ? "" : "s"} in total.`;
+    }
+
+    return null;
 }
 
 function formatSlotValue(key: string, value: unknown, selectedRoomLabel: string | null): string {
@@ -86,6 +166,7 @@ export const BookingCollectPage: React.FC = () => {
     const chatEndRef = useRef<HTMLDivElement>(null);
     const checkInInputRef = useRef<HTMLInputElement>(null);
     const checkOutInputRef = useRef<HTMLInputElement>(null);
+    const todayDateValue = getTodayDateValue();
 
     const buildManualForm = (): ManualBookingForm => {
         const matchedRoom = availableRooms.find((room: any) => room?.id === data?.selectedRoom?.id)
@@ -96,6 +177,7 @@ export const BookingCollectPage: React.FC = () => {
             roomId: matchedRoom?.id || "",
             roomType: matchedRoom?.name || selectedRoomLabel || String(effectiveBookingSlots.roomType || "").trim(),
             adults: hasValue(effectiveBookingSlots.adults) ? String(effectiveBookingSlots.adults) : "",
+            children: hasValue(effectiveBookingSlots.children) ? String(effectiveBookingSlots.children) : "",
             guestName: String(effectiveBookingSlots.guestName || "").trim(),
             checkInDate: toDateInputValue(effectiveBookingSlots.checkInDate),
             checkOutDate: toDateInputValue(effectiveBookingSlots.checkOutDate),
@@ -147,6 +229,7 @@ export const BookingCollectPage: React.FC = () => {
         selectedRoomLabel,
         effectiveBookingSlots.roomType,
         effectiveBookingSlots.adults,
+        effectiveBookingSlots.children,
         effectiveBookingSlots.guestName,
         effectiveBookingSlots.checkInDate,
         effectiveBookingSlots.checkOutDate,
@@ -155,6 +238,20 @@ export const BookingCollectPage: React.FC = () => {
 
     const filledCount = REQUIRED_SLOTS.filter((slot) => hasValue(effectiveBookingSlots[slot])).length;
     const progress = (filledCount / REQUIRED_SLOTS.length) * 100;
+    const selectedRoomDetails = availableRooms.find((room: any) => room?.id === data?.selectedRoom?.id)
+        || availableRooms.find((room: any) => String(room?.name || "").trim() === selectedRoomLabel)
+        || data?.selectedRoom
+        || null;
+    const readinessError = validateBookingConstraints({
+        room: selectedRoomDetails,
+        roomName: String(effectiveBookingSlots.roomType || selectedRoomLabel || "").trim(),
+        adults: hasValue(effectiveBookingSlots.adults) ? Number(effectiveBookingSlots.adults) : null,
+        children: hasValue(effectiveBookingSlots.children) ? Number(effectiveBookingSlots.children) : null,
+        checkInDate: toDateInputValue(effectiveBookingSlots.checkInDate),
+        checkOutDate: toDateInputValue(effectiveBookingSlots.checkOutDate),
+        guestName: String(effectiveBookingSlots.guestName || "").trim(),
+    });
+    const canContinueToSummary = !isEditing && !readinessError && filledCount === REQUIRED_SLOTS.length;
 
     const handleManualFieldChange = (field: keyof ManualBookingForm, value: string) => {
         setManualError(null);
@@ -196,37 +293,9 @@ export const BookingCollectPage: React.FC = () => {
             ? availableRooms.find((room: any) => room?.id === manualForm.roomId) || null
             : availableRooms.find((room: any) => String(room?.name || "").trim().toLowerCase() === manualForm.roomType.trim().toLowerCase()) || null;
         const resolvedRoomName = String(matchedRoom?.name || manualForm.roomType || "").trim();
-        const adultsText = manualForm.adults.trim();
+        const adultsCount = parseCount(manualForm.adults);
+        const childrenCount = parseCount(manualForm.children);
         const guestName = manualForm.guestName.trim();
-
-        if (!resolvedRoomName) {
-            setManualError("Select a room before saving.");
-            return;
-        }
-
-        if (adultsText && (!/^\d+$/.test(adultsText) || Number(adultsText) <= 0)) {
-            setManualError("Adults must be a positive number.");
-            return;
-        }
-
-        if (
-            manualForm.checkInDate &&
-            manualForm.checkOutDate &&
-            manualForm.checkOutDate < manualForm.checkInDate
-        ) {
-            setManualError("Check-out date must be after check-in date.");
-            return;
-        }
-
-        const nextSlots = {
-            ...effectiveBookingSlots,
-            roomType: resolvedRoomName,
-            adults: adultsText ? Number(adultsText) : null,
-            guestName: guestName || null,
-            checkInDate: manualForm.checkInDate || null,
-            checkOutDate: manualForm.checkOutDate || null,
-        };
-
         const selectedRoom = matchedRoom
             ? {
                 ...matchedRoom,
@@ -240,6 +309,30 @@ export const BookingCollectPage: React.FC = () => {
                 displayName: resolvedRoomName,
                 roomType: resolvedRoomName,
             };
+        const validationError = validateBookingConstraints({
+            room: selectedRoom,
+            roomName: resolvedRoomName,
+            adults: adultsCount,
+            children: childrenCount,
+            checkInDate: manualForm.checkInDate,
+            checkOutDate: manualForm.checkOutDate,
+            guestName,
+        });
+
+        if (validationError) {
+            setManualError(validationError);
+            return;
+        }
+
+        const nextSlots = {
+            ...effectiveBookingSlots,
+            roomType: resolvedRoomName,
+            adults: adultsCount,
+            children: childrenCount,
+            guestName: guestName || null,
+            checkInDate: manualForm.checkInDate || null,
+            checkOutDate: manualForm.checkOutDate || null,
+        };
 
         emit("BOOKING_FIELDS_UPDATED", {
             slots: nextSlots,
@@ -249,8 +342,17 @@ export const BookingCollectPage: React.FC = () => {
         });
 
         setManualError(null);
-        setManualStatus("Manual changes applied. Voice and touch will use these details now.");
+        setManualStatus("Manual changes applied. Review the booking and continue when ready.");
         setIsEditing(false);
+    };
+
+    const handleContinueToReview = () => {
+        if (!canContinueToSummary) {
+            setManualError(readinessError || "Complete the required booking details before continuing.");
+            return;
+        }
+
+        emit("CONFIRM_BOOKING");
     };
 
     const openDatePicker = (field: "checkInDate" | "checkOutDate") => {
@@ -273,6 +375,7 @@ export const BookingCollectPage: React.FC = () => {
                     <div className="mb-6">
                         <h1 className="text-3xl font-light text-white/90">Booking Your Stay</h1>
                         <p className="mt-1 text-sm text-white/50">Speak naturally. The kiosk will keep the details in sync.</p>
+                        <p className="mt-2 text-xs text-white/30">Single-room booking only.</p>
                         {nextSlotHintLabel && (
                             <p className="mt-2 text-xs text-blue-200/80">Next detail: {nextSlotHintLabel}</p>
                         )}
@@ -405,6 +508,15 @@ export const BookingCollectPage: React.FC = () => {
                                 </p>
                             )}
 
+                            {!isEditing && selectedRoomDetails && (
+                                <p className="mt-3 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-white/60">
+                                    Room capacity:
+                                    {typeof selectedRoomDetails?.maxAdults === "number" ? ` ${selectedRoomDetails.maxAdults} adults` : " adults not set"}
+                                    {typeof selectedRoomDetails?.maxChildren === "number" ? `, ${selectedRoomDetails.maxChildren} children` : ""}
+                                    {typeof selectedRoomDetails?.maxTotalGuests === "number" ? `, ${selectedRoomDetails.maxTotalGuests} total guests` : ""}
+                                </p>
+                            )}
+
                             {isEditing && (
                                 <div className="mt-4 space-y-3">
                                     <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -446,6 +558,18 @@ export const BookingCollectPage: React.FC = () => {
                                             />
                                         </label>
 
+                                        <label className="block text-xs text-white/60">
+                                            Children
+                                            <input
+                                                type="number"
+                                                min="0"
+                                                value={manualForm.children}
+                                                onChange={(event) => handleManualFieldChange("children", event.target.value)}
+                                                className={inputClassName}
+                                                placeholder="0"
+                                            />
+                                        </label>
+
                                         <label className="block text-xs text-white/60 md:col-span-2">
                                             Guest name
                                             <input
@@ -463,6 +587,7 @@ export const BookingCollectPage: React.FC = () => {
                                                 <input
                                                     ref={checkInInputRef}
                                                     type="date"
+                                                    min={todayDateValue}
                                                     value={manualForm.checkInDate}
                                                     onChange={(event) => handleManualFieldChange("checkInDate", event.target.value)}
                                                     className={`${inputClassName} mt-0`}
@@ -484,7 +609,7 @@ export const BookingCollectPage: React.FC = () => {
                                                 <input
                                                     ref={checkOutInputRef}
                                                     type="date"
-                                                    min={manualForm.checkInDate || undefined}
+                                                    min={manualForm.checkInDate || todayDateValue}
                                                     value={manualForm.checkOutDate}
                                                     onChange={(event) => handleManualFieldChange("checkOutDate", event.target.value)}
                                                     className={`${inputClassName} mt-0`}
@@ -527,6 +652,28 @@ export const BookingCollectPage: React.FC = () => {
                             )}
                         </div>
                     </div>
+
+                    {!isEditing && (
+                        <div className="mt-4 space-y-3">
+                            {readinessError && (
+                                <p className="rounded-xl border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                                    {readinessError}
+                                </p>
+                            )}
+
+                            <button
+                                type="button"
+                                onClick={handleContinueToReview}
+                                disabled={!canContinueToSummary}
+                                className={`w-full rounded-xl px-4 py-3 text-sm font-medium transition ${canContinueToSummary
+                                    ? "bg-cyan-500 text-slate-950 hover:bg-cyan-400"
+                                    : "cursor-not-allowed border border-slate-700/70 bg-slate-900/50 text-white/35"
+                                    }`}
+                            >
+                                Continue to review
+                            </button>
+                        </div>
+                    )}
 
                     <button
                         onClick={() => emit("CANCEL_BOOKING")}
