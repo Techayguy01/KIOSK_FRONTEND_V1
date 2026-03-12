@@ -40,6 +40,7 @@ export interface RoomDTO {
   price: number;
   currency: string;
   image: string;
+  imageUrls?: string[];
   features: string[];
   code?: string;
 }
