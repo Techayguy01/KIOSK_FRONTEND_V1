@@ -29,7 +29,10 @@ from services.faq_service import (
     is_faq_candidate_query,
     normalize_faq_query,
 )
-from services.booking_guards import validate_booking_constraints
+from services.booking_guards import (
+    resolve_effective_room_payload,
+    sanitize_booking_constraints,
+)
 from models.booking import Booking
 from models.room_instance import RoomInstance
 
@@ -49,6 +52,8 @@ SLOT_NAME_MAP = {
     "check_out_date": "checkOutDate",
     "guest_name": "guestName",
 }
+
+CONTRACT_TO_BACKEND_SLOT_MAP = {value: key for key, value in SLOT_NAME_MAP.items()}
 
 UI_SCREEN_VALUES = {value for value in get_args(UIScreen)}
 UI_STATE_ALIASES = {
@@ -99,6 +104,33 @@ def _parse_uuid(raw_value: Optional[str]) -> Optional[UUID]:
         return UUID(str(raw_value))
     except Exception:
         return None
+
+
+def _normalize_backend_slot_name(slot_name: Optional[str]) -> Optional[str]:
+    if not slot_name:
+        return None
+    normalized = str(slot_name).strip()
+    if not normalized:
+        return None
+    return CONTRACT_TO_BACKEND_SLOT_MAP.get(normalized, normalized)
+
+
+def _restore_invalid_booking_slot(
+    updated_state: KioskState,
+    previous_state: KioskState,
+    invalid_slot: Optional[str],
+) -> None:
+    backend_slot = _normalize_backend_slot_name(invalid_slot)
+    if not backend_slot or not hasattr(updated_state.booking_slots, backend_slot):
+        return
+
+    previous_value = getattr(previous_state.booking_slots, backend_slot, None)
+    slot_updates = {backend_slot: previous_value}
+    updated_state.booking_slots = updated_state.booking_slots.model_copy(update=slot_updates)
+    updated_state.active_slot = backend_slot
+
+    if backend_slot == "room_type" and previous_state.selected_room is not None:
+        updated_state.selected_room = previous_state.selected_room.model_copy(deep=True)
 
 
 def _resolve_room_type_uuid(
@@ -236,6 +268,58 @@ async def _load_room_instances(
     return result.all()
 
 
+def _build_fallback_room_number(
+    room_type_id: UUID,
+    room_inventory: list[dict],
+) -> str:
+    room_type_id_str = str(room_type_id)
+    matched_room = next(
+        (room for room in room_inventory if str(room.get("id") or "") == room_type_id_str),
+        None,
+    )
+    if matched_room:
+        room_code = str(matched_room.get("code") or "").strip()
+        if room_code:
+            return room_code
+        room_name = str(matched_room.get("name") or "").strip()
+        if room_name:
+            normalized_name = "".join(
+                char if char.isalnum() else "-"
+                for char in room_name.upper()
+            ).strip("-")
+            if normalized_name:
+                return normalized_name
+    return f"ROOM-{room_type_id_str[:6].upper()}"
+
+
+async def _ensure_room_instance_exists(
+    session: AsyncSession,
+    tenant_id: UUID,
+    room_type_id: UUID,
+    room_inventory: list[dict],
+) -> list[RoomInstance]:
+    room_instances = await _load_room_instances(session, tenant_id, room_type_id)
+    if room_instances:
+        return room_instances
+
+    fallback_room_number = _build_fallback_room_number(room_type_id, room_inventory)
+    fallback_instance = RoomInstance(
+        tenant_id=tenant_id,
+        room_type_id=room_type_id,
+        room_number=fallback_room_number,
+        status="ACTIVE",
+    )
+    session.add(fallback_instance)
+    await session.flush()
+    print(
+        "[ChatAPI][RoomAllocation] created_fallback_instance "
+        f"tenant_id={tenant_id} "
+        f"room_type_id={room_type_id} "
+        f"room_number={fallback_room_number}"
+    )
+    return [fallback_instance]
+
+
 async def _find_overlapping_bookings_for_room_type(
     session: AsyncSession,
     tenant_id: UUID,
@@ -261,10 +345,14 @@ async def _allocate_available_room_instance(
     room_type_id: UUID,
     check_in: date,
     check_out: date,
+    room_inventory: list[dict],
 ) -> Optional[RoomInstance]:
-    room_instances = await _load_room_instances(session, tenant_id, room_type_id)
-    if not room_instances:
-        return None
+    room_instances = await _ensure_room_instance_exists(
+        session=session,
+        tenant_id=tenant_id,
+        room_type_id=room_type_id,
+        room_inventory=room_inventory,
+    )
 
     overlapping_bookings = await _find_overlapping_bookings_for_room_type(
         session=session,
@@ -459,6 +547,7 @@ class ChatRequest(BaseModel):
     last_system_prompt: Optional[str] = Field(default=None, alias="lastSystemPrompt")
     filled_slots: Optional[dict] = Field(default=None, alias="filledSlots")
     conversation_history: Optional[list[ConversationTurn]] = Field(default=None, alias="conversationHistory")
+    room_catalog: Optional[list[dict]] = Field(default=None, alias="roomCatalog")
 
     class Config:
         populate_by_name = True  # Allow both camelCase and snake_case
@@ -515,6 +604,25 @@ async def chat(
         tenant_config = await _load_tenant_config(session, resolved_tenant_id)
         effective_language = _resolve_effective_language(req.language, tenant_config)
         room_inventory = await _load_room_inventory(session, resolved_tenant_id)
+        if not room_inventory and req.room_catalog:
+            room_inventory = [
+                {
+                    "id": str(room.get("id") or ""),
+                    "name": room.get("name"),
+                    "code": room.get("code"),
+                    "price": float(room.get("price") or 0) if room.get("price") is not None else None,
+                    "currency": room.get("currency") or "INR",
+                    "maxAdults": room.get("maxAdults"),
+                    "maxChildren": room.get("maxChildren"),
+                    "maxTotalGuests": room.get("maxTotalGuests"),
+                }
+                for room in req.room_catalog
+                if room.get("id") and room.get("name")
+            ]
+            print(
+                "[ChatAPI] Using frontend room catalog fallback "
+                f"session={req.session_id} rooms={len(room_inventory)}"
+            )
         normalized_ui_screen = _normalize_ui_screen(req.current_ui_screen)
         persisted_booking_id = _persisted_booking_by_session.get(req.session_id)
         assigned_room_id = _persisted_room_id_by_session.get(req.session_id)
@@ -540,6 +648,7 @@ async def chat(
             )
 
         state = _sessions[req.session_id]
+        previous_state = state.model_copy(deep=True)
 
         # Update state with current request data
         state.latest_transcript = req.transcript
@@ -661,6 +770,7 @@ async def chat(
             _sessions[req.session_id] = updated_state
 
         slots_dict = updated_state.booking_slots.model_dump()
+        previous_slots_dict = previous_state.booking_slots.model_dump()
         is_complete = updated_state.booking_slots.is_complete()
         missing_slots = [
             _to_contract_slot_name(slot_name)
@@ -668,18 +778,48 @@ async def chat(
         ]
         next_slot_to_ask = _to_contract_slot_name(updated_state.active_slot)
         persistence_error: Optional[str] = None
+        persistence_error_detail: Optional[str] = None
         selected_room_payload = updated_state.selected_room.model_dump(by_alias=True) if updated_state.selected_room else None
+        selected_room_payload = resolve_effective_room_payload(
+            selected_room_payload,
+            slots_dict,
+            room_inventory,
+        )
+        if selected_room_payload:
+            try:
+                updated_state.selected_room = RoomInventoryItem(**selected_room_payload)
+            except Exception:
+                pass
         if selected_room_payload and selected_room_payload.get("name"):
             selected_room_payload["displayName"] = selected_room_payload.get("name")
         response_next_screen = updated_state.next_ui_screen or normalized_ui_screen
         response_speech = updated_state.speech_response or "I'm not sure how to help with that."
 
-        constraint_error, constraint_slot, constraint_screen = validate_booking_constraints(
+        sanitized_slots, constraint_error, constraint_slot, constraint_screen = sanitize_booking_constraints(
             slots_dict,
+            previous_slots_dict,
             selected_room_payload,
         )
         if constraint_error:
+            for backend_slot, sanitized_value in sanitized_slots.items():
+                if slots_dict.get(backend_slot) != sanitized_value:
+                    _restore_invalid_booking_slot(updated_state, previous_state, backend_slot)
+            updated_state.active_slot = _normalize_backend_slot_name(constraint_slot)
+            _sessions[req.session_id] = updated_state
+            slots_dict = updated_state.booking_slots.model_dump()
             is_complete = False
+            missing_slots = [
+                _to_contract_slot_name(slot_name)
+                for slot_name in updated_state.booking_slots.missing_required_slots()
+            ]
+            selected_room_payload = updated_state.selected_room.model_dump(by_alias=True) if updated_state.selected_room else None
+            selected_room_payload = resolve_effective_room_payload(
+                selected_room_payload,
+                slots_dict,
+                room_inventory,
+            )
+            if selected_room_payload and selected_room_payload.get("name"):
+                selected_room_payload["displayName"] = selected_room_payload.get("name")
             response_speech = constraint_error
             response_next_screen = constraint_screen
             next_slot_to_ask = constraint_slot
@@ -747,6 +887,7 @@ async def chat(
                         room_type_id=room_type_uuid,
                         check_in=check_in,
                         check_out=check_out,
+                        room_inventory=room_inventory,
                     )
                     if not assigned_room:
                         raise ValueError(
@@ -783,7 +924,8 @@ async def chat(
                     )
                 except Exception as db_err:
                     await session.rollback()
-                    persistence_error = f"BOOKING_PERSIST_FAILED: {db_err}"
+                    persistence_error_detail = str(db_err)
+                    persistence_error = f"BOOKING_PERSIST_FAILED: {persistence_error_detail}"
                     print(
                         "[ChatAPI][PersistBooking] failure "
                         f"session={req.session_id} "
@@ -799,10 +941,13 @@ async def chat(
 
             if persistence_error:
                 response_next_screen = "BOOKING_SUMMARY"
-                response_speech = (
-                    "I could not finalize your booking due to a system issue. "
-                    "Please try confirm again or use the touch confirm button."
-                )
+                if persistence_error_detail and not persistence_error_detail.startswith("Missing or invalid tenant_id"):
+                    response_speech = persistence_error_detail
+                else:
+                    response_speech = (
+                        "I could not finalize your booking due to a system issue. "
+                        "Please try confirm again or use the touch confirm button."
+                    )
             else:
                 response_next_screen = "PAYMENT"
                 if not response_speech.strip():

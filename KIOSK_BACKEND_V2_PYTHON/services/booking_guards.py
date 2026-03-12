@@ -2,6 +2,18 @@ from datetime import date, datetime
 from typing import Optional
 
 
+CONTRACT_TO_BACKEND_SLOT_MAP = {
+    "roomType": "room_type",
+    "adults": "adults",
+    "children": "children",
+    "checkInDate": "check_in_date",
+    "checkOutDate": "check_out_date",
+    "guestName": "guest_name",
+    "nights": "nights",
+    "totalPrice": "total_price",
+}
+
+
 def parse_iso_date(raw_value: Optional[str]) -> Optional[date]:
     if not raw_value:
         return None
@@ -22,6 +34,66 @@ def resolve_room_capacity_limit(selected_room_payload: Optional[dict], key: str)
         return parsed if parsed >= 0 else None
     except Exception:
         return None
+
+
+def _normalize_room_lookup_value(raw_value: Optional[object]) -> str:
+    if raw_value is None:
+        return ""
+    return " ".join(str(raw_value).strip().lower().split())
+
+
+def resolve_effective_room_payload(
+    selected_room_payload: Optional[dict],
+    slots_dict: Optional[dict],
+    room_inventory: Optional[list[dict]],
+) -> Optional[dict]:
+    payload = dict(selected_room_payload or {})
+    if not room_inventory:
+        return payload or None
+
+    normalized_payload_name = _normalize_room_lookup_value(payload.get("name"))
+    normalized_payload_code = _normalize_room_lookup_value(payload.get("code"))
+    normalized_room_hint = _normalize_room_lookup_value(
+        (slots_dict or {}).get("room_type") or (slots_dict or {}).get("roomType")
+    )
+    selected_room_id = str(payload.get("id") or "").strip()
+
+    canonical_room: Optional[dict] = None
+    for room in room_inventory:
+        room_id = str(room.get("id") or "").strip()
+        room_name = _normalize_room_lookup_value(room.get("name"))
+        room_code = _normalize_room_lookup_value(room.get("code"))
+        if selected_room_id and room_id == selected_room_id:
+            canonical_room = dict(room)
+            break
+        if normalized_payload_name and normalized_payload_name in {room_name, room_code}:
+            canonical_room = dict(room)
+            break
+        if normalized_payload_code and normalized_payload_code in {room_name, room_code}:
+            canonical_room = dict(room)
+            break
+        if normalized_room_hint and normalized_room_hint in {room_name, room_code}:
+            canonical_room = dict(room)
+            break
+
+    if not canonical_room:
+        return payload or None
+
+    merged_room = dict(canonical_room)
+    merged_room.update({key: value for key, value in payload.items() if value is not None})
+    for authoritative_key in (
+        "id",
+        "name",
+        "code",
+        "price",
+        "currency",
+        "maxAdults",
+        "maxChildren",
+        "maxTotalGuests",
+    ):
+        if canonical_room.get(authoritative_key) is not None:
+            merged_room[authoritative_key] = canonical_room.get(authoritative_key)
+    return merged_room
 
 
 def bookings_overlap(
@@ -100,3 +172,35 @@ def validate_booking_constraints(
         )
 
     return None, None, "BOOKING_SUMMARY"
+
+
+def sanitize_booking_constraints(
+    slots_dict: dict,
+    previous_slots_dict: Optional[dict],
+    selected_room_payload: Optional[dict],
+) -> tuple[dict, Optional[str], Optional[str], str]:
+    sanitized_slots = dict(slots_dict or {})
+    previous_values = dict(previous_slots_dict or {})
+    first_error: Optional[str] = None
+    first_slot: Optional[str] = None
+    first_screen = "BOOKING_SUMMARY"
+    seen_slots: set[str] = set()
+
+    while True:
+        error, slot, screen = validate_booking_constraints(sanitized_slots, selected_room_payload)
+        if not error:
+            return sanitized_slots, first_error, first_slot, first_screen
+
+        if first_error is None:
+            first_error = error
+            first_slot = slot
+            first_screen = screen
+
+        backend_slot = CONTRACT_TO_BACKEND_SLOT_MAP.get(slot or "", slot or "")
+        if not backend_slot or backend_slot in seen_slots:
+            return sanitized_slots, first_error, first_slot, first_screen
+
+        seen_slots.add(backend_slot)
+        previous_value = previous_values.get(backend_slot)
+        current_value = sanitized_slots.get(backend_slot)
+        sanitized_slots[backend_slot] = None if previous_value == current_value else previous_value
