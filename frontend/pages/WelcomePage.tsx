@@ -331,7 +331,7 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
       <div className="mt-16">
         <Button
           variant="ghost"
-          onClick={() => VoiceRuntime.startSession(getCurrentTenantLanguage())} // Use Runtime directly
+          onClick={() => emit('VOICE_MODE_REQUESTED')}
           aria-label="Switch to voice mode"
           className="flex items-center gap-2 text-slate-500 hover:text-white"
         >

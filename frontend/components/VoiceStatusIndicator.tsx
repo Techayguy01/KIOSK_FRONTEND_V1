@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, Mic, MicOff, PauseCircle, Volume2 } from "lucide-react";
+import { Hand, Loader2, Mic, MicOff, PauseCircle, Volume2 } from "lucide-react";
 import { UiState } from "../agent";
 import { getCurrentTenantLanguage } from "../services/tenantContext";
 import { VoiceRuntime, VoiceMode } from "../voice/VoiceRuntime";
@@ -7,10 +7,18 @@ import { VoiceSessionErrorReason } from "../voice/voice.types";
 import { TTSController } from "../voice/TTSController";
 
 type VoiceStatusKind = "listening" | "speaking" | "processing" | "paused" | "ready" | "unavailable";
+type InteractionMode = "manual" | "voice";
 
 type VoiceStatusIndicatorProps = {
     currentState: UiState;
     voiceEnabled: boolean;
+    interactionMode: InteractionMode;
+    pendingVoiceConfirm: boolean;
+    voiceLocked?: boolean;
+    onRequestVoiceMode?: () => void;
+    onConfirmVoiceMode?: () => void;
+    onCancelVoiceMode?: () => void;
+    onRequestManualMode?: () => void;
 };
 
 const VOICE_RELEVANT_STATES = new Set<UiState>([
@@ -23,7 +31,17 @@ const VOICE_RELEVANT_STATES = new Set<UiState>([
     "PAYMENT",
 ]);
 
-export const VoiceStatusIndicator: React.FC<VoiceStatusIndicatorProps> = ({ currentState, voiceEnabled }) => {
+export const VoiceStatusIndicator: React.FC<VoiceStatusIndicatorProps> = ({
+    currentState,
+    voiceEnabled,
+    interactionMode,
+    pendingVoiceConfirm,
+    voiceLocked,
+    onRequestVoiceMode,
+    onConfirmVoiceMode,
+    onCancelVoiceMode,
+    onRequestManualMode,
+}) => {
     const [mode, setMode] = useState<VoiceMode>(VoiceRuntime.getMode());
     const [isProcessing, setIsProcessing] = useState(false);
     const [isPaused, setIsPaused] = useState(false);
@@ -117,11 +135,21 @@ export const VoiceStatusIndicator: React.FC<VoiceStatusIndicatorProps> = ({ curr
     }
 
     const status = useMemo((): { kind: VoiceStatusKind; label: string } => {
+        if (interactionMode === "manual") {
+            if (pendingVoiceConfirm) {
+                return { kind: "ready", label: "Confirm voice switch" };
+            }
+            return { kind: "paused", label: "Manual mode active" };
+        }
+
         if (!voiceEnabled) {
             return { kind: "unavailable", label: "Voice unavailable" };
         }
         if (unavailableReason) {
             return { kind: "unavailable", label: "Voice unavailable" };
+        }
+        if (voiceLocked) {
+            return { kind: "paused", label: "Voice locked" };
         }
         if (mode === "speaking") {
             return { kind: "speaking", label: "Speaking" };
@@ -136,7 +164,7 @@ export const VoiceStatusIndicator: React.FC<VoiceStatusIndicatorProps> = ({ curr
             return { kind: "listening", label: "Listening" };
         }
         return { kind: "ready", label: "Tap mic to speak" };
-    }, [isPaused, isProcessing, mode, unavailableReason, voiceEnabled]);
+    }, [interactionMode, isPaused, isProcessing, mode, pendingVoiceConfirm, unavailableReason, voiceEnabled, voiceLocked]);
 
     const badgeClassByKind: Record<VoiceStatusKind, string> = {
         listening: "border-emerald-400/60 bg-emerald-500/15 text-emerald-100",
@@ -162,9 +190,17 @@ export const VoiceStatusIndicator: React.FC<VoiceStatusIndicatorProps> = ({ curr
         }
     })();
 
-    const canTapToToggle = voiceEnabled;
+    const canTapToToggle = interactionMode === "manual" ? true : voiceEnabled;
+
     const handleClick = () => {
-        if (!canTapToToggle) return;
+        if (interactionMode === "manual") {
+            if (!pendingVoiceConfirm) {
+                onRequestVoiceMode?.();
+            }
+            return;
+        }
+
+        if (!canTapToToggle || voiceLocked) return;
         if (mode === "listening") {
             VoiceRuntime.endSession();
             return;
@@ -176,19 +212,58 @@ export const VoiceStatusIndicator: React.FC<VoiceStatusIndicatorProps> = ({ curr
     };
 
     return (
-        <button
-            type="button"
-            onClick={handleClick}
-            disabled={!canTapToToggle}
-            className={`fixed left-4 bottom-4 z-40 flex w-[168px] items-center justify-center pointer-events-auto rounded-full border px-3 py-2 text-xs font-medium shadow-lg backdrop-blur-md transition-colors ${badgeClassByKind[status.kind]} ${canTapToToggle ? "hover:brightness-110" : "cursor-not-allowed opacity-85"}`}
-            aria-live="polite"
-            aria-label={`Voice status: ${status.label}`}
-            title={`Voice status: ${status.label}`}
-        >
-            <span className="inline-flex items-center gap-2">
-                {icon}
-                {status.label}
-            </span>
-        </button>
+        <div className="fixed left-4 bottom-4 z-40 flex max-w-[280px] flex-col gap-2 pointer-events-auto">
+            <button
+                type="button"
+                onClick={handleClick}
+                disabled={!canTapToToggle}
+                className={`flex w-[188px] items-center justify-center rounded-full border px-3 py-2 text-xs font-medium shadow-lg backdrop-blur-md transition-colors ${badgeClassByKind[status.kind]} ${canTapToToggle ? "hover:brightness-110" : "cursor-not-allowed opacity-85"}`}
+                aria-live="polite"
+                aria-label={`Voice status: ${status.label}`}
+                title={`Voice status: ${status.label}`}
+            >
+                <span className="inline-flex items-center gap-2">
+                    {icon}
+                    {status.label}
+                </span>
+            </button>
+
+            {interactionMode === "manual" && pendingVoiceConfirm && (
+                <div className="rounded-2xl border border-cyan-400/40 bg-slate-950/90 p-3 text-xs text-slate-100 shadow-lg backdrop-blur-md">
+                    <p className="mb-2 leading-relaxed">
+                        Switch to voice mode now?
+                    </p>
+                    <div className="flex gap-2">
+                        <button
+                            type="button"
+                            onClick={onConfirmVoiceMode}
+                            className="flex-1 rounded-lg border border-cyan-300/60 bg-cyan-400/20 px-2 py-1.5 text-cyan-100 transition hover:bg-cyan-400/30"
+                        >
+                            Enable voice
+                        </button>
+                        <button
+                            type="button"
+                            onClick={onCancelVoiceMode}
+                            className="flex-1 rounded-lg border border-slate-500/70 bg-slate-700/40 px-2 py-1.5 text-slate-100 transition hover:bg-slate-600/40"
+                        >
+                            Keep manual
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {interactionMode === "voice" && (
+                <button
+                    type="button"
+                    onClick={onRequestManualMode}
+                    className="inline-flex w-[188px] items-center justify-center gap-2 rounded-full border border-amber-300/60 bg-amber-500/15 px-3 py-2 text-xs font-medium text-amber-100 shadow-lg backdrop-blur-md transition hover:brightness-110"
+                    aria-label="Switch to manual mode"
+                    title="Switch to manual mode"
+                >
+                    <Hand size={14} />
+                    Manual Mode
+                </button>
+            )}
+        </div>
     );
 };

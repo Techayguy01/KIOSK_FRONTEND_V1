@@ -199,4 +199,17 @@ export const RoomService = {
       }
     }
   },
+
+  async prefetchAvailableRooms(): Promise<void> {
+    try {
+      await this.getAvailableRooms();
+    } catch (error) {
+      console.warn("[RoomService] Room prefetch failed:", error);
+    }
+  },
+
+  clearCache(): void {
+    roomCache = null;
+    inflightFetch = null;
+  },
 };

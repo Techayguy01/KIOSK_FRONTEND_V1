@@ -82,6 +82,7 @@ type VoiceTelemetryEvent =
     | "VOICE_SESSION_ERROR";
 
 type Sentiment = 'POSITIVE' | 'NEUTRAL' | 'FRUSTRATED' | 'URGENT';
+type InteractionMode = "manual" | "voice";
 
 export type BookingSlotKey =
     | "roomType"
@@ -221,6 +222,8 @@ class AgentAdapterService {
         expectedType: null,
         promptAsked: "",
     };
+    private interactionMode: InteractionMode = "voice";
+    private pendingVoiceConfirm = false;
     private manualEditModeActive = false;
     private listeningRestartTimer: ReturnType<typeof setTimeout> | null = null;
     private silenceReengageTimer: ReturnType<typeof setTimeout> | null = null;
@@ -573,8 +576,32 @@ class AgentAdapterService {
 
     // === Voice Authority Check ===
 
+    private getVoiceLocked(): boolean {
+        return this.interactionMode !== "voice" || this.pendingVoiceConfirm || this.manualEditModeActive;
+    }
+
+    private setInteractionMode(
+        mode: InteractionMode,
+        options?: { pendingVoiceConfirm?: boolean; reason?: string }
+    ): void {
+        const nextPendingVoiceConfirm = options?.pendingVoiceConfirm ?? false;
+        const changed =
+            this.interactionMode !== mode ||
+            this.pendingVoiceConfirm !== nextPendingVoiceConfirm;
+
+        this.interactionMode = mode;
+        this.pendingVoiceConfirm = nextPendingVoiceConfirm;
+
+        if (changed) {
+            console.log(
+                `[AgentAdapter] Interaction mode -> ${mode} (pendingVoiceConfirm=${nextPendingVoiceConfirm})` +
+                (options?.reason ? ` [${options.reason}]` : "")
+            );
+        }
+    }
+
     private hasVoiceAuthority(): boolean {
-        return !this.manualEditModeActive && (VOICE_AUTHORITY_MATRIX[this.state] ?? false);
+        return !this.getVoiceLocked() && (VOICE_AUTHORITY_MATRIX[this.state] ?? false);
     }
 
     /**
@@ -584,6 +611,20 @@ class AgentAdapterService {
      */
     private handleVoiceEvent(event: VoiceEvent) {
         console.log(`[AgentAdapter] Received Voice Event: ${event.type}`);
+
+        if (this.interactionMode !== "voice" || this.pendingVoiceConfirm) {
+            if (event.type === "VOICE_SESSION_STARTED") {
+                this.emitTelemetry("VOICE_COMMAND_BLOCKED", {
+                    reason: this.pendingVoiceConfirm ? "PENDING_CONFIRMATION" : "MANUAL_MODE",
+                    state: this.state
+                });
+                VoiceRuntime.cancelSession();
+            }
+            if (event.type === "VOICE_SESSION_ENDED") {
+                this.hasProcessedTranscript = false;
+            }
+            return;
+        }
 
         switch (event.type) {
             case "VOICE_SESSION_STARTED":
@@ -1660,12 +1701,16 @@ class AgentAdapterService {
 
         // Emit current state immediately to new subscriber
         const metadata = StateMachine.getMetadata(this.state as UIState);
+        const voiceLocked = this.getVoiceLocked();
         const fullData = {
             ...this.viewData,
             slotContext: this.slotContext,
             metadata: {
                 ...metadata,
-                listening: this.hasVoiceAuthority() // Approximate check
+                listening: this.hasVoiceAuthority(), // Approximate check
+                interactionMode: this.interactionMode,
+                pendingVoiceConfirm: this.pendingVoiceConfirm,
+                voiceLocked
             }
         };
         listener(this.state, fullData);
@@ -1904,12 +1949,68 @@ class AgentAdapterService {
         console.log(`[AgentAdapter] ðŸ‘† Handle Intent (Touch Authority): ${intent}`, payload || '');
         this.resetInactivityTimer();
 
+        if (intent === "VOICE_MODE_REQUESTED") {
+            if (this.interactionMode === "voice") {
+                this.setInteractionMode("voice", {
+                    pendingVoiceConfirm: false,
+                    reason: intent
+                });
+                if (this.hasVoiceAuthority()) {
+                    this.scheduleListeningRestart(120, "state_transition");
+                }
+                this.notifyListeners();
+                return;
+            }
+
+            this.setInteractionMode("manual", {
+                pendingVoiceConfirm: true,
+                reason: intent
+            });
+            this.notifyListeners();
+            return;
+        }
+
+        if (intent === "VOICE_MODE_CONFIRMED") {
+            this.setInteractionMode("voice", {
+                pendingVoiceConfirm: false,
+                reason: intent
+            });
+            if (this.hasVoiceAuthority()) {
+                this.scheduleListeningRestart(120, "state_transition");
+            }
+            this.notifyListeners();
+            return;
+        }
+
+        if (intent === "VOICE_MODE_CANCELLED") {
+            this.setInteractionMode("manual", {
+                pendingVoiceConfirm: false,
+                reason: intent
+            });
+            this.notifyListeners();
+            return;
+        }
+
+        if (intent === "MANUAL_MODE_REQUESTED") {
+            this.setInteractionMode("manual", {
+                pendingVoiceConfirm: false,
+                reason: intent
+            });
+            this.resetVoiceLifecycle(`interrupt:${intent}`);
+            TTSController.hardStop();
+            VoiceRuntime.hardStopAll();
+            this.notifyListeners();
+            return;
+        }
+
         if (intent === "BOOKING_FIELDS_EDIT_STARTED" && this.state === "BOOKING_COLLECT") {
             this.manualEditModeActive = true;
             this.resetVoiceLifecycle(`interrupt:${intent}`);
             TTSController.hardStop();
             VoiceRuntime.stopListening();
-            this.speak(this.buildManualEditPrompt());
+            if (this.interactionMode === "voice") {
+                this.speak(this.buildManualEditPrompt());
+            }
             return;
         }
 
@@ -1930,7 +2031,9 @@ class AgentAdapterService {
             VoiceRuntime.stopListening();
             this.applyPayloadData(intent, payload, this.state);
             this.notifyListeners();
-            this.speak(this.buildManualReviewPrompt(this.getBookingSlots(), this.viewData.selectedRoom));
+            if (this.interactionMode === "voice") {
+                this.speak(this.buildManualReviewPrompt(this.getBookingSlots(), this.viewData.selectedRoom));
+            }
             return;
         }
 
@@ -1958,6 +2061,20 @@ class AgentAdapterService {
             "CANCEL_REQUESTED", "PROXIMITY_DETECTED",
             "SCAN_ID_SELECTED", "PAYMENT_SELECTED"
         ];
+
+        if (intent === "PROXIMITY_DETECTED" && this.state === "IDLE") {
+            this.setInteractionMode("voice", {
+                pendingVoiceConfirm: false,
+                reason: intent
+            });
+        }
+
+        if (intent === "TOUCH_SELECTED" && this.state === "WELCOME") {
+            this.setInteractionMode("manual", {
+                pendingVoiceConfirm: false,
+                reason: intent
+            });
+        }
 
         if (INTERRUPT_INTENTS.includes(intent)) {
             console.log("[AgentAdapter] ðŸ‘† Touch Interrupt detected. Killing Audio.");
@@ -2009,7 +2126,13 @@ class AgentAdapterService {
 
         if (nextState === "ROOM_SELECT") {
             // Warm room inventory so ROOM_SELECT can render without waiting on a cold request.
-            void RoomService.prefetchAvailableRooms();
+            if (typeof RoomService.prefetchAvailableRooms === "function") {
+                void RoomService.prefetchAvailableRooms();
+            } else {
+                void RoomService.getAvailableRooms().catch((error) => {
+                    console.warn("[AgentAdapter] Room prefetch fallback failed:", error);
+                });
+            }
         }
 
         // ENTERPRISE RULE #1: Recursive Transitions are Valid
@@ -2038,6 +2161,36 @@ class AgentAdapterService {
         const previousState = this.state;
         this.clearKeyDispenseTimer(`transition:${previousState}->${nextState}`);
         this.state = nextState;
+
+        if (this.pendingVoiceConfirm) {
+            this.setInteractionMode(this.interactionMode, {
+                pendingVoiceConfirm: false,
+                reason: `transition:${previousState}->${nextState}`
+            });
+        }
+
+        if (nextState === "MANUAL_MENU") {
+            this.setInteractionMode("manual", {
+                pendingVoiceConfirm: false,
+                reason: `transition:${previousState}->${nextState}`
+            });
+        } else if (nextState === "AI_CHAT") {
+            this.setInteractionMode("voice", {
+                pendingVoiceConfirm: false,
+                reason: `transition:${previousState}->${nextState}`
+            });
+        } else if (nextState === "IDLE") {
+            this.setInteractionMode("voice", {
+                pendingVoiceConfirm: false,
+                reason: `transition:${previousState}->${nextState}`
+            });
+        } else if (previousState === "IDLE" && nextState === "WELCOME") {
+            this.setInteractionMode("voice", {
+                pendingVoiceConfirm: false,
+                reason: `transition:${previousState}->${nextState}`
+            });
+        }
+
         if (nextState === "WELCOME" || nextState === "IDLE") {
             this.clearSession(`transition:${previousState}->${nextState}`);
         }
@@ -2166,6 +2319,10 @@ class AgentAdapterService {
      * AI captions are emitted from TTS lifecycle events for better sync.
      */
     public speak(text: string): void {
+        if (this.interactionMode !== "voice") {
+            console.debug("[AgentAdapter] Speech suppressed (manual interaction mode)");
+            return;
+        }
         this.maybeTrackSlotFromPrompt(text);
         this.pendingAiSpeechText = text;
         void VoiceRuntime.speak(text, getCurrentTenantLanguage(this.language));
@@ -2213,12 +2370,16 @@ class AgentAdapterService {
 
     private notifyListeners() {
         const metadata = StateMachine.getMetadata(this.state as UIState);
+        const voiceLocked = this.getVoiceLocked();
         const fullData = {
             ...this.viewData,
             slotContext: this.slotContext,
             metadata: {
                 ...metadata,
-                listening: this.hasVoiceAuthority()
+                listening: this.hasVoiceAuthority(),
+                interactionMode: this.interactionMode,
+                pendingVoiceConfirm: this.pendingVoiceConfirm,
+                voiceLocked
             }
         };
         this.listeners.forEach(listener => listener(this.state, fullData));
@@ -2227,6 +2388,11 @@ class AgentAdapterService {
     // debug / testing utility to force reset if needed
     public _reset() {
         this.state = "IDLE";
+        this.setInteractionMode("voice", {
+            pendingVoiceConfirm: false,
+            reason: "reset"
+        });
+        this.manualEditModeActive = false;
         this.lastIntent = null;
         this.lastIntentTime = 0;
         this.intentTimestamps = [];

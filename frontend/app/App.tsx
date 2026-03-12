@@ -65,6 +65,7 @@ const MINI_SIYA_ORB_STATES = new Set<UiState>([
 ]);
 
 type JourneyMode = 'voice' | 'manual' | null;
+type InteractionMode = 'voice' | 'manual';
 
 const TenantKioskApp: React.FC = () => {
   const { tenantSlug } = useParams<{ tenantSlug: string }>();
@@ -159,10 +160,19 @@ const TenantKioskApp: React.FC = () => {
   // CRITICAL: This is a pure switch on Agent State. No logic allowed.
   const effectiveState = state;
   const showVoiceStatus = VOICE_RELEVANT_STATES.has(effectiveState);
+  const metadataInteractionMode = data?.metadata?.interactionMode;
+  const interactionMode: InteractionMode =
+    metadataInteractionMode === 'manual' || metadataInteractionMode === 'voice'
+      ? metadataInteractionMode
+      : journeyMode === 'manual'
+        ? 'manual'
+        : 'voice';
+  const pendingVoiceConfirm = Boolean(data?.metadata?.pendingVoiceConfirm);
+  const voiceLocked = Boolean(data?.metadata?.voiceLocked);
   const derivedVoiceEnabled = typeof data?.metadata?.listening === 'boolean'
     ? Boolean(data.metadata.listening)
     : showVoiceStatus;
-  const showMiniSiyaOrb = journeyMode === 'voice' && MINI_SIYA_ORB_STATES.has(effectiveState);
+  const showMiniSiyaOrb = interactionMode === 'voice' && MINI_SIYA_ORB_STATES.has(effectiveState);
 
   // Track whether the current flow originated from voice mode or manual mode.
   // This supports flows that jump from WELCOME directly to transaction pages.
@@ -299,6 +309,13 @@ const TenantKioskApp: React.FC = () => {
           <VoiceStatusIndicator
             currentState={effectiveState}
             voiceEnabled={derivedVoiceEnabled}
+            interactionMode={interactionMode}
+            pendingVoiceConfirm={pendingVoiceConfirm}
+            voiceLocked={voiceLocked}
+            onRequestVoiceMode={() => { void emit('VOICE_MODE_REQUESTED'); }}
+            onConfirmVoiceMode={() => { void emit('VOICE_MODE_CONFIRMED'); }}
+            onCancelVoiceMode={() => { void emit('VOICE_MODE_CANCELLED'); }}
+            onRequestManualMode={() => { void emit('MANUAL_MODE_REQUESTED'); }}
           />
         )}
       </div>
