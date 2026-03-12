@@ -9,11 +9,11 @@ import { buildTenantApiUrl, getTenantHeaders } from "../services/tenantContext";
 
 class PremiumAudioPlayerService {
     private currentAudio: HTMLAudioElement | null = null;
-    private onEndCallback: (() => void) | null = null;
     private activeReject: ((error: Error) => void) | null = null;
     private activeController: AbortController | null = null;
     private activeTimeout: ReturnType<typeof setTimeout> | null = null;
-    private stopRequested = false;
+    private activeAbortReason: "timeout" | "superseded" | "stop" | null = null;
+    private requestSequence = 0;
 
     /**
      * Fetch and play TTS audio from the backend.
@@ -23,14 +23,22 @@ class PremiumAudioPlayerService {
         language: string,
         hooks?: { onStart?: () => void; onEnd?: () => void }
     ): Promise<void> {
-        this.stop();
+        this.stop("superseded");
 
         // Timeout: short kiosk prompts should fail fast and fall back instead of creating long silence.
-        const PREMIUM_TTS_TIMEOUT_MS = 4500;
+        const PREMIUM_TTS_TIMEOUT_MS = 12000;
+        const requestId = ++this.requestSequence;
         const controller = new AbortController();
         this.activeController = controller;
-        this.stopRequested = false;
-        this.activeTimeout = setTimeout(() => controller.abort(), PREMIUM_TTS_TIMEOUT_MS);
+        this.activeAbortReason = null;
+        const startedAt = Date.now();
+        console.log(
+            `[PremiumPlayer][${requestId}] Request start lang=${language} chars=${text.trim().length} timeoutMs=${PREMIUM_TTS_TIMEOUT_MS}`
+        );
+        this.activeTimeout = setTimeout(() => {
+            this.activeAbortReason = "timeout";
+            controller.abort();
+        }, PREMIUM_TTS_TIMEOUT_MS);
 
         try {
             const url = buildTenantApiUrl("voice/tts");
@@ -44,6 +52,9 @@ class PremiumAudioPlayerService {
                 signal: controller.signal,
             });
 
+            console.log(
+                `[PremiumPlayer][${requestId}] Response received status=${response.status} elapsedMs=${Date.now() - startedAt}`
+            );
             this.clearPendingRequest();
 
             if (!response.ok) {
@@ -52,6 +63,9 @@ class PremiumAudioPlayerService {
 
             const audioBlob = await response.blob();
             const audioUrl = URL.createObjectURL(audioBlob);
+            console.log(
+                `[PremiumPlayer][${requestId}] Audio blob ready bytes=${audioBlob.size} elapsedMs=${Date.now() - startedAt}`
+            );
 
             return new Promise((resolve, reject) => {
                 const audio = new Audio(audioUrl);
@@ -59,7 +73,9 @@ class PremiumAudioPlayerService {
                 this.activeReject = reject;
 
                 audio.onplay = () => {
-                    console.log(`[PremiumPlayer] Playing AI Audio (${language}): "${text.substring(0, 30)}..."`);
+                    console.log(
+                        `[PremiumPlayer][${requestId}] Playing AI Audio (${language}) elapsedMs=${Date.now() - startedAt}: "${text.substring(0, 30)}..."`
+                    );
                     hooks?.onStart?.();
                 };
 
@@ -67,13 +83,14 @@ class PremiumAudioPlayerService {
                     this.activeReject = null;
                     this.cleanup();
                     hooks?.onEnd?.();
-                    if (this.onEndCallback) this.onEndCallback();
+                    console.log(`[PremiumPlayer][${requestId}] Playback ended totalMs=${Date.now() - startedAt}`);
                     resolve();
                 };
 
                 audio.onerror = () => {
                     this.activeReject = null;
                     this.cleanup();
+                    console.warn(`[PremiumPlayer][${requestId}] Audio playback failed`);
                     reject(new Error("Audio playback failed"));
                 };
 
@@ -84,13 +101,21 @@ class PremiumAudioPlayerService {
                 });
             });
         } catch (error) {
-            const stopped = this.stopRequested;
+            const abortReason = this.activeAbortReason;
             this.clearPendingRequest();
             const isTimeout = error instanceof DOMException && error.name === 'AbortError';
-            if (stopped) {
+            if (abortReason === "superseded" || abortReason === "stop") {
+                console.debug(`[PremiumPlayer][${requestId}] Request stopped reason=${abortReason}`);
                 throw new Error("playback_stopped");
             }
-            console.error(`[PremiumPlayer] ${isTimeout ? 'Timeout' : 'Error'}:`, error);
+            if (abortReason === "timeout" || isTimeout) {
+                console.error(
+                    `[PremiumPlayer][${requestId}] Timeout elapsedMs=${Date.now() - startedAt}:`,
+                    error
+                );
+            } else {
+                console.error(`[PremiumPlayer][${requestId}] Error elapsedMs=${Date.now() - startedAt}:`, error);
+            }
             throw error;
         }
     }
@@ -98,8 +123,8 @@ class PremiumAudioPlayerService {
     /**
      * Stop the current audio playback instantly.
      */
-    public stop(): void {
-        this.stopRequested = true;
+    public stop(reason: "superseded" | "stop" = "stop"): void {
+        this.activeAbortReason = reason;
         if (this.activeController) {
             this.activeController.abort();
         }
@@ -115,13 +140,6 @@ class PremiumAudioPlayerService {
             this.activeReject = null;
             reject(new Error("playback_stopped"));
         }
-    }
-
-    /**
-     * Set a callback for when speech ends.
-     */
-    public onEnded(callback: () => void): void {
-        this.onEndCallback = callback;
     }
 
     private cleanup(): void {

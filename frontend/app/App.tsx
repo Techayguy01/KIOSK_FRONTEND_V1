@@ -118,8 +118,20 @@ const TenantKioskApp: React.FC = () => {
     }
   }, []);
 
+  useEffect(() => {
+    const handlePageHide = () => {
+      AgentAdapter.clearSession('pagehide', { keepalive: true });
+    };
+
+    window.addEventListener('pagehide', handlePageHide);
+    return () => {
+      window.removeEventListener('pagehide', handlePageHide);
+      AgentAdapter.clearSession('app_unmount', { keepalive: true });
+    };
+  }, []);
+
   // 2. INTENT EMITTER (Forwarder to Agent)
-  const emit = async (type: string, payload?: any) => {
+  const emit = useCallback(async (type: string, payload?: any) => {
     console.log(`[APP RENDERER] Emitting Intent: ${type}`);
 
     // UI Feedback: "Processing..."
@@ -141,7 +153,7 @@ const TenantKioskApp: React.FC = () => {
       console.error("Agent Error", e);
       setError("System Error");
     }
-  };
+  }, []);
 
   // 3. DUMB ROUTER (State -> Component)
   // CRITICAL: This is a pure switch on Agent State. No logic allowed.

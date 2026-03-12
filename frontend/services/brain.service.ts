@@ -109,12 +109,8 @@ function dispatchFromConfidence(data: BrainResponse): void {
     }
 }
 
-/** Generate a simple session ID (persists per page load) */
-let sessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
 export function resetSession(): void {
-    sessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    console.log("[BrainService] Session reset:", sessionId);
+    AgentAdapter.clearSession("brain_service_reset");
 }
 
 /**
@@ -140,6 +136,7 @@ export async function sendToBrain(
     const tenantSlug = getTenantSlug();
     const activeLanguage = getCurrentTenantLanguage();
     const cacheKey = buildCacheKey(tenantSlug, transcript);
+    const sessionId = AgentAdapter.getCurrentSessionId();
 
     console.log(`[BrainService] Sending to V2 Brain: "${transcript}" (State: ${backendCurrentState})`);
     console.log(`[BrainService][FAQCache] eligibility=${shouldUseFaqCache(transcript, currentState)} key=${cacheKey}`);

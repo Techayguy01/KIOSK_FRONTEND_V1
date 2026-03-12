@@ -6,9 +6,23 @@ import AnimatedGradientBackground from '../components/ui/animated-gradient-backg
 
 export const PaymentPage: React.FC = () => {
   const { data, emit, loading } = useUIState();
+  const bookingSlots = data.bookingSlots || {};
   const room = data.selectedRoom || {};
-  const bill = data.bill || { nights: 0, subtotal: '0.00', taxes: '0.00', total: '0.00', currencySymbol: '$' };
+  const bill = data.bill || {
+    nights: bookingSlots.nights || 0,
+    subtotal: '0.00',
+    taxes: '0.00',
+    total: String(bookingSlots.totalPrice || '0.00'),
+    currencySymbol: room.currency === 'USD' ? '$' : (room.currency || 'INR')
+  };
   const progress = data.progress || { currentStep: 3, totalSteps: 4, steps: ['Payment'] };
+  const roomName = room.name || room.displayName || bookingSlots.roomType || 'Selected room';
+  const adults = Number(bookingSlots.adults || 0);
+  const children = Number(bookingSlots.children || 0);
+  const totalGuests = adults + children;
+  const guestLabel = totalGuests > 0
+    ? `${totalGuests} Guest${totalGuests === 1 ? '' : 's'}`
+    : 'Guests to be confirmed';
 
   const handlePayment = () => {
     emit('CONFIRM_PAYMENT');
@@ -33,8 +47,8 @@ export const PaymentPage: React.FC = () => {
             <div className="flex items-start gap-4 mb-6">
               <img src={room.image} alt="Room" className="w-24 h-24 rounded-lg object-cover" />
               <div>
-                <h4 className="text-white font-bold text-xl">{room.name}</h4>
-                <p className="text-slate-400 text-sm">{bill.nights} Nights • 2 Guests</p>
+                <h4 className="text-white font-bold text-xl">{roomName}</h4>
+                <p className="text-slate-400 text-sm">{bill.nights} Nights | {guestLabel}</p>
               </div>
             </div>
 
