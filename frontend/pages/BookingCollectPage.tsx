@@ -1,9 +1,10 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useUIState } from "../state/uiContext";
 import { useBrain } from "../hooks/useBrain";
 import { motion, AnimatePresence } from "framer-motion";
 import { CalendarDays } from "lucide-react";
 import AnimatedGradientBackground from "../components/ui/animated-gradient-background";
+import { ImagesScrollingAnimation } from "../components/ui/images-scrolling-animation";
 
 const SLOT_LABELS: Record<string, string> = {
     roomType: "Room",
@@ -147,6 +148,28 @@ function formatSlotValue(key: string, value: unknown, selectedRoomLabel: string 
     return String(value);
 }
 
+function toImageList(room: any, fallbackLabel: string | null) {
+    const rawUrls = Array.isArray(room?.imageUrls) && room.imageUrls.length > 0
+        ? room.imageUrls
+        : [room?.image];
+
+    const urls = rawUrls
+        .map((value: unknown) => String(value || "").trim())
+        .filter(Boolean);
+
+    const uniqueUrls = Array.from(new Set(urls));
+    const baseTitle = String(room?.displayName || room?.name || fallbackLabel || "Hotel").trim() || "Hotel";
+    const features = Array.isArray(room?.features) ? room.features.filter(Boolean) : [];
+    const featureSummary = features.slice(0, 3).join(" • ");
+
+    return uniqueUrls.map((src, index) => ({
+        id: `${String(room?.id || baseTitle)}-${index}`,
+        title: index === 0 ? baseTitle : `${baseTitle} ${index + 1}`,
+        description: featureSummary || `Preview ${index + 1} of ${baseTitle}`,
+        src,
+    }));
+}
+
 export const BookingCollectPage: React.FC = () => {
     const { emit, data } = useUIState();
     const { conversationHistory, bookingSlots, isProcessing } = useBrain();
@@ -252,6 +275,10 @@ export const BookingCollectPage: React.FC = () => {
         guestName: String(effectiveBookingSlots.guestName || "").trim(),
     });
     const canContinueToSummary = !isEditing && !readinessError && filledCount === REQUIRED_SLOTS.length;
+    const hotelImageItems = useMemo(
+        () => toImageList(selectedRoomDetails, selectedRoomLabel),
+        [selectedRoomDetails, selectedRoomLabel],
+    );
 
     const handleManualFieldChange = (field: keyof ManualBookingForm, value: string) => {
         setManualError(null);
@@ -381,48 +408,64 @@ export const BookingCollectPage: React.FC = () => {
                         )}
                     </div>
 
-                    <div className="scrollbar-thin flex-1 space-y-4 overflow-y-auto pr-4">
-                        <AnimatePresence>
-                            {conversationHistory.map((msg, index) => (
-                                <motion.div
-                                    key={index}
-                                    initial={{ opacity: 0, y: 10 }}
-                                    animate={{ opacity: 1, y: 0 }}
-                                    transition={{ duration: 0.3 }}
-                                    className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-                                >
-                                    <div
-                                        className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${msg.role === "user"
-                                            ? "rounded-br-sm bg-blue-600/80 text-white"
-                                            : "rounded-bl-sm bg-slate-700/80 text-white/90"
-                                            }`}
-                                    >
-                                        {msg.role === "assistant" && (
-                                            <span className="mb-1 block text-xs text-blue-300">Siya</span>
-                                        )}
-                                        {msg.text}
-                                    </div>
-                                </motion.div>
-                            ))}
-                        </AnimatePresence>
-
-                        {isProcessing && (
-                            <motion.div
-                                initial={{ opacity: 0 }}
-                                animate={{ opacity: 1 }}
-                                className="flex justify-start"
-                            >
-                                <div className="rounded-2xl rounded-bl-sm bg-slate-700/80 px-4 py-3">
-                                    <div className="flex space-x-1">
-                                        <div className="h-2 w-2 animate-bounce rounded-full bg-blue-400" style={{ animationDelay: "0ms" }} />
-                                        <div className="h-2 w-2 animate-bounce rounded-full bg-blue-400" style={{ animationDelay: "150ms" }} />
-                                        <div className="h-2 w-2 animate-bounce rounded-full bg-blue-400" style={{ animationDelay: "300ms" }} />
-                                    </div>
+                    <div className="relative min-h-0 flex-1 pr-4">
+                        <ImagesScrollingAnimation
+                            items={hotelImageItems}
+                            className="absolute inset-0"
+                            emptyState={
+                                <div className="px-6 text-center">
+                                    <p className="text-sm text-white/55">
+                                        Hotel images will appear here after a room with uploaded media is selected.
+                                    </p>
                                 </div>
-                            </motion.div>
-                        )}
+                            }
+                        />
 
-                        <div ref={chatEndRef} />
+                        <div className="absolute inset-x-0 bottom-0 max-h-[36%] overflow-y-auto rounded-t-[28px] bg-gradient-to-t from-slate-950/88 via-slate-950/72 to-transparent px-4 pb-4 pt-16">
+                            <div className="space-y-4">
+                                <AnimatePresence>
+                                    {conversationHistory.map((msg, index) => (
+                                        <motion.div
+                                            key={index}
+                                            initial={{ opacity: 0, y: 10 }}
+                                            animate={{ opacity: 1, y: 0 }}
+                                            transition={{ duration: 0.3 }}
+                                            className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+                                        >
+                                            <div
+                                                className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-lg shadow-black/15 ${msg.role === "user"
+                                                    ? "rounded-br-sm bg-blue-600/80 text-white"
+                                                    : "rounded-bl-sm bg-slate-700/80 text-white/90"
+                                                    }`}
+                                            >
+                                                {msg.role === "assistant" && (
+                                                    <span className="mb-1 block text-xs text-blue-300">Siya</span>
+                                                )}
+                                                {msg.text}
+                                            </div>
+                                        </motion.div>
+                                    ))}
+                                </AnimatePresence>
+
+                                {isProcessing && (
+                                    <motion.div
+                                        initial={{ opacity: 0 }}
+                                        animate={{ opacity: 1 }}
+                                        className="flex justify-start"
+                                    >
+                                        <div className="rounded-2xl rounded-bl-sm bg-slate-700/80 px-4 py-3">
+                                            <div className="flex space-x-1">
+                                                <div className="h-2 w-2 animate-bounce rounded-full bg-blue-400" style={{ animationDelay: "0ms" }} />
+                                                <div className="h-2 w-2 animate-bounce rounded-full bg-blue-400" style={{ animationDelay: "150ms" }} />
+                                                <div className="h-2 w-2 animate-bounce rounded-full bg-blue-400" style={{ animationDelay: "300ms" }} />
+                                            </div>
+                                        </div>
+                                    </motion.div>
+                                )}
+
+                                <div ref={chatEndRef} />
+                            </div>
+                        </div>
                     </div>
 
                     <div className="mt-4 text-center text-xs text-white/30">
