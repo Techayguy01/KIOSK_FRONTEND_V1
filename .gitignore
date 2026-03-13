@@ -6,7 +6,7 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
-**/*__pycache__
+__pycache__/
 *.py[cod]
 .venv/
 KIOSK_BACKEND_V2_PYTHON/.venv/
