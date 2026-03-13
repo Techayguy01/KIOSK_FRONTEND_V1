@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useUIState } from '../state/uiContext';
+import { AgentAdapter } from '../agent/adapter';
 import { WebcamScanner, type WebcamCapturePayload } from '../components/WebcamScanner';
 import { ShieldCheck } from 'lucide-react';
 import AnimatedGradientBackground from '../components/ui/animated-gradient-background';
@@ -30,6 +31,17 @@ export const ScanIdPage: React.FC = () => {
   const [scannerVersion, setScannerVersion] = useState(0);
   const [guestName, setGuestName] = useState('Guest');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Phase 10: Inactivity Guard - Send heartbeats to keep the session alive
+  // while the user is actively focused on this page (aligning their ID).
+  useEffect(() => {
+    const interval = setInterval(() => {
+      console.log('[ScanPage] Sending heartbeat to keep session alive...');
+      AgentAdapter.heartbeat();
+    }, 30000); // Every 30 seconds
+
+    return () => clearInterval(interval);
+  }, []);
 
   const handleCapture = async ({ imageSrc, cropBox }: WebcamCapturePayload) => {
     setStatus('ANALYZING');

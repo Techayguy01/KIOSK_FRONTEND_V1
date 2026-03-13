@@ -2101,9 +2101,10 @@ class AgentAdapterService {
 
         if (this.state === "IDLE") return;
 
-        // SCAN_ID needs a longer dwell window so users can align and scan their ID.
+        // SCAN_ID needs a much longer dwell window so users can align and scan their ID.
+        // Increased from 2m to 5m to prevent premature IDLE transition during slow scans.
         const timeoutMs = this.state === "SCAN_ID"
-            ? Math.max(this.INACTIVITY_TIMEOUT_MS, 60 * 1000)
+            ? Math.max(this.INACTIVITY_TIMEOUT_MS, 5 * 60 * 1000)
             : this.INACTIVITY_TIMEOUT_MS;
 
         this.inactivityTimer = setTimeout(() => {
@@ -2112,6 +2113,14 @@ class AgentAdapterService {
             this.state = "IDLE";
             this.notifyListeners();
         }, timeoutMs);
+    }
+
+    /**
+     * Resets the inactivity timer without dispatching an intent.
+     * Useful for keep-alive during long passive operations like ID scanning.
+     */
+    public heartbeat(): void {
+        this.resetInactivityTimer();
     }
 
     private isAffirmative(text: string): boolean {
@@ -2286,7 +2295,7 @@ class AgentAdapterService {
                     }, this.state);
                     this.notifyListeners();
                 }
-            }, 2200);
+            }, 8000);
             return;
         }
 
