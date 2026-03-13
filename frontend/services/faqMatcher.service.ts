@@ -11,6 +11,7 @@ interface LocalFaq {
     id: string;
     tenant_id: string;
     tenant_slug: string;
+    lang_code?: string;
     question: string;
     question_normalized: string;
     answer: string;
@@ -77,7 +78,8 @@ function openDb(): Promise<IDBDatabase> {
  */
 export async function findBestLocalFaqMatch(
     tenantSlug: string,
-    query: string
+    query: string,
+    langCode: string
 ): Promise<{ faqId: string; answer: string; confidence: number } | null> {
     const normalizedQuery = normalizeQuestion(query);
     if (!normalizedQuery) return null;
@@ -98,6 +100,7 @@ export async function findBestLocalFaqMatch(
 
                 for (const faq of faqs) {
                     if (!faq.is_active) continue;
+                    if (String(faq.lang_code || "en").trim() !== String(langCode || "en").trim()) continue;
 
                     const faqNorm = faq.question_normalized || normalizeQuestion(faq.question);
 

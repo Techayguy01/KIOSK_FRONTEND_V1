@@ -6,6 +6,7 @@
 export interface CachedFaqAnswer {
   cacheKey: string;
   tenantSlug: string;
+  langCode: string;
   normalizedQuestion: string;
   answer: string;
   faqId?: string | null;
@@ -17,7 +18,7 @@ const BOOTSTRAP_DB_NAME = "KioskDB";
 const BOOTSTRAP_STORE_NAME = "faqs";
 
 const DB_NAME = "kiosk_faq_cache_db";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_NAME = "faq_answers";
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const FAQ_ALIAS_MAP: Array<[string, string[]]> = [
@@ -61,8 +62,8 @@ export function normalizeQuestion(input: string): string {
   );
 }
 
-export function buildCacheKey(tenantSlug: string, transcript: string): string {
-  return `${tenantSlug || "default"}::${normalizeQuestion(transcript)}`;
+export function buildCacheKey(tenantSlug: string, faqId: string, langCode: string): string {
+  return `${tenantSlug || "default"}::${langCode || "en"}::${faqId || "unknown"}`;
 }
 
 /**
@@ -108,6 +109,7 @@ function openDb(): Promise<IDBDatabase> {
 export async function getCachedFaqAnswer(
   tenantSlug: string,
   transcript: string,
+  langCode: string,
   searchBootstrap: boolean = true
 ): Promise<CachedFaqAnswer | null> {
   if (!canUseIndexedDb()) {
@@ -115,68 +117,61 @@ export async function getCachedFaqAnswer(
     return null;
   }
   const normalizedQuestion = normalizeQuestion(transcript);
+  const requestedLangCode = String(langCode || "en").trim() || "en";
   if (!normalizedQuestion) return null;
 
   const db = await openDb();
-  const cacheKey = buildCacheKey(tenantSlug, transcript);
-  console.log(`[FAQCache] READ key=${cacheKey}`);
+  console.log(`[FAQCache] READ tenant=${tenantSlug} lang=${requestedLangCode} normalized="${normalizedQuestion}"`);
 
   return new Promise((resolve) => {
     const tx = db.transaction(STORE_NAME, "readonly");
     const store = tx.objectStore(STORE_NAME);
-    const req = store.get(cacheKey);
+    const req = store.getAll();
 
     req.onsuccess = async () => {
-      const exactMatch = req.result as CachedFaqAnswer | undefined;
+      const allItems = (req.result as CachedFaqAnswer[]).filter((item) =>
+        item.tenantSlug === tenantSlug && item.langCode === requestedLangCode
+      );
+      const exactMatch = allItems.find((item) => item.normalizedQuestion === normalizedQuestion);
 
-      // 1. Precise match hit
       if (exactMatch) {
         if (Date.now() - exactMatch.createdAt > CACHE_TTL_MS) {
-          console.log(`[FAQCache] STALE exact key=${cacheKey}`);
+          console.log(`[FAQCache] STALE exact tenant=${tenantSlug} lang=${requestedLangCode}`);
           resolve(null);
           return;
         }
-        console.log(`[FAQCache] HIT exact key=${cacheKey} faqId=${exactMatch.faqId || "none"}`);
+        console.log(`[FAQCache] HIT exact faqId=${exactMatch.faqId || "none"} lang=${requestedLangCode}`);
         resolve(exactMatch);
         return;
       }
 
-      // 2. Fuzzy Fallback (Token Overlap)
-      console.log(`[FAQCache] MISS exact key=${cacheKey}. Trying fuzzy fallback...`);
-      const allEntriesRequest = store.getAll();
+      console.log(`[FAQCache] MISS exact lang=${requestedLangCode}. Trying fuzzy fallback...`);
+      let bestMatch: CachedFaqAnswer | null = null;
+      let highestScore = 0;
 
-      allEntriesRequest.onsuccess = () => {
-        const allItems = allEntriesRequest.result as CachedFaqAnswer[];
-        let bestMatch: CachedFaqAnswer | null = null;
-        let highestScore = 0;
-
-        for (const item of allItems) {
-          if (item.tenantSlug !== tenantSlug) continue;
-
-          const score = calculateTokenOverlap(item.normalizedQuestion, normalizedQuestion);
-          if (score > highestScore) {
-            highestScore = score;
-            bestMatch = item;
-          }
+      for (const item of allItems) {
+        const score = calculateTokenOverlap(item.normalizedQuestion, normalizedQuestion);
+        if (score > highestScore) {
+          highestScore = score;
+          bestMatch = item;
         }
+      }
 
-        const FUZZY_THRESHOLD = 0.6;
-        if (bestMatch && highestScore >= FUZZY_THRESHOLD) {
-          console.log(`[FAQCache] HIT fuzzy score=${highestScore.toFixed(2)} match="${bestMatch.normalizedQuestion}" for query="${normalizedQuestion}"`);
-          resolve(bestMatch);
-        } else if (searchBootstrap) {
-          // 3. Last Ditch: Search the bootstrapped FAQ store (KioskDB)
-          console.log(`[FAQCache] MISS fuzzy. Searching bootstrap DB (KioskDB)...`);
-          searchBootstrapDb(tenantSlug, normalizedQuestion).then(resolve);
-        } else {
-          console.log(`[FAQCache] MISS fuzzy highestScore=${highestScore.toFixed(2)}`);
-          resolve(null);
-        }
-      };
+      const FUZZY_THRESHOLD = 0.6;
+      if (bestMatch && highestScore >= FUZZY_THRESHOLD) {
+        console.log(`[FAQCache] HIT fuzzy score=${highestScore.toFixed(2)} match="${bestMatch.normalizedQuestion}" for query="${normalizedQuestion}" lang=${requestedLangCode}`);
+        resolve(bestMatch);
+      } else if (searchBootstrap) {
+        console.log(`[FAQCache] MISS fuzzy. Searching bootstrap DB (KioskDB)...`);
+        searchBootstrapDb(tenantSlug, normalizedQuestion, requestedLangCode).then(resolve);
+      } else {
+        console.log(`[FAQCache] MISS fuzzy highestScore=${highestScore.toFixed(2)}`);
+        resolve(null);
+      }
     };
 
     req.onerror = () => {
-      console.log(`[FAQCache] READ_ERROR key=${cacheKey}`);
+      console.log(`[FAQCache] READ_ERROR tenant=${tenantSlug} lang=${requestedLangCode}`);
       resolve(null);
     };
     tx.oncomplete = () => db.close();
@@ -186,7 +181,7 @@ export async function getCachedFaqAnswer(
 /**
  * Fallback to search pre-loaded FAQs in KioskDB.
  */
-async function searchBootstrapDb(tenantSlug: string, normalizedQuestion: string): Promise<CachedFaqAnswer | null> {
+async function searchBootstrapDb(tenantSlug: string, normalizedQuestion: string, langCode: string): Promise<CachedFaqAnswer | null> {
   try {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open(BOOTSTRAP_DB_NAME);
@@ -207,6 +202,7 @@ async function searchBootstrapDb(tenantSlug: string, normalizedQuestion: string)
 
         for (const faq of faqs) {
           if (!faq.is_active) continue;
+          if (String(faq.lang_code || "en").trim() !== langCode) continue;
           // Use the index or compute on the fly if needed
           const faqNorm = faq.question_normalized || normalizeQuestion(faq.question);
           const score = calculateTokenOverlap(faqNorm, normalizedQuestion);
@@ -220,8 +216,9 @@ async function searchBootstrapDb(tenantSlug: string, normalizedQuestion: string)
         if (bestMatch && highestScore >= THRESHOLD) {
           console.log(`[FAQCache] BOOTSTRAP_HIT score=${highestScore.toFixed(2)} q="${bestMatch.question}"`);
           resolve({
-            cacheKey: `bootstrap::${bestMatch.id}`,
+            cacheKey: buildCacheKey(tenantSlug, String(bestMatch.id || ""), langCode),
             tenantSlug,
+            langCode,
             normalizedQuestion: normalizeQuestion(bestMatch.question),
             answer: bestMatch.answer,
             faqId: bestMatch.id,
@@ -242,6 +239,7 @@ async function searchBootstrapDb(tenantSlug: string, normalizedQuestion: string)
 
 export async function putCachedFaqAnswer(params: {
   tenantSlug: string;
+  langCode: string;
   transcript: string;
   answer: string;
   faqId?: string | null;
@@ -252,13 +250,15 @@ export async function putCachedFaqAnswer(params: {
     return;
   }
   const normalizedQuestion = normalizeQuestion(params.transcript);
-  if (!normalizedQuestion || !params.answer?.trim()) return;
+  const langCode = String(params.langCode || "en").trim() || "en";
+  if (!normalizedQuestion || !params.answer?.trim() || !params.faqId) return;
 
   const db = await openDb();
-  const cacheKey = buildCacheKey(params.tenantSlug, params.transcript);
+  const cacheKey = buildCacheKey(params.tenantSlug, params.faqId, langCode);
   const payload: CachedFaqAnswer = {
     cacheKey,
     tenantSlug: params.tenantSlug || "default",
+    langCode,
     normalizedQuestion,
     answer: params.answer,
     faqId: params.faqId ?? null,
@@ -269,7 +269,7 @@ export async function putCachedFaqAnswer(params: {
   await new Promise<void>((resolve) => {
     const tx = db.transaction(STORE_NAME, "readwrite");
     tx.objectStore(STORE_NAME).put(payload);
-    console.log(`[FAQCache] WRITE key=${cacheKey} faqId=${payload.faqId || "none"}`);
+    console.log(`[FAQCache] WRITE key=${cacheKey} faqId=${payload.faqId || "none"} lang=${langCode}`);
     tx.oncomplete = () => {
       console.log(`[FAQCache] WRITE_OK key=${cacheKey}`);
       resolve();

@@ -5,6 +5,7 @@ type RemoteFaq = {
   id: string;
   tenant_id: string;
   tenant_slug?: string;
+  lang_code?: string;
   question: string;
   answer: string;
   is_active?: boolean;
@@ -14,12 +15,13 @@ type RemoteFaq = {
 type FaqBootstrapResponse = {
   tenantId: string;
   tenantSlug: string;
+  langCode?: string;
   count: number;
   faqs: RemoteFaq[];
 };
 
 const DB_NAME = "KioskDB";
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const STORE_NAME = "faqs";
 
 function canUseIndexedDb(): boolean {
@@ -48,6 +50,7 @@ function openDb(): Promise<IDBDatabase> {
         const store = db.createObjectStore(STORE_NAME, { keyPath: "faq_key" });
         store.createIndex("tenant_id", "tenant_id", { unique: false });
         store.createIndex("tenant_slug", "tenant_slug", { unique: false });
+        store.createIndex("lang_code", "lang_code", { unique: false });
         store.createIndex("question_normalized", "question_normalized", { unique: false });
       } else {
         const store = request.transaction?.objectStore(STORE_NAME);
@@ -57,6 +60,9 @@ function openDb(): Promise<IDBDatabase> {
         }
         if (!store.indexNames.contains("tenant_slug")) {
           store.createIndex("tenant_slug", "tenant_slug", { unique: false });
+        }
+        if (!store.indexNames.contains("lang_code")) {
+          store.createIndex("lang_code", "lang_code", { unique: false });
         }
         if (!store.indexNames.contains("question_normalized")) {
           store.createIndex("question_normalized", "question_normalized", { unique: false });
@@ -133,6 +139,7 @@ async function writeTenantFaqs(db: IDBDatabase, tenantId: string, tenantSlug: st
           if (!question || !answer) return null;
           return {
             id: faq.id,
+            lang_code: String(faq.lang_code || "en").trim() || "en",
             question,
             question_normalized: normalizeQuestion(question),
             answer,
@@ -157,11 +164,13 @@ async function writeTenantFaqs(db: IDBDatabase, tenantId: string, tenantSlug: st
         if (!question || !answer) continue;
 
         const normalized = normalizeQuestion(question);
+        const langCode = String(faq.lang_code || "en").trim() || "en";
         const payload = applyRequiredKeyPath({
-          faq_key: `${tenantSlug}::${faq.id}`,
+          faq_key: `${tenantSlug}::${faq.id}::${langCode}`,
           id: faq.id,
           tenant_id: tenantId,
           tenant_slug: tenantSlug,
+          lang_code: langCode,
           question,
           question_normalized: normalized,
           answer,
@@ -209,8 +218,9 @@ export async function prewarmTenantFaqsInIndexedDb(): Promise<void> {
   const payload = (await response.json()) as FaqBootstrapResponse;
   const tenantId = String(payload?.tenantId || "").trim();
   const tenantSlug = String(payload?.tenantSlug || "").trim();
+  const langCode = String(payload?.langCode || "").trim();
   const faqs = Array.isArray(payload?.faqs) ? payload.faqs : [];
-  if (!tenantId || !tenantSlug) {
+  if (!tenantId || !tenantSlug || !langCode) {
     console.warn("[FAQBootstrap] Missing tenant identity in FAQ response");
     return;
   }

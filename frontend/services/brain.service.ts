@@ -135,14 +135,14 @@ export async function sendToBrain(
     const backendCurrentState = normalizeStateForBackendChat(currentState);
     const tenantSlug = getTenantSlug();
     const activeLanguage = getCurrentTenantLanguage();
-    const cacheKey = buildCacheKey(tenantSlug, transcript);
+    const lookupKey = `${tenantSlug || "default"}::${activeLanguage}::${transcript}`;
     const sessionId = AgentAdapter.getCurrentSessionId();
 
     console.log(`[BrainService] Sending to V2 Brain: "${transcript}" (State: ${backendCurrentState})`);
-    console.log(`[BrainService][FAQCache] eligibility=${shouldUseFaqCache(transcript, currentState)} key=${cacheKey}`);
+    console.log(`[BrainService][FAQCache] eligibility=${shouldUseFaqCache(transcript, currentState)} key=${lookupKey}`);
 
     if (shouldUseFaqCache(transcript, currentState)) {
-        const cachedFaq = await getCachedFaqAnswer(tenantSlug, transcript);
+        const cachedFaq = await getCachedFaqAnswer(tenantSlug, transcript, activeLanguage);
         if (cachedFaq) {
             const cachedResponse: BrainResponse = {
                 speech: cachedFaq.answer,
@@ -154,14 +154,14 @@ export async function sendToBrain(
                 sessionId,
                 language: activeLanguage,
             };
-            console.log(`[BrainService][FAQCache] HIT key=${cacheKey} faqId=${cachedResponse.faqId || "none"}`);
+            console.log(`[BrainService][FAQCache] HIT key=${cachedFaq.cacheKey} faqId=${cachedResponse.faqId || "none"}`);
             notifyListeners(cachedResponse);
             dispatchFromConfidence(cachedResponse);
             return cachedResponse;
         }
 
         // Exact cache MISS -> Send to backend for semantic matching
-        console.log(`[BrainService][FAQCache] MISS key=${cacheKey} -> Searching backend semantic engine`);
+        console.log(`[BrainService][FAQCache] MISS key=${lookupKey} -> Searching backend semantic engine`);
     }
 
     // V2 Python backend payload - note snake_case fields to match FastAPI ChatRequest
@@ -205,15 +205,16 @@ export async function sendToBrain(
         }
 
         if (data.answerSource === "FAQ_DB") {
-            console.log(`[BrainService][FAQCache] WRITE_PATH key=${cacheKey}`);
+            console.log(`[BrainService][FAQCache] WRITE_PATH faqId=${data.faqId || "none"} lang=${activeLanguage}`);
             await putCachedFaqAnswer({
                 tenantSlug,
+                langCode: activeLanguage,
                 transcript,
                 answer: data.speech,
                 faqId: data.faqId ?? null,
                 confidence: data.confidence,
             });
-            console.log(`[BrainService][FAQCache] STORED key=${cacheKey} faqId=${data.faqId || "none"}`);
+            console.log(`[BrainService][FAQCache] STORED faqId=${data.faqId || "none"} lang=${activeLanguage}`);
         }
 
         console.log("[BrainService] Brain response:", data);

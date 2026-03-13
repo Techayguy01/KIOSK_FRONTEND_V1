@@ -7,3 +7,4 @@ from .room import RoomType
 from .room_instance import RoomInstance
 from .booking import Booking
 from .faq import FAQ
+from .faq_localization import FAQLocalization

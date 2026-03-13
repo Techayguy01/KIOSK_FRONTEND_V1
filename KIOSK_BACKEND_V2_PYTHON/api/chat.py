@@ -710,7 +710,10 @@ async def chat(
                 session=session,
                 tenant_id=resolved_tenant_id or req.tenant_id,
                 user_query=req.transcript,
+                language=state.language,
             )
+            if faq_lookup.localizations_synced:
+                await session.commit()
             faq_match = faq_lookup.match
             print(
                 "[ChatAPI][FAQ] loaded "

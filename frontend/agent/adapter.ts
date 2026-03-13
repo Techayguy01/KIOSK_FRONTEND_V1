@@ -1542,14 +1542,14 @@ class AgentAdapterService {
             const normalizedTranscript = await this.normalizeTranscriptWithBrain(transcript);
             const tenantSlug = getTenantSlug();
             const activeLanguage = getCurrentTenantLanguage(this.language);
-            const cacheKey = buildCacheKey(tenantSlug, normalizedTranscript);
+            const lookupKey = `${tenantSlug || "default"}::${activeLanguage}::${normalizedTranscript}`;
             const faqCacheEligible = shouldUseFaqCache(normalizedTranscript, this.state);
-            console.log(`[AgentAdapter][FAQCache] eligibility=${faqCacheEligible} key=${cacheKey}`);
+            console.log(`[AgentAdapter][FAQCache] eligibility=${faqCacheEligible} key=${lookupKey}`);
 
             let decision: any;
 
             if (faqCacheEligible) {
-                const cachedFaq = await getCachedFaqAnswer(tenantSlug, normalizedTranscript);
+                const cachedFaq = await getCachedFaqAnswer(tenantSlug, normalizedTranscript, activeLanguage);
                 if (cachedFaq) {
                     decision = {
                         speech: cachedFaq.answer,
@@ -1566,9 +1566,9 @@ class AgentAdapterService {
                         faqId: cachedFaq.faqId ?? null,
                         language: activeLanguage,
                     };
-                    console.log(`[AgentAdapter][FAQCache] HIT key=${cacheKey} faqId=${decision.faqId || "none"}`);
+                    console.log(`[AgentAdapter][FAQCache] HIT key=${cachedFaq.cacheKey} faqId=${decision.faqId || "none"}`);
                 } else {
-                    console.log(`[AgentAdapter][FAQCache] MISS key=${cacheKey}`);
+                    console.log(`[AgentAdapter][FAQCache] MISS key=${lookupKey}`);
                 }
             }
 
@@ -1601,15 +1601,16 @@ class AgentAdapterService {
                 console.log("[AgentAdapter] /api/chat response:", decision);
                 console.log(`[AgentAdapter] answerSource=${decision.answerSource || "missing"}`);
                 if (decision.answerSource === "FAQ_DB") {
-                    console.log(`[AgentAdapter][FAQCache] WRITE_PATH key=${cacheKey}`);
+                    console.log(`[AgentAdapter][FAQCache] WRITE_PATH faqId=${decision.faqId || "none"} lang=${activeLanguage}`);
                     await putCachedFaqAnswer({
                         tenantSlug,
+                        langCode: activeLanguage,
                         transcript: decision.normalizedQuery || normalizedTranscript,
                         answer: decision.speech,
                         faqId: decision.faqId ?? null,
                         confidence: decision.confidence,
                     });
-                    console.log(`[AgentAdapter][FAQCache] STORED key=${cacheKey} faqId=${decision.faqId || "none"}`);
+                    console.log(`[AgentAdapter][FAQCache] STORED faqId=${decision.faqId || "none"} lang=${activeLanguage}`);
                 }
             }
             if (requestId !== this.llmRequestCounter) {
