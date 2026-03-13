@@ -154,6 +154,10 @@ class PremiumAudioPlayerService {
         }
     }
 
+    public isPlaying(): boolean {
+        return Boolean(this.currentAudio && !this.currentAudio.paused && !this.currentAudio.ended);
+    }
+
     private cleanup(): void {
         if (this.currentAudio) {
             URL.revokeObjectURL(this.currentAudio.src);

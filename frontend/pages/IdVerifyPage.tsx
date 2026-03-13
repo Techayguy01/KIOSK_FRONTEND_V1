@@ -33,7 +33,7 @@ export const IdVerifyPage: React.FC = () => {
             {matchedBooking ? (
               <div className="text-sm text-white/80 space-y-2">
                 <div><span className="text-white/50">Guest:</span> {matchedBooking.guestName}</div>
-                <div><span className="text-white/50">Room:</span> {matchedBooking.roomName || matchedBooking.roomTypeId}</div>
+                <div><span className="text-white/50">Room:</span> {matchedBooking.assignedRoomNumber || matchedBooking.roomName || matchedBooking.roomTypeId}</div>
                 <div><span className="text-white/50">Check-in:</span> {matchedBooking.checkInDate}</div>
                 <div><span className="text-white/50">Check-out:</span> {matchedBooking.checkOutDate}</div>
                 <div><span className="text-white/50">Status:</span> {matchedBooking.status}</div>

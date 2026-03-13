@@ -105,7 +105,7 @@ export const SiyaMiniOrb: React.FC<SiyaMiniOrbProps> = ({ visible }) => {
   if (!visible) return null;
 
   return (
-    <div className="pointer-events-none fixed left-4 bottom-[4rem] z-30 w-[168px] flex justify-center">
+    <div className="pointer-events-none fixed left-4 bottom-[8.5rem] z-30 w-[168px] flex justify-center">
       <div
         className="relative h-[68px] w-[68px] rounded-full"
         style={{

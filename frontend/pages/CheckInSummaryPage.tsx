@@ -65,7 +65,7 @@ export const CheckInSummaryPage: React.FC = () => {
             <div className="mt-4 border-t border-slate-700/60 pt-4 space-y-2 text-sm text-white/85">
               <div><span className="text-white/50">Booking ID:</span> {matchedBooking.id}</div>
               <div><span className="text-white/50">Guest:</span> {matchedBooking.guestName}</div>
-              <div><span className="text-white/50">Room:</span> {matchedBooking.roomName || matchedBooking.roomTypeId}</div>
+              <div><span className="text-white/50">Room:</span> {matchedBooking.assignedRoomNumber || matchedBooking.roomName || matchedBooking.roomTypeId}</div>
               <div><span className="text-white/50">Stay:</span> {matchedBooking.checkInDate} to {matchedBooking.checkOutDate}</div>
               <div><span className="text-white/50">Status:</span> {matchedBooking.status}</div>
             </div>

@@ -196,7 +196,9 @@ class TTSControllerService {
      * Check if currently speaking.
      */
     public isSpeaking(): boolean {
-        return this.state === "SPEAKING" || window.speechSynthesis.speaking;
+        return this.state === "SPEAKING"
+            || window.speechSynthesis.speaking
+            || PremiumAudioPlayer.isPlaying();
     }
 
     /**

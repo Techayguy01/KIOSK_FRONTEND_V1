@@ -75,6 +75,38 @@ def _normalize_text(value: str) -> str:
     )
 
 
+ROOM_TRANSCRIPT_PREFIX_PATTERNS = [
+    r"^(?:i\s+want\s+to\s+book|i\s+want\s+to|i\s+want|i\s+would\s+like\s+to\s+book|i\s+would\s+like\s+to|would\s+like\s+to\s+book|would\s+like\s+to|can\s+i\s+get|can\s+i\s+have|please\s+book|please\s+choose|please\s+select|book|choose|select|take|prefer)\s+",
+]
+ROOM_TRANSCRIPT_STOPWORDS = {
+    "i", "want", "to", "book", "booking", "would", "like", "please", "can", "get", "have",
+    "need", "a", "an", "the", "for", "me", "my", "room", "rooms", "type", "option", "options",
+    "choose", "select", "take", "prefer", "another", "different",
+}
+
+
+def _tokenize_text(value: str) -> list[str]:
+    normalized = _normalize_text(value)
+    if not normalized:
+        return []
+    return [token for token in re.split(r"[^a-z0-9]+", normalized) if token]
+
+
+def _meaningful_room_tokens(value: str) -> list[str]:
+    return [
+        token for token in _tokenize_text(value)
+        if len(token) >= 3 and token not in ROOM_TRANSCRIPT_STOPWORDS
+    ]
+
+
+def _extract_room_candidate_from_transcript(transcript: str) -> str:
+    normalized = _normalize_text(transcript)
+    candidate = normalized
+    for pattern in ROOM_TRANSCRIPT_PREFIX_PATTERNS:
+        candidate = re.sub(pattern, "", candidate).strip()
+    return candidate
+
+
 def _normalize_slot_name(slot_name: Optional[str]) -> Optional[str]:
     if not slot_name:
         return None
@@ -247,6 +279,8 @@ def _find_room_from_inventory(room_inventory: list[RoomInventoryItem], extracted
     normalized = _normalize_text(extracted)
     if not normalized:
         return None
+    if normalized in {"suite", "room", "rooms"}:
+        return None
 
     for room in room_inventory:
         if _normalize_text(room.name) == normalized:
@@ -268,7 +302,32 @@ def _find_room_from_inventory(room_inventory: list[RoomInventoryItem], extracted
 
     best_match = find_best_room_match(normalized, candidates)
     if not best_match:
-        return None
+        transcript_tokens = _meaningful_room_tokens(extracted)
+        if not transcript_tokens:
+            return None
+
+        scored_matches: list[tuple[int, int, RoomInventoryItem]] = []
+        for room in room_inventory:
+            alias_tokens = _meaningful_room_tokens(f"{room.name} {room.code or ''}")
+            if not alias_tokens:
+                continue
+            matched_tokens = sum(1 for token in alias_tokens if token in transcript_tokens)
+            if matched_tokens == 0:
+                continue
+            scored_matches.append((matched_tokens, len(alias_tokens), room))
+
+        if not scored_matches:
+            return None
+
+        scored_matches.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+        best_score, best_alias_len, best_room = scored_matches[0]
+        if best_score < max(1, min(2, best_alias_len)):
+            return None
+        if len(scored_matches) > 1:
+            next_score, next_alias_len, _ = scored_matches[1]
+            if next_score == best_score and next_alias_len == best_alias_len:
+                return None
+        return best_room
 
     return alias_to_room.get(best_match)
 
@@ -540,7 +599,8 @@ def _transcript_explicitly_identifies_room(
     transcript: str,
     room_inventory: list[RoomInventoryItem],
 ) -> Optional[RoomInventoryItem]:
-    return _find_room_from_inventory(room_inventory, transcript)
+    candidate = _extract_room_candidate_from_transcript(transcript)
+    return _find_room_from_inventory(room_inventory, candidate or transcript)
 
 
 async def booking_logic(state: KioskState) -> dict:
@@ -632,6 +692,10 @@ async def booking_logic(state: KioskState) -> dict:
     transcript_room_match = _transcript_explicitly_identifies_room(state.latest_transcript, room_inventory)
 
     # VALIDATION LAYER: tenant-aware room check using DB-backed room inventory.
+    transcript_room_candidate = _extract_room_candidate_from_transcript(state.latest_transcript)
+    if not extracted.get("room_type") and transcript_room_match:
+        extracted["room_type"] = transcript_room_match.name
+
     if extracted.get("room_type"):
         original_room = extracted["room_type"]
         best_match = _find_room_from_inventory(room_inventory, original_room)
@@ -641,6 +705,9 @@ async def booking_logic(state: KioskState) -> dict:
                 print(f"[Validation] Fuzzy match: '{original_room}' -> '{best_match.name}'")
             extracted["room_type"] = best_match.name
             selected_room = best_match
+        elif transcript_room_match:
+            extracted["room_type"] = transcript_room_match.name
+            selected_room = transcript_room_match
         else:
             # Rejection: If the room doesn't exist, we don't save it and we ask for clarification.
             print(f"[Validation] Rejected room type: '{original_room}'")
@@ -695,6 +762,7 @@ async def booking_logic(state: KioskState) -> dict:
 
     print(
         "[BookingLogic] "
+        f"transcript_room_candidate={transcript_room_candidate or 'none'} "
         f"transcript_room_match={transcript_room_match.name if transcript_room_match else 'none'} "
         f"extracted_room={extracted.get('room_type')} "
         f"selected_room={selected_room.name if selected_room else 'none'} "

@@ -90,9 +90,9 @@ export const BookingSummaryPage: React.FC = () => {
                 </div>
 
                 {bookingError && (
-                    <div className="mt-4 rounded-lg border border-red-500/40 bg-red-950/40 p-3 text-sm text-red-100">
-                        We could not finalize the booking yet. Please try confirming again.
-                    </div>
+                  <div className="mt-4 rounded-lg border border-red-500/40 bg-red-950/40 p-3 text-sm text-red-100">
+                        {bookingError}
+                  </div>
                 )}
 
                 {/* Action Buttons */}

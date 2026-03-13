@@ -88,6 +88,7 @@ export interface MatchedBookingDTO {
   status: string;
   roomTypeId: string;
   roomName?: string | null;
+  assignedRoomNumber?: string | null;
 }
 
 export interface OcrResponseDTO {
@@ -140,6 +141,8 @@ export interface BookingChatResponseDTO extends ChatResponseDTO {
   selectedRoom?: SelectedRoomHintDTO | null;
   isComplete?: boolean;
   persistedBookingId?: string | null;
+  assignedRoomId?: string | null;
+  assignedRoomNumber?: string | null;
   error?: string;
 }
 
