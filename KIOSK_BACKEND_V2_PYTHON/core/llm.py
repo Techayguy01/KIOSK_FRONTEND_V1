@@ -4,35 +4,52 @@ core/llm.py
 LLM configuration with automatic fallback via LiteLLM.
 
 Priority:
-  1. Groq (Llama 3.3 70B) — blazing fast, primary
-  2. Groq (Llama 3 8B)    — faster fallback if main model hits rate limits
-  3. OpenAI GPT-4o-mini   — final fallback
+  1. Groq (Llama 3.3 70B) - blazing fast, primary
+  2. Groq (Llama 3 8B) - faster fallback if main model hits rate limits
+  3. OpenAI GPT-4o-mini - final fallback
 
 All nodes in the LangGraph agent call get_llm() and never hard-code a model.
 """
 
 import os
-import litellm
-from litellm import completion
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Configure LiteLLM fallback routing
-litellm.set_verbose = False  # Set True to debug LLM calls
+# Prevent LiteLLM from fetching a remote model-cost map during import.
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "true")
+
+_litellm_module = None
+_litellm_completion = None
 
 # Model priority list
 LLM_MODELS = [
-    "groq/llama-3.3-70b-versatile",    # Primary — ultra low latency
-    "groq/llama3-8b-8192",             # Groq fallback — faster, less capable
-    "openai/gpt-4o-mini",              # Final safety net
+    "groq/llama-3.3-70b-versatile",
+    "groq/llama3-8b-8192",
+    "openai/gpt-4o-mini",
 ]
+
+
+def _get_litellm():
+    global _litellm_module, _litellm_completion
+
+    if _litellm_module is None or _litellm_completion is None:
+        import litellm
+        from litellm import completion
+
+        litellm.set_verbose = False
+        _litellm_module = litellm
+        _litellm_completion = completion
+
+    return _litellm_module, _litellm_completion
 
 
 def get_llm_response(messages: list[dict], temperature: float = 0.4) -> str:
     """
     Calls the LLM with automatic fallback.
     """
+    _, completion = _get_litellm()
     last_error = None
     for model in LLM_MODELS:
         try:
@@ -43,10 +60,10 @@ def get_llm_response(messages: list[dict], temperature: float = 0.4) -> str:
                 max_tokens=1024,
             )
             content = response.choices[0].message.content
-            print(f"[LLM] ✅ Model: {model} responded.")
+            print(f"[LLM] Model responded: {model}")
             return content
         except Exception as e:
-            print(f"[LLM] ⚠️ {model} failed: {e}. Trying next...")
+            print(f"[LLM] {model} failed: {e}. Trying next...")
             last_error = e
 
     raise RuntimeError(f"[LLM] All models failed. Last error: {last_error}")
@@ -57,9 +74,10 @@ def get_embedding(text: str) -> list[float]:
     Generates an embedding for the given text using OpenAI's text-embedding-3-small.
     """
     try:
+        litellm, _ = _get_litellm()
         response = litellm.embedding(
             model="text-embedding-3-small",
-            input=[text]
+            input=[text],
         )
         embedding = response.data[0]["embedding"]
         return embedding
@@ -71,7 +89,7 @@ def get_embedding(text: str) -> list[float]:
 def translate_to_english(text: str) -> str:
     """
     Translates or normalizes multilingual/Hinglish text to clear English.
-    If the text is already English, it returns it as is (or slightly cleaned).
+    If the text is already English, it returns it as is.
     """
     if not text or not text.strip():
         return ""
@@ -85,18 +103,17 @@ def translate_to_english(text: str) -> str:
                 "If it's already in English, just return it as is. "
                 "If it's in Hindi, Hinglish, or mixed languages, translate it to English. "
                 "Return ONLY the translated/normalized text."
-            )
+            ),
         },
-        {"role": "user", "content": text}
+        {"role": "user", "content": text},
     ]
-    
+
     try:
-        # Use a fast model for translation
         translated = get_llm_response(messages, temperature=0.0)
         return translated.strip()
     except Exception as e:
         print(f"[LLM][Translate] Error translating text: {e}")
-        return text  # Fallback to raw text if translation fails
+        return text
 
 
 def rephrase_faq_answer(user_query: str, faq_answer: str) -> str:
@@ -114,12 +131,12 @@ def rephrase_faq_answer(user_query: str, faq_answer: str) -> str:
                 "Use the provided FAQ answer as the source of truth and rephrase it naturally "
                 "to directly address how the guest phrased their question. "
                 "Keep the answer accurate, concise, and conversational."
-            )
+            ),
         },
         {
-            "role": "user", 
-            "content": f"Guest Question: {user_query}\n\nStored FAQ Answer: {faq_answer}"
-        }
+            "role": "user",
+            "content": f"Guest Question: {user_query}\n\nStored FAQ Answer: {faq_answer}",
+        },
     ]
 
     try:
@@ -127,7 +144,7 @@ def rephrase_faq_answer(user_query: str, faq_answer: str) -> str:
         return rephrased.strip()
     except Exception as e:
         print(f"[LLM][Rephrase] Error rephrasing answer: {e}")
-        return faq_answer  # Fallback to raw answer if rephrasing fails
+        return faq_answer
 
 
 def generate_polite_rejection(user_query: str) -> str:
@@ -145,9 +162,9 @@ def generate_polite_rejection(user_query: str) -> str:
                 "Respond politely that you can only help with topics relevant to the hotel stay, "
                 "facilities, and bookings. Suggest they contact the front desk or support if they "
                 "need further assistance with this specific query. Do not fabricate an answer."
-            )
+            ),
         },
-        {"role": "user", "content": user_query}
+        {"role": "user", "content": user_query},
     ]
 
     try:

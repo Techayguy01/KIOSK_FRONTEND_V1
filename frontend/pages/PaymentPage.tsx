@@ -6,10 +6,9 @@ import AnimatedGradientBackground from '../components/ui/animated-gradient-backg
 import { optimizeCloudinaryUrl } from '../lib/cloudinary';
 
 export const PaymentPage: React.FC = () => {
-  const { data, emit, loading } = useUIState();
+  const { data, emit, loading, tenant } = useUIState();
   const bookingSlots = data.bookingSlots || {};
   const room = data.selectedRoom || {};
-  const optimizedRoomImage = optimizeCloudinaryUrl(room.image || "");
   const bill = data.bill || { nights: 0, subtotal: '0.00', taxes: '0.00', total: '0.00', currencySymbol: '$' };
   const progress = data.progress || { currentStep: 3, totalSteps: 4, steps: ['Payment'] };
   const roomName = room.name || room.displayName || bookingSlots.roomType || 'Selected room';
@@ -19,6 +18,19 @@ export const PaymentPage: React.FC = () => {
   const guestLabel = totalGuests > 0
     ? `${totalGuests} Guest${totalGuests === 1 ? '' : 's'}`
     : 'Guests to be confirmed';
+  const roomImageRecords = Array.isArray(room.images) ? room.images : [];
+  const primaryRoomImage = roomImageRecords.find((image: any) => image?.isPrimary && String(image?.url || '').trim());
+  const roomImageUrls = [
+    primaryRoomImage?.url,
+    ...roomImageRecords.map((image: any) => image?.url),
+    ...(Array.isArray(room.imageUrls) ? room.imageUrls : []),
+    room.image,
+    tenant?.hotelConfig?.logoUrl,
+  ]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+  const roomImageSrc = roomImageUrls[0] || '';
+  const optimizedRoomImage = optimizeCloudinaryUrl(roomImageSrc);
 
   const handlePayment = () => {
     emit('CONFIRM_PAYMENT');
@@ -41,7 +53,25 @@ export const PaymentPage: React.FC = () => {
             <h3 className="text-slate-400 text-sm font-medium uppercase tracking-wider mb-6">Reservation Summary</h3>
             
             <div className="flex items-start gap-4 mb-6">
-              <img src={optimizedRoomImage} alt="Room" className="w-24 h-24 rounded-lg object-cover" />
+              {roomImageSrc ? (
+                <img
+                  src={optimizedRoomImage}
+                  alt={roomName}
+                  className="w-24 h-24 rounded-lg object-cover bg-slate-700/60"
+                  onError={(event) => {
+                    const target = event.currentTarget;
+                    if (target.src !== roomImageSrc) {
+                      target.src = roomImageSrc;
+                      return;
+                    }
+                    target.style.display = 'none';
+                  }}
+                />
+              ) : (
+                <div className="w-24 h-24 rounded-lg bg-slate-700/60 flex items-center justify-center text-[11px] text-slate-300 text-center px-2">
+                  No hotel image
+                </div>
+              )}
               <div>
                 <h4 className="text-white font-bold text-xl">{roomName}</h4>
                 <p className="text-slate-400 text-sm">{bill.nights} Nights | {guestLabel}</p>

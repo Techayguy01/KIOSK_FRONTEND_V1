@@ -1,8 +1,9 @@
 fastapi==0.110.0
 uvicorn[standard]==0.27.1
-pydantic==2.6.4
+pydantic==2.10.6
 sqlmodel==0.0.16
 greenlet==3.0.3
+asyncpg>=0.30.0
 
 # AI & Orchestration
 langchain>=0.1.13
