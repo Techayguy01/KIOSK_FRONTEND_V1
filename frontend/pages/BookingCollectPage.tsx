@@ -170,6 +170,66 @@ function toImageList(room: any, fallbackLabel: string | null) {
     }));
 }
 
+function humanizeImageMeta(value: unknown): string {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+
+    return raw
+        .split(/[-_]+/)
+        .filter(Boolean)
+        .map((part, index) => {
+            const lowered = part.toLowerCase();
+            if (index === 0) {
+                return lowered.charAt(0).toUpperCase() + lowered.slice(1);
+            }
+            return lowered;
+        })
+        .join(" ");
+}
+
+function buildImageDescription(image: any): string | undefined {
+    const tags = Array.isArray(image?.tags)
+        ? image.tags.map((tag: unknown) => humanizeImageMeta(tag)).filter(Boolean)
+        : [];
+
+    if (tags.length > 0) {
+        return tags.slice(0, 5).join(" | ");
+    }
+
+    const caption = String(image?.caption || "").trim();
+    if (caption) {
+        return caption;
+    }
+
+    const category = humanizeImageMeta(image?.category);
+    return category || undefined;
+}
+
+function buildRoomImageItems(room: any, fallbackLabel: string | null) {
+    const baseTitle = String(room?.displayName || room?.name || fallbackLabel || "Hotel").trim() || "Hotel";
+    const imageRecords = Array.isArray(room?.images) ? room.images : [];
+
+    if (imageRecords.length === 0) {
+        return toImageList(room, fallbackLabel);
+    }
+
+    return imageRecords
+        .map((image: any, index: number) => {
+            const src = String(image?.url || "").trim();
+            if (!src) return null;
+            const categoryTitle = humanizeImageMeta(image?.category);
+            const captionTitle = String(image?.caption || "").trim();
+
+            return {
+                id: String(image?.id || `${String(room?.id || baseTitle)}-${index}`),
+                title: categoryTitle || captionTitle || (index === 0 ? baseTitle : `${baseTitle} ${index + 1}`),
+                description: buildImageDescription(image),
+                src,
+            };
+        })
+        .filter(Boolean);
+}
+
 export const BookingCollectPage: React.FC = () => {
     const { emit, data } = useUIState();
     const { conversationHistory, bookingSlots, isProcessing } = useBrain();
@@ -276,9 +336,10 @@ export const BookingCollectPage: React.FC = () => {
     });
     const canContinueToSummary = !isEditing && !readinessError && filledCount === REQUIRED_SLOTS.length;
     const hotelImageItems = useMemo(
-        () => toImageList(selectedRoomDetails, selectedRoomLabel),
+        () => buildRoomImageItems(selectedRoomDetails, selectedRoomLabel),
         [selectedRoomDetails, selectedRoomLabel],
     );
+    const focusedImageId = String(data?.visualFocus?.imageId || "").trim() || null;
 
     const handleManualFieldChange = (field: keyof ManualBookingForm, value: string) => {
         setManualError(null);
@@ -412,6 +473,7 @@ export const BookingCollectPage: React.FC = () => {
                         <ImagesScrollingAnimation
                             items={hotelImageItems}
                             className="absolute inset-0"
+                            focusItemId={focusedImageId}
                             emptyState={
                                 <div className="px-6 text-center">
                                     <p className="text-sm text-white/55">

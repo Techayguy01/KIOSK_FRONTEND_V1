@@ -41,11 +41,22 @@ export interface RoomDTO {
   currency: string;
   image: string;
   imageUrls?: string[];
+  images?: RoomImageDTO[];
   features: string[];
   code?: string;
   maxAdults?: number | null;
   maxChildren?: number | null;
   maxTotalGuests?: number | null;
+}
+
+export interface RoomImageDTO {
+  id?: string;
+  url: string;
+  tags?: string[];
+  caption?: string | null;
+  category?: string | null;
+  displayOrder?: number | null;
+  isPrimary?: boolean | null;
 }
 
 export interface RoomsResponseDTO {
@@ -116,11 +127,18 @@ export interface ChatResponseDTO {
   intent: string;
   confidence: number;
   nextUiScreen?: UIState;
+  visualFocus?: VisualFocusDTO | null;
   answerSource?: "FAQ_DB" | "FAQ_CACHE" | "LLM" | "LOCAL_SIMILARITY" | "FAQ_FALLBACK";
   faqId?: string | null;
   normalizedQuery?: string;
   sessionId?: string;
   language?: string;
+}
+
+export interface VisualFocusDTO {
+  imageId?: string | null;
+  topic?: string | null;
+  category?: string | null;
 }
 
 export interface SelectedRoomHintDTO {

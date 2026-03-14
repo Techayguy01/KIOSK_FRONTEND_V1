@@ -14,7 +14,7 @@ import { AgentAdapter } from "../agent/adapter";
  * - resetBrainSession: Function to wipe session
  */
 export function useBrain() {
-    const { state } = useUIState();
+    const { state, data } = useUIState();
     const [lastResponse, setLastResponse] = useState<BrainResponse | null>(null);
     const [bookingSlots, setBookingSlots] = useState<Record<string, any>>({});
     const [isProcessing, setIsProcessing] = useState(false);
@@ -66,8 +66,9 @@ export function useBrain() {
             slotContext: AgentAdapter.getSlotContext(),
             filledSlots: bookingSlots,
             conversationHistory: nextHistory,
+            roomCatalog: Array.isArray(data?.rooms) ? data.rooms : undefined,
         });
-    }, [state, bookingSlots, conversationHistory]);
+    }, [state, bookingSlots, conversationHistory, data?.rooms]);
 
     return {
         lastResponse,

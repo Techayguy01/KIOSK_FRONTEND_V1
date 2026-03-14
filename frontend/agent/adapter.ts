@@ -1773,6 +1773,7 @@ class AgentAdapterService {
                     missingSlots: decision.missingSlots,
                     nextSlotToAsk: decision.nextSlotToAsk,
                     error: decision.error,
+                    visualFocus: decision.visualFocus,
                     backendDecision: true,
                     backendSpeechSpoken: false,
                 });
@@ -1789,7 +1790,8 @@ class AgentAdapterService {
                     decision.accumulatedSlots ||
                     decision.extractedSlots ||
                     decision.missingSlots ||
-                    decision.nextSlotToAsk !== undefined
+                    decision.nextSlotToAsk !== undefined ||
+                    decision.visualFocus
                 );
                 const shouldDispatch = strictEvent !== 'GENERAL_QUERY' || hasBookingDelta;
 
@@ -1805,6 +1807,7 @@ class AgentAdapterService {
                         isComplete: decision.isComplete,
                         nextUiScreen: serverState || undefined,
                         error: decision.error,
+                        visualFocus: decision.visualFocus,
                         backendDecision: true,
                         backendSpeechSpoken,
                         speech: decision.speech,
@@ -1942,6 +1945,7 @@ class AgentAdapterService {
         if (!["ROOM_SELECT", "BOOKING_COLLECT", "BOOKING_SUMMARY", "PAYMENT"].includes(resolvedState)) {
             delete merged.manualBookingOverrides;
             delete merged.manualSelectedRoomOverride;
+            delete merged.visualFocus;
             this.manualEditModeActive = false;
         }
 
@@ -1966,6 +1970,7 @@ class AgentAdapterService {
 
         if (roomChanged) {
             delete merged.manualSelectedRoomOverride;
+            delete merged.visualFocus;
             if (merged.manualBookingOverrides) {
                 const nextManualOverrides = { ...merged.manualBookingOverrides };
                 delete nextManualOverrides.roomType;
@@ -1983,6 +1988,7 @@ class AgentAdapterService {
 
         if (resetRoomSelection) {
             delete merged.manualSelectedRoomOverride;
+            delete merged.visualFocus;
             if (merged.manualBookingOverrides) {
                 const nextManualOverrides = { ...merged.manualBookingOverrides };
                 delete nextManualOverrides.roomType;
@@ -2099,6 +2105,10 @@ class AgentAdapterService {
         } else if (payload?.backendDecision) {
             // Clear stale error when a new backend turn does not carry an error.
             merged.bookingError = null;
+        }
+
+        if (payload?.visualFocus) {
+            merged.visualFocus = payload.visualFocus;
         }
 
         if (payload && Object.prototype.hasOwnProperty.call(payload, "persistedBookingId")) {

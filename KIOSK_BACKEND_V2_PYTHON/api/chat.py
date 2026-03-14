@@ -12,6 +12,7 @@ from typing import Optional, get_args
 from uuid import UUID
 from urllib.parse import urlparse
 from datetime import date, datetime
+import re
 from agent.graph import kiosk_agent
 from agent.nodes import _is_summary_confirmation_transcript
 from agent.state import KioskState, ConversationTurn, RoomInventoryItem, UIScreen
@@ -83,6 +84,269 @@ FAQ_BLOCKED_SCREENS = {
     "KEY_DISPENSING",
     "COMPLETE",
 }
+
+TRANSACTIONAL_BOOKING_RE = re.compile(
+    r"\b("
+    r"book(?:\s+a)?\s+room|"
+    r"room\s+booking|"
+    r"book(?:ing)?\b|"
+    r"reserve(?:\s+a)?\s+room|"
+    r"make\s+a\s+booking|"
+    r"start\s+booking|"
+    r"new\s+reservation"
+    r")\b",
+    re.IGNORECASE,
+)
+
+TRANSACTIONAL_CHECKIN_RE = re.compile(
+    r"\b("
+    r"check[\s-]?in|"
+    r"check\s+me\s+in|"
+    r"start\s+check[\s-]?in|"
+    r"begin\s+check[\s-]?in|"
+    r"i\s+have\s+a\s+booking|"
+    r"existing\s+booking|"
+    r"my\s+reservation"
+    r")\b",
+    re.IGNORECASE,
+)
+
+VISUAL_TOPIC_ALIASES: dict[str, list[str]] = {
+    "bathroom": ["bathroom", "washroom", "restroom", "toilet", "shower", "bathtub", "bath"],
+    "bedroom": ["bedroom", "bed room", "sleeping area", "sleep area", "bed"],
+    "balcony": ["balcony", "sit out", "sit-out", "sitout", "terrace", "patio", "veranda", "verandah"],
+    "living area": ["living area", "living room", "lounge", "seating area", "sofa area"],
+    "view": ["view", "window", "ocean view", "sea view", "city view", "garden view"],
+    "dining": ["dining", "dining area", "breakfast table", "table"],
+    "workspace": ["workspace", "work desk", "desk", "study area"],
+}
+
+
+def _normalize_visual_text(value: object) -> str:
+    text_value = str(value or "").strip().lower()
+    if not text_value:
+        return ""
+    text_value = text_value.replace("_", " ").replace("-", " ")
+    text_value = re.sub(r"[^a-z0-9\s]", " ", text_value)
+    return re.sub(r"\s+", " ", text_value).strip()
+
+
+def _humanize_visual_label(value: object) -> str:
+    normalized = _normalize_visual_text(value)
+    if not normalized:
+        return ""
+    words = normalized.split()
+    if not words:
+        return ""
+    return " ".join([words[0].capitalize(), *words[1:]])
+
+
+def _phrase_in_text(text_value: str, phrase: str) -> bool:
+    normalized_text = _normalize_visual_text(text_value)
+    normalized_phrase = _normalize_visual_text(phrase)
+    if not normalized_text or not normalized_phrase:
+        return False
+    pattern = r"\b" + re.escape(normalized_phrase).replace(r"\ ", r"\s+") + r"\b"
+    return bool(re.search(pattern, normalized_text))
+
+
+def _resolve_selected_room_catalog_entry(
+    room_catalog: Optional[list[dict]],
+    selected_room_payload: Optional[dict],
+    slots_dict: Optional[dict],
+) -> Optional[dict]:
+    if not room_catalog:
+        return None
+
+    selected_room_id = str((selected_room_payload or {}).get("id") or "").strip()
+    selected_room_name = _normalize_visual_text(
+        (selected_room_payload or {}).get("name")
+        or (selected_room_payload or {}).get("displayName")
+        or (slots_dict or {}).get("room_type")
+        or (slots_dict or {}).get("roomType")
+    )
+
+    for room in room_catalog:
+        if not isinstance(room, dict):
+            continue
+        if selected_room_id and str(room.get("id") or "").strip() == selected_room_id:
+            return room
+
+    for room in room_catalog:
+        if not isinstance(room, dict):
+            continue
+        room_name = _normalize_visual_text(room.get("name") or room.get("displayName"))
+        if selected_room_name and room_name == selected_room_name:
+            return room
+
+    return None
+
+
+def _extract_selected_room_images(
+    room_catalog: Optional[list[dict]],
+    selected_room_payload: Optional[dict],
+    slots_dict: Optional[dict],
+) -> list[dict]:
+    room_entry = _resolve_selected_room_catalog_entry(room_catalog, selected_room_payload, slots_dict)
+    if not room_entry:
+        return []
+
+    raw_images = room_entry.get("images")
+    if not isinstance(raw_images, list):
+        return []
+
+    return [
+        image for image in raw_images
+        if isinstance(image, dict) and str(image.get("url") or "").strip()
+    ]
+
+
+def _extract_requested_visual_topics(transcript: str) -> list[str]:
+    normalized_transcript = _normalize_visual_text(transcript)
+    if not normalized_transcript:
+        return []
+
+    matches: list[str] = []
+    for topic, aliases in VISUAL_TOPIC_ALIASES.items():
+        for alias in aliases:
+            if _phrase_in_text(normalized_transcript, alias):
+                matches.append(topic)
+                break
+    return matches
+
+
+def _resolve_visual_focus(
+    transcript: str,
+    room_catalog: Optional[list[dict]],
+    selected_room_payload: Optional[dict],
+    slots_dict: Optional[dict],
+) -> Optional[dict]:
+    images = _extract_selected_room_images(room_catalog, selected_room_payload, slots_dict)
+    if not images:
+        return None
+
+    normalized_transcript = _normalize_visual_text(transcript)
+    if not normalized_transcript:
+        return None
+
+    requested_topics = _extract_requested_visual_topics(transcript)
+    transcript_tokens = {
+        token for token in normalized_transcript.split()
+        if len(token) >= 4
+    }
+
+    best_match: Optional[dict] = None
+    best_score = 0
+
+    for image in images:
+        category_text = _normalize_visual_text(image.get("category"))
+        caption_text = _normalize_visual_text(image.get("caption"))
+        tag_texts = [
+            _normalize_visual_text(tag)
+            for tag in (image.get("tags") or [])
+            if _normalize_visual_text(tag)
+        ]
+        searchable_text = " ".join([category_text, caption_text, *tag_texts]).strip()
+        if not searchable_text:
+            continue
+
+        score = 0
+        matched_topic = category_text or None
+
+        for topic in requested_topics:
+            aliases = [_normalize_visual_text(topic), *[_normalize_visual_text(alias) for alias in VISUAL_TOPIC_ALIASES.get(topic, [])]]
+            for alias in aliases:
+                if not alias:
+                    continue
+                if _phrase_in_text(category_text, alias):
+                    score = max(score, 12)
+                    matched_topic = topic
+                elif any(_phrase_in_text(tag_text, alias) for tag_text in tag_texts):
+                    score = max(score, 9)
+                    matched_topic = topic
+                elif _phrase_in_text(caption_text, alias):
+                    score = max(score, 7)
+                    matched_topic = topic
+
+        if score == 0 and transcript_tokens:
+            image_tokens = {
+                token for token in searchable_text.split()
+                if len(token) >= 4
+            }
+            overlap = transcript_tokens.intersection(image_tokens)
+            if overlap:
+                score = len(overlap)
+                matched_topic = category_text or sorted(overlap)[0]
+
+        if score > best_score:
+            best_score = score
+            best_match = {
+                "imageId": str(image.get("id") or "").strip() or None,
+                "topic": _humanize_visual_label(matched_topic),
+                "category": _humanize_visual_label(image.get("category") or matched_topic),
+                "caption": str(image.get("caption") or "").strip() or None,
+                "tags": [
+                    _humanize_visual_label(tag)
+                    for tag in (image.get("tags") or [])
+                    if _humanize_visual_label(tag)
+                ],
+            }
+
+    if not best_match or not best_match.get("imageId"):
+        return None
+
+    return best_match
+
+
+def _should_use_visual_concierge_reply(transcript: str) -> bool:
+    normalized_transcript = _normalize_visual_text(transcript)
+    if not normalized_transcript:
+        return False
+
+    hint_phrases = [
+        "show", "see", "look", "tell me about", "what", "how", "facility",
+        "facilities", "feature", "features", "amenity", "amenities", "have", "has",
+    ]
+    return any(_phrase_in_text(normalized_transcript, phrase) for phrase in hint_phrases) or bool(
+        _extract_requested_visual_topics(transcript)
+    )
+
+
+def _build_visual_concierge_reply(
+    transcript: str,
+    visual_focus: Optional[dict],
+    selected_room_payload: Optional[dict],
+    language: str,
+) -> Optional[str]:
+    if not visual_focus or normalize_language_code(language) != "en":
+        return None
+    if not _should_use_visual_concierge_reply(transcript):
+        return None
+
+    room_name = str((selected_room_payload or {}).get("displayName") or (selected_room_payload or {}).get("name") or "").strip()
+    category_label = str(visual_focus.get("category") or visual_focus.get("topic") or "room detail").strip() or "room detail"
+    caption = str(visual_focus.get("caption") or "").strip()
+    tag_values = [str(tag).strip() for tag in (visual_focus.get("tags") or []) if str(tag).strip()]
+    supporting_tags = [tag for tag in tag_values if _normalize_visual_text(tag) != _normalize_visual_text(category_label)]
+    room_phrase = f" in {room_name}" if room_name else ""
+
+    if caption:
+        return (
+            f"Absolutely. Let me show you the {category_label.lower()}{room_phrase} on screen. "
+            f"{caption}. If you'd like, I can continue with your booking whenever you're ready."
+        )
+
+    if supporting_tags:
+        detail_text = ", ".join(supporting_tags[:3])
+        return (
+            f"Absolutely. I'm bringing up the {category_label.lower()}{room_phrase} now. "
+            f"You can spot details like {detail_text}. If you'd like, I can carry on with your booking after this."
+        )
+
+    return (
+        f"Absolutely. I'm bringing up the {category_label.lower()}{room_phrase} on screen for you now. "
+        "If you'd like, I can continue with your booking as soon as you're ready."
+    )
 
 # Retrieval-first hotel policy architecture:
 # 1. FAQ / policy DB answers deterministic, tenant-scoped questions first.
@@ -422,8 +686,30 @@ def _should_attempt_faq(transcript: str, normalized_ui_screen: UIScreen) -> bool
     # Avoid running FAQ retrieval on very long turns (likely conversational/transactional).
     if len(cleaned) > 240:
         return False
+    normalized = normalize_faq_query(cleaned)
+    if normalized in {"why", "what", "how", "when", "where", "which", "who", "reason"}:
+        print(
+            "[ChatAPI][FAQ] candidate "
+            f"screen={normalized_ui_screen} "
+            "allowed=False reason=too_vague"
+        )
+        return False
+    if TRANSACTIONAL_BOOKING_RE.search(cleaned) or TRANSACTIONAL_BOOKING_RE.search(normalized):
+        print(
+            "[ChatAPI][FAQ] candidate "
+            f"screen={normalized_ui_screen} "
+            "allowed=False reason=transactional_booking"
+        )
+        return False
+    if TRANSACTIONAL_CHECKIN_RE.search(cleaned) or TRANSACTIONAL_CHECKIN_RE.search(normalized):
+        print(
+            "[ChatAPI][FAQ] candidate "
+            f"screen={normalized_ui_screen} "
+            "allowed=False reason=transactional_checkin"
+        )
+        return False
 
-    is_candidate = True
+    is_candidate = is_faq_candidate_query(cleaned)
     print(
         "[ChatAPI][FAQ] candidate "
         f"screen={normalized_ui_screen} "
@@ -572,6 +858,7 @@ class ChatResponse(BaseModel):
     confidence: float
     # camelCase to match frontend contract
     nextUiScreen: str
+    visualFocus: Optional[dict] = None
     accumulatedSlots: dict
     extractedSlots: Optional[dict] = None
     missingSlots: list[str] = []
@@ -769,7 +1056,10 @@ async def chat(
 
             # Deterministic fallback for FAQ-style questions with no tenant FAQ match.
             # Avoid hallucinated policy answers from the LLM path.
-            fallback_text = "I don't have information for that right now."
+            fallback_text = (
+                "I'm sorry, I don't have that hotel detail right now, "
+                "but I'm happy to help with your booking or another question."
+            )
             state.history = state.history + [
                 ConversationTurn(role="user", content=state.latest_transcript),
                 ConversationTurn(role="assistant", content=fallback_text),
@@ -997,11 +1287,37 @@ async def chat(
                 if not response_speech.strip():
                     response_speech = "Your booking is confirmed. Taking you to payment now."
 
+        visual_focus = None
+        if normalized_ui_screen == "BOOKING_COLLECT":
+            visual_focus = _resolve_visual_focus(
+                transcript=req.transcript,
+                room_catalog=req.room_catalog,
+                selected_room_payload=selected_room_payload,
+                slots_dict=slots_dict,
+            )
+            concierge_reply = _build_visual_concierge_reply(
+                transcript=req.transcript,
+                visual_focus=visual_focus,
+                selected_room_payload=selected_room_payload,
+                language=updated_state.language,
+            )
+            if (
+                concierge_reply
+                and updated_state.resolved_intent == "GENERAL_QUERY"
+                and response_next_screen == "BOOKING_COLLECT"
+                and not constraint_error
+                and not persistence_error
+            ):
+                response_speech = concierge_reply
+                if updated_state.history and updated_state.history[-1].role == "assistant":
+                    updated_state.history[-1] = ConversationTurn(role="assistant", content=response_speech)
+
         return ChatResponse(
             speech=response_speech,
             intent=updated_state.resolved_intent or "GENERAL_QUERY",
             confidence=updated_state.confidence,
             nextUiScreen=response_next_screen,
+            visualFocus=visual_focus,
             accumulatedSlots=updated_state.booking_slots.model_dump(by_alias=True),
             extractedSlots={},
             missingSlots=[slot for slot in missing_slots if slot],

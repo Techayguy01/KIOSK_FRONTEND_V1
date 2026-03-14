@@ -1,7 +1,7 @@
 import { buildTenantApiUrl, getNodeApiBaseUrl, getTenantHeaders, getTenantSlug } from "./tenantContext";
-import type { RoomDTO } from "@contracts/api.contract";
+import type { RoomDTO, RoomImageDTO } from "@contracts/api.contract";
 
-export type { RoomDTO };
+export type { RoomDTO, RoomImageDTO };
 
 const ROOM_CACHE_TTL_MS = Number(import.meta.env.VITE_ROOMS_CACHE_TTL_MS || 60000);
 const PRIMARY_FETCH_TIMEOUT_MS = Number(import.meta.env.VITE_ROOMS_PRIMARY_TIMEOUT_MS || 8000);
@@ -47,7 +47,64 @@ function normalizeRooms(payload: any): RoomDTO[] {
     return trimmed.length > 0 ? trimmed : "";
   };
 
+  const asStringArray = (value: unknown): string[] => {
+    if (Array.isArray(value)) {
+      return value.map((entry) => asNonEmptyString(entry)).filter(Boolean);
+    }
+
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (!trimmed) return [];
+
+      if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+        try {
+          const parsed = JSON.parse(trimmed);
+          if (Array.isArray(parsed)) {
+            return parsed.map((entry) => asNonEmptyString(entry)).filter(Boolean);
+          }
+        } catch {
+          // Ignore malformed JSON and fall through to CSV/single value parsing.
+        }
+      }
+
+      if (trimmed.includes(",")) {
+        return trimmed.split(",").map((entry) => entry.trim()).filter(Boolean);
+      }
+
+      return [trimmed];
+    }
+
+    return [];
+  };
+
   const normalized = rawRooms.map((room: any) => {
+    const rawImages = Array.isArray(room.images)
+      ? room.images
+      : Array.isArray(room.roomImages)
+        ? room.roomImages
+        : Array.isArray(room.room_images)
+          ? room.room_images
+          : [];
+    const normalizedImages = rawImages
+      .map((image: any) => {
+        const url = asNonEmptyString(image?.url);
+        if (!url) return null;
+
+        return {
+          id: asNonEmptyString(image?.id) || undefined,
+          url,
+          tags: asStringArray(image?.tags),
+          caption: asNonEmptyString(image?.caption) || null,
+          category: asNonEmptyString(image?.category) || null,
+          displayOrder: typeof image?.displayOrder === "number"
+            ? image.displayOrder
+            : (typeof image?.display_order === "number" ? image.display_order : null),
+          isPrimary: typeof image?.isPrimary === "boolean"
+            ? image.isPrimary
+            : (typeof image?.is_primary === "boolean" ? image.is_primary : null),
+        } satisfies RoomImageDTO;
+      })
+      .filter((image: RoomImageDTO | null): image is RoomImageDTO => Boolean(image));
     const directImage = asNonEmptyString(room.image);
     const snakeImage = asNonEmptyString(room.image_url);
     const camelImage = asNonEmptyString(room.imageUrl);
@@ -63,6 +120,7 @@ function normalizeRooms(payload: any): RoomDTO[] {
 
     const mergedImageUrls = Array.from(
       new Set([
+        ...normalizedImages.map((image) => image.url),
         ...imageUrlsFromArray,
         ...imageUrlsFromSnakeArray,
         ...imageUrlsFromCsv,
@@ -83,6 +141,7 @@ function normalizeRooms(payload: any): RoomDTO[] {
       maxTotalGuests: typeof room.maxTotalGuests === "number" ? room.maxTotalGuests : (typeof room.max_total_guests === "number" ? room.max_total_guests : null),
       image: mergedImageUrls[0] || "",
       imageUrls: mergedImageUrls,
+      images: normalizedImages,
       features: Array.isArray(room.features)
         ? room.features
         : Array.isArray(room.amenities)

@@ -481,12 +481,28 @@ End your response by naturally offering further assistance.
 """
 
 
-def build_general_chat_prompt(language: str) -> str:
+def build_general_chat_prompt(state: KioskState) -> str:
+    selected_room_name = (
+        state.selected_room.name
+        if state.selected_room and state.selected_room.name
+        else state.booking_slots.room_type
+        or "not selected yet"
+    )
+    booking_context_lines = []
+    if state.current_ui_screen in {"BOOKING_COLLECT", "BOOKING_SUMMARY"}:
+        booking_context_lines = [
+            "The guest is in the middle of booking a room.",
+            f"Current selected room: {selected_room_name}.",
+            "Answer like an enthusiastic luxury-hotel concierge.",
+            "If the guest asks about the room or hotel, answer warmly first and then gently offer to continue the booking.",
+        ]
+
     return "\n".join(
         [
             GENERAL_CHAT_SYSTEM_PROMPT.strip(),
             "",
-            f"Language rule: {_response_language_instruction(language)}",
+            *booking_context_lines,
+            f"Language rule: {_response_language_instruction(state.language)}",
         ]
     )
 
@@ -513,7 +529,7 @@ async def general_chat(state: KioskState) -> dict:
     ]
 
     messages = (
-        [{"role": "system", "content": build_general_chat_prompt(state.language)}]
+        [{"role": "system", "content": build_general_chat_prompt(state)}]
         + history_messages
         + [{"role": "user", "content": state.latest_transcript}]
     )

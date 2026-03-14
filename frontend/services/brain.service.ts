@@ -26,6 +26,7 @@ export interface SendToBrainOptions {
     };
     filledSlots?: Record<string, unknown>;
     conversationHistory?: BrainTurn[];
+    roomCatalog?: unknown[];
 }
 
 // Subscribers who want to know about brain responses (e.g., TTS, UI)
@@ -89,6 +90,7 @@ function dispatchFromConfidence(data: BrainResponse): void {
             nextSlotToAsk: data.nextSlotToAsk,
             nextUiScreen: data.nextUiScreen,
             isComplete: data.isComplete,
+            visualFocus: data.visualFocus,
             backendDecision: true,
         });
     } else if (data.confidence >= 0.50) {
@@ -102,6 +104,7 @@ function dispatchFromConfidence(data: BrainResponse): void {
             nextUiScreen: data.nextUiScreen,
             isComplete: data.isComplete,
             needsClarification: true,
+            visualFocus: data.visualFocus,
             backendDecision: true,
         });
     } else {
@@ -178,6 +181,9 @@ export async function sendToBrain(
     // Pass along extra context if available (V2 can use this for memory)
     if (options?.filledSlots && Object.keys(options.filledSlots).length > 0) {
         payload.filled_slots = options.filledSlots;
+    }
+    if (Array.isArray(options?.roomCatalog) && options!.roomCatalog.length > 0) {
+        payload.room_catalog = options!.roomCatalog;
     }
 
     console.log("[BrainService] Outgoing payload:", payload);
