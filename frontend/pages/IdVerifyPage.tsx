@@ -8,6 +8,8 @@ export const IdVerifyPage: React.FC = () => {
   const fields = ocr?.fields || {};
   const matchedBooking = data?.matchedBooking || null;
   const multiplePossibleMatches = Boolean(data?.multiplePossibleMatches);
+  const weakExtraction = Boolean(data?.weakExtraction);
+  const extractionMessage = String(data?.extractionMessage || "").trim();
 
   return (
     <div className="h-screen w-full overflow-hidden relative text-white">
@@ -15,6 +17,15 @@ export const IdVerifyPage: React.FC = () => {
       <div className="relative z-10 h-full w-full max-w-5xl mx-auto px-6 py-10 flex flex-col">
         <h1 className="text-3xl font-light mb-2">Verify ID Details</h1>
         <p className="text-white/60 mb-6">Review extracted details before continuing check in.</p>
+
+        {weakExtraction && (
+          <div className="mb-6 rounded-2xl border border-amber-500/40 bg-amber-950/30 px-5 py-4 text-sm text-amber-100">
+            <div className="font-medium text-amber-200">Partial OCR result</div>
+            <div className="mt-1">
+              {extractionMessage || "We could only read part of the ID. Please review the extracted details carefully before continuing."}
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 flex-1">
           <div className="rounded-2xl border border-slate-700/60 bg-slate-900/50 p-5 space-y-3">

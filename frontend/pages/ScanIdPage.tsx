@@ -7,6 +7,17 @@ import { OcrServiceError, scanIdWithOcr } from '../services/ocr.service';
 
 const ENABLE_OCR_DEMO_SKIP = import.meta.env.VITE_ENABLE_OCR_DEMO_SKIP === 'true';
 
+function hasUsableOcrFields(result: Awaited<ReturnType<typeof scanIdWithOcr>>): boolean {
+  const fields = result?.ocr?.fields || {};
+  return Boolean(
+    String(fields.fullName || '').trim() ||
+    String(fields.documentNumber || '').trim() ||
+    String(fields.dateOfBirth || '').trim() ||
+    String(fields.yearOfBirth || '').trim() ||
+    result?.matchedBooking,
+  );
+}
+
 function mapOcrErrorMessage(error: unknown): string {
   if (error instanceof OcrServiceError) {
     switch (error.code) {
@@ -26,7 +37,7 @@ function mapOcrErrorMessage(error: unknown): string {
 
 export const ScanIdPage: React.FC = () => {
   const { emit } = useUIState();
-  const [status, setStatus] = useState<'IDLE' | 'ANALYZING' | 'APPROVED' | 'ERROR'>('IDLE');
+  const [status, setStatus] = useState<'IDLE' | 'ANALYZING' | 'APPROVED' | 'PARTIAL' | 'ERROR'>('IDLE');
   const [scannerVersion, setScannerVersion] = useState(0);
   const [guestName, setGuestName] = useState('Guest');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -37,9 +48,10 @@ export const ScanIdPage: React.FC = () => {
 
     try {
       const result = await scanIdWithOcr(imageSrc, cropBox);
+      const usableOcrFields = hasUsableOcrFields(result);
 
-      if (result.weakExtraction) {
-        // Keep the user on SCAN_ID: weak OCR must not advance as a successful verification turn.
+      if (result.weakExtraction && !usableOcrFields) {
+        // Keep the user on SCAN_ID only when OCR failed to produce anything useful.
         setStatus('ERROR');
         setErrorMessage(
           result.extractionMessage ||
@@ -53,7 +65,7 @@ export const ScanIdPage: React.FC = () => {
       if (extractedName) {
         setGuestName(extractedName);
       }
-      setStatus('APPROVED');
+      setStatus(result.weakExtraction ? 'PARTIAL' : 'APPROVED');
 
       setTimeout(() => {
         emit('OCR_SUCCESS', {
@@ -91,6 +103,14 @@ export const ScanIdPage: React.FC = () => {
               <ShieldCheck size={64} className="mb-4 text-emerald-400" />
               <h2 className="text-2xl font-bold">Verification Successful</h2>
               <p className="text-emerald-200/80">Welcome back, {guestName}.</p>
+            </div>
+          ) : status === 'PARTIAL' ? (
+            <div className="bg-amber-900/30 border-2 border-amber-500/50 p-12 rounded-2xl text-amber-100 flex flex-col items-center animate-in zoom-in">
+              <ShieldCheck size={64} className="mb-4 text-amber-300" />
+              <h2 className="text-2xl font-bold">Partial Scan Captured</h2>
+              <p className="text-amber-100/85 text-center">
+                We found some matching details for {guestName}. Please review them on the next screen.
+              </p>
             </div>
           ) : (
             <WebcamScanner key={scannerVersion} onCapture={handleCapture} />
