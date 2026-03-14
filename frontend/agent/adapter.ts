@@ -1402,6 +1402,39 @@ class AgentAdapterService {
         return null;
     }
 
+    private hydrateRoomDetails(roomLike: any): any | null {
+        if (!roomLike) return null;
+
+        const rooms = Array.isArray(this.viewData.rooms) ? this.viewData.rooms : [];
+        const roomId = String(roomLike?.id || "").trim();
+        const roomLabel = this.getCanonicalSelectedRoomLabel(roomLike);
+
+        const matchedRoom = rooms.find((room: any) => {
+            const candidateId = String(room?.id || "").trim();
+            return Boolean(roomId) && candidateId === roomId;
+        }) || (roomLabel ? this.resolveRoomFromHint(roomLabel) : null);
+
+        if (!matchedRoom) {
+            return roomLike;
+        }
+
+        return {
+            ...matchedRoom,
+            ...roomLike,
+            image: roomLike?.image || matchedRoom?.image,
+            imageUrl: roomLike?.imageUrl || matchedRoom?.imageUrl,
+            imageUrls: Array.isArray(roomLike?.imageUrls) && roomLike.imageUrls.length > 0
+                ? roomLike.imageUrls
+                : matchedRoom?.imageUrls,
+            images: Array.isArray(roomLike?.images) && roomLike.images.length > 0
+                ? roomLike.images
+                : matchedRoom?.images,
+            features: Array.isArray(roomLike?.features) && roomLike.features.length > 0
+                ? roomLike.features
+                : matchedRoom?.features,
+        };
+    }
+
     private maybeHandleRoomInfoQuery(rawTranscript: string): boolean {
         // TODO: Keep room Q&A backend-owned; frontend should render backend speech only.
         return false;
@@ -1956,12 +1989,12 @@ class AgentAdapterService {
         }
 
         if (payload?.room) {
-            merged.selectedRoom = payload.room;
+            merged.selectedRoom = this.hydrateRoomDetails(payload.room);
         }
 
         if (payload?.selectedRoom) {
             // Backend-selected room is authoritative for booking semantics.
-            merged.selectedRoom = payload.selectedRoom;
+            merged.selectedRoom = this.hydrateRoomDetails(payload.selectedRoom);
         }
 
         if (payload && Object.prototype.hasOwnProperty.call(payload, "selectedRoom") && payload.selectedRoom === null) {
@@ -1977,7 +2010,7 @@ class AgentAdapterService {
                 delete nextManualOverrides.totalPrice;
                 merged.manualBookingOverrides = nextManualOverrides;
             }
-            merged.selectedRoom = incomingRoom;
+            merged.selectedRoom = this.hydrateRoomDetails(incomingRoom);
             merged.bookingSlots = {
                 ...(merged.bookingSlots || {}),
                 roomType: incomingRoomLabel || null,
@@ -2044,7 +2077,7 @@ class AgentAdapterService {
         const selectedRoomDisplay = this.getCanonicalSelectedRoomLabel(merged.selectedRoom);
         if (selectedRoomDisplay) {
             merged.selectedRoom = {
-                ...(merged.selectedRoom || {}),
+                ...(this.hydrateRoomDetails(merged.selectedRoom) || merged.selectedRoom || {}),
                 name: selectedRoomDisplay,
                 displayName: selectedRoomDisplay,
             };
@@ -2107,8 +2140,12 @@ class AgentAdapterService {
             merged.bookingError = null;
         }
 
-        if (payload?.visualFocus) {
-            merged.visualFocus = payload.visualFocus;
+        if (payload && Object.prototype.hasOwnProperty.call(payload, "visualFocus")) {
+            if (payload.visualFocus) {
+                merged.visualFocus = payload.visualFocus;
+            } else {
+                delete merged.visualFocus;
+            }
         }
 
         if (payload && Object.prototype.hasOwnProperty.call(payload, "persistedBookingId")) {

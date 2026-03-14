@@ -121,6 +121,20 @@ VISUAL_TOPIC_ALIASES: dict[str, list[str]] = {
     "workspace": ["workspace", "work desk", "desk", "study area"],
 }
 
+VISUAL_TAG_MATCH_REQUIRES_TOPIC_CATEGORY = {
+    "living area",
+    "workspace",
+    "dining",
+}
+
+AMENITY_ALIASES: dict[str, list[str]] = {
+    "fireplace": ["fireplace", "fire place"],
+    "ac": ["ac", "a c", "air conditioning", "air conditioner", "aircon"],
+    "wifi": ["wifi", "wi fi", "internet"],
+    "tv": ["tv", "television"],
+    "bathtub": ["bathtub", "bath tub", "tub"],
+}
+
 
 def _normalize_visual_text(value: object) -> str:
     text_value = str(value or "").strip().lower()
@@ -201,6 +215,25 @@ def _extract_selected_room_images(
     ]
 
 
+def _extract_selected_room_features(
+    room_catalog: Optional[list[dict]],
+    selected_room_payload: Optional[dict],
+    slots_dict: Optional[dict],
+) -> list[str]:
+    room_entry = _resolve_selected_room_catalog_entry(room_catalog, selected_room_payload, slots_dict)
+    feature_values = room_entry.get("features") if isinstance(room_entry, dict) else None
+    if not isinstance(feature_values, list):
+        feature_values = (selected_room_payload or {}).get("features")
+    if not isinstance(feature_values, list):
+        return []
+
+    return [
+        str(feature).strip()
+        for feature in feature_values
+        if str(feature or "").strip()
+    ]
+
+
 def _extract_requested_visual_topics(transcript: str) -> list[str]:
     normalized_transcript = _normalize_visual_text(transcript)
     if not normalized_transcript:
@@ -213,6 +246,18 @@ def _extract_requested_visual_topics(transcript: str) -> list[str]:
                 matches.append(topic)
                 break
     return matches
+
+
+def _topic_aliases(topic: str) -> list[str]:
+    return [
+        _normalize_visual_text(topic),
+        *[_normalize_visual_text(alias) for alias in VISUAL_TOPIC_ALIASES.get(topic, [])],
+    ]
+
+
+def _text_matches_topic(text_value: str, topic: str) -> bool:
+    aliases = [alias for alias in _topic_aliases(topic) if alias]
+    return any(_phrase_in_text(text_value, alias) for alias in aliases)
 
 
 def _resolve_visual_focus(
@@ -254,17 +299,23 @@ def _resolve_visual_focus(
         matched_topic = category_text or None
 
         for topic in requested_topics:
-            aliases = [_normalize_visual_text(topic), *[_normalize_visual_text(alias) for alias in VISUAL_TOPIC_ALIASES.get(topic, [])]]
+            aliases = [alias for alias in _topic_aliases(topic) if alias]
             for alias in aliases:
                 if not alias:
                     continue
                 if _phrase_in_text(category_text, alias):
                     score = max(score, 12)
                     matched_topic = topic
-                elif any(_phrase_in_text(tag_text, alias) for tag_text in tag_texts):
-                    score = max(score, 9)
-                    matched_topic = topic
                 elif _phrase_in_text(caption_text, alias):
+                    score = max(score, 10)
+                    matched_topic = topic
+                elif any(_phrase_in_text(tag_text, alias) for tag_text in tag_texts):
+                    category_supports_topic = _text_matches_topic(category_text, topic)
+                    caption_supports_topic = _text_matches_topic(caption_text, topic)
+                    if topic in VISUAL_TAG_MATCH_REQUIRES_TOPIC_CATEGORY and not (
+                        category_supports_topic or caption_supports_topic
+                    ):
+                        continue
                     score = max(score, 7)
                     matched_topic = topic
 
@@ -312,6 +363,55 @@ def _should_use_visual_concierge_reply(transcript: str) -> bool:
     )
 
 
+def _looks_like_visual_request(transcript: str) -> bool:
+    normalized_transcript = _normalize_visual_text(transcript)
+    if not normalized_transcript:
+        return False
+
+    visual_verbs = ["show", "see", "look", "view", "image", "photo", "picture", "display"]
+    return any(_phrase_in_text(normalized_transcript, phrase) for phrase in visual_verbs)
+
+
+def _find_requested_amenity(transcript: str, room_features: list[str]) -> Optional[dict]:
+    normalized_transcript = _normalize_visual_text(transcript)
+    if not normalized_transcript:
+        return None
+
+    normalized_features = [
+        {"label": feature, "normalized": _normalize_visual_text(feature)}
+        for feature in room_features
+        if _normalize_visual_text(feature)
+    ]
+
+    for amenity_label, aliases in AMENITY_ALIASES.items():
+        normalized_aliases = [_normalize_visual_text(amenity_label), *[_normalize_visual_text(alias) for alias in aliases]]
+        matched_alias = next((alias for alias in normalized_aliases if alias and _phrase_in_text(normalized_transcript, alias)), None)
+        if not matched_alias:
+            continue
+
+        matched_feature = next(
+            (
+                feature for feature in normalized_features
+                if feature["normalized"] == _normalize_visual_text(amenity_label)
+                or any(_phrase_in_text(feature["normalized"], alias) for alias in normalized_aliases if alias)
+            ),
+            None,
+        )
+        return {
+            "label": matched_feature["label"] if matched_feature else _humanize_visual_label(amenity_label),
+            "matched": matched_feature is not None,
+        }
+
+    for feature in normalized_features:
+        if _phrase_in_text(normalized_transcript, feature["normalized"]):
+            return {
+                "label": feature["label"],
+                "matched": True,
+            }
+
+    return None
+
+
 def _build_visual_concierge_reply(
     transcript: str,
     visual_focus: Optional[dict],
@@ -347,6 +447,58 @@ def _build_visual_concierge_reply(
         f"Absolutely. I'm bringing up the {category_label.lower()}{room_phrase} on screen for you now. "
         "If you'd like, I can continue with your booking as soon as you're ready."
     )
+
+
+def _build_missing_visual_or_amenity_reply(
+    transcript: str,
+    visual_focus: Optional[dict],
+    selected_room_payload: Optional[dict],
+    room_catalog: Optional[list[dict]],
+    slots_dict: Optional[dict],
+    language: str,
+) -> Optional[str]:
+    if visual_focus or normalize_language_code(language) != "en":
+        return None
+
+    requested_topics = _extract_requested_visual_topics(transcript)
+    visual_request = _looks_like_visual_request(transcript) or _should_use_visual_concierge_reply(transcript)
+    room_name = str((selected_room_payload or {}).get("displayName") or (selected_room_payload or {}).get("name") or "").strip()
+
+    if requested_topics and visual_request:
+        requested_topic = _humanize_visual_label(requested_topics[0]) or "that area"
+        room_phrase = f" for {room_name}" if room_name else ""
+        return (
+            f"I do not have a dedicated {requested_topic.lower()} image{room_phrase} right now, "
+            "so I am keeping the current room photos visible."
+        )
+
+    room_features = _extract_selected_room_features(room_catalog, selected_room_payload, slots_dict)
+    requested_amenity = _find_requested_amenity(transcript, room_features)
+    if not requested_amenity:
+        return None
+
+    amenity_label = str(requested_amenity.get("label") or "that feature").strip() or "that feature"
+    room_phrase = f" in {room_name}" if room_name else ""
+
+    if requested_amenity.get("matched"):
+        if visual_request:
+            return (
+                f"Yes, {room_name or 'this room'} includes {amenity_label.lower()}. "
+                f"I do not have a dedicated {amenity_label.lower()} image to show on screen right now, "
+                "so I am keeping the current room photos visible."
+            )
+        return (
+            f"Yes, {room_name or 'this room'} includes {amenity_label.lower()}. "
+            f"I do not have a dedicated {amenity_label.lower()} image on screen right now."
+        )
+
+    if visual_request:
+        return (
+            f"I cannot find a dedicated {amenity_label.lower()} image{room_phrase} right now, "
+            "so I am keeping the current room photos visible."
+        )
+
+    return f"No, {room_name or 'this room'} does not include {amenity_label.lower()}."
 
 # Retrieval-first hotel policy architecture:
 # 1. FAQ / policy DB answers deterministic, tenant-scoped questions first.
@@ -1309,6 +1461,28 @@ async def chat(
                 and not persistence_error
             ):
                 response_speech = concierge_reply
+                if updated_state.history and updated_state.history[-1].role == "assistant":
+                    updated_state.history[-1] = ConversationTurn(role="assistant", content=response_speech)
+
+            missing_visual_reply = _build_missing_visual_or_amenity_reply(
+                transcript=req.transcript,
+                visual_focus=visual_focus,
+                selected_room_payload=selected_room_payload,
+                room_catalog=req.room_catalog,
+                slots_dict=slots_dict,
+                language=updated_state.language,
+            )
+            if (
+                missing_visual_reply
+                and (
+                    updated_state.resolved_intent == "GENERAL_QUERY"
+                    or _looks_like_visual_request(req.transcript)
+                )
+                and response_next_screen == "BOOKING_COLLECT"
+                and not constraint_error
+                and not persistence_error
+            ):
+                response_speech = missing_visual_reply
                 if updated_state.history and updated_state.history[-1].role == "assistant":
                     updated_state.history[-1] = ConversationTurn(role="assistant", content=response_speech)
 

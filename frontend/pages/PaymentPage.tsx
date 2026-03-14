@@ -8,7 +8,15 @@ import { optimizeCloudinaryUrl } from '../lib/cloudinary';
 export const PaymentPage: React.FC = () => {
   const { data, emit, loading, tenant } = useUIState();
   const bookingSlots = data.bookingSlots || {};
-  const room = data.selectedRoom || {};
+  const selectedRoom = data.selectedRoom || {};
+  const rooms = Array.isArray(data.rooms) ? data.rooms : [];
+  const room = rooms.find((candidate: any) => {
+    const selectedId = String(selectedRoom?.id || '').trim();
+    return selectedId && String(candidate?.id || '').trim() === selectedId;
+  }) || rooms.find((candidate: any) => {
+    const selectedName = String(selectedRoom?.displayName || selectedRoom?.name || bookingSlots.roomType || '').trim().toLowerCase();
+    return selectedName && String(candidate?.name || '').trim().toLowerCase() === selectedName;
+  }) || selectedRoom || {};
   const bill = data.bill || { nights: 0, subtotal: '0.00', taxes: '0.00', total: '0.00', currencySymbol: '$' };
   const progress = data.progress || { currentStep: 3, totalSteps: 4, steps: ['Payment'] };
   const roomName = room.name || room.displayName || bookingSlots.roomType || 'Selected room';

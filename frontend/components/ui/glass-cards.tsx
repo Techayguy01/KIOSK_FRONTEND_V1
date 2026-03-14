@@ -41,7 +41,6 @@ const DEFAULT_COLORS = [
 const Card: React.FC<CardProps> = ({ item, index, totalCards, scroller }) => {
   const cardRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const accentColor = item.color || DEFAULT_COLORS[index % DEFAULT_COLORS.length];
 
   useEffect(() => {
     const card = cardRef.current;
@@ -62,6 +61,7 @@ const Card: React.FC<CardProps> = ({ item, index, totalCards, scroller }) => {
       start: "top 72%",
       end: "bottom 18%",
       scrub: 0.9,
+      invalidateOnRefresh: true,
       onUpdate: (self) => {
         const scale = gsap.utils.interpolate(1, targetScale, self.progress);
         const entranceProgress = gsap.utils.clamp(0, 1, (self.progress - 0.12) / 0.28);
@@ -76,7 +76,13 @@ const Card: React.FC<CardProps> = ({ item, index, totalCards, scroller }) => {
       },
     });
 
+    const refreshId = window.requestAnimationFrame(() => {
+      trigger.refresh();
+      ScrollTrigger.refresh();
+    });
+
     return () => {
+      window.cancelAnimationFrame(refreshId);
       trigger.kill();
     };
   }, [index, scroller, totalCards]);
@@ -126,10 +132,18 @@ export const StackedCards: React.FC<StackedCardsProps> = ({ items, className, em
         .filter((item) => item.src),
     [items],
   );
+  const itemsSignature = useMemo(
+    () => normalizedItems.map((item) => `${String(item.id)}:${item.src}`).join("|"),
+    [normalizedItems],
+  );
 
   useEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport || normalizedItems.length === 0) return;
+
+    viewport.scrollTop = 0;
+    gsap.killTweensOf(viewport);
+    gsap.set(viewport, { opacity: 1 });
 
     const ctx = gsap.context(() => {
       gsap.fromTo(
@@ -141,7 +155,7 @@ export const StackedCards: React.FC<StackedCardsProps> = ({ items, className, em
 
     ScrollTrigger.refresh();
     return () => ctx.revert();
-  }, [normalizedItems.length]);
+  }, [itemsSignature, normalizedItems.length]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -172,7 +186,7 @@ export const StackedCards: React.FC<StackedCardsProps> = ({ items, className, em
       window.removeEventListener("resize", handleResize);
       autoTween.kill();
     };
-  }, [normalizedItems.length]);
+  }, [itemsSignature, normalizedItems.length]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
