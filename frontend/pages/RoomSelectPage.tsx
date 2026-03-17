@@ -14,6 +14,7 @@ export const RoomSelectPage: React.FC = () => {
   const [roomsError, setRoomsError] = useState<string | null>(null);
   const rooms = liveRooms;
   const progress = data.progress || { currentStep: 2, totalSteps: 4, steps: ['Room'] };
+  const selectedRoom = selectedRoomId ? rooms.find((room) => room.id === selectedRoomId) || null : null;
 
   useEffect(() => {
     if (data?.selectedRoom?.id) {
@@ -72,9 +73,9 @@ export const RoomSelectPage: React.FC = () => {
 
         <div className="flex-1 flex flex-col max-w-7xl mx-auto w-full relative">
           <header className="mb-10 text-center">
-            <h2 className="text-5xl font-light text-white mb-3">Find the Right Room</h2>
-            <p className="text-xl text-slate-300">Start with a room preview, then confirm before the booking form opens.</p>
-            <p className="text-base text-white/60 mt-3">Ask Siya to help tailor the best option for the guest.</p>
+            <h2 className="text-5xl font-light tracking-[-0.04em] text-white mb-3">Choose A Room That Feels Right</h2>
+            <p className="text-xl text-slate-300">Explore the rooms, compare the atmosphere, and select the one that suits your guest best.</p>
+            <p className="text-base text-white/60 mt-3">Siya can describe each room using the live room details, images, and amenities.</p>
             {roomsError && <p className="text-amber-300 text-base mt-4">{roomsError}</p>}
           </header>
 
@@ -100,7 +101,7 @@ export const RoomSelectPage: React.FC = () => {
               <p className="text-base text-slate-400">Please contact front desk support.</p>
             </div>
           ) : (
-            <div className={`grid grid-cols-1 lg:grid-cols-2 gap-8 overflow-y-auto pb-32 px-2 transition-opacity ${loading ? 'opacity-50 pointer-events-none' : ''}`}>
+            <div className={`grid grid-cols-1 lg:grid-cols-2 gap-8 overflow-y-auto pb-40 px-2 transition-opacity ${loading ? 'opacity-50 pointer-events-none' : ''}`}>
               {rooms.map((room: any) => (
                 <RoomCard
                   key={room.id}
@@ -113,17 +114,30 @@ export const RoomSelectPage: React.FC = () => {
           )}
 
           <div className="fixed bottom-0 left-0 w-full p-8 bg-gradient-to-t from-slate-900 to-transparent flex justify-center z-10">
-            <button
-              disabled={!selectedRoomId || loading || isLoadingRooms || Boolean(roomsError) || rooms.length === 0}
-              onClick={handleContinue}
-              className={`flex items-center gap-3 px-16 py-6 rounded-full font-semibold text-2xl transition-all duration-300 shadow-2xl ${selectedRoomId && !loading
-                ? 'bg-blue-600 text-white hover:bg-blue-500 transform hover:-translate-y-1'
-                : 'bg-slate-800 text-slate-500 cursor-not-allowed'
-                }`}
-            >
-              {loading && <Loader2 className="animate-spin" size={26} />}
-              <span>{loading ? 'Opening preview...' : 'Preview Room'}</span>
-            </button>
+            <div className="flex w-full max-w-4xl items-center justify-between gap-5 rounded-[2rem] border border-white/10 bg-slate-950/78 px-6 py-5 backdrop-blur-md">
+              <div className="text-left">
+                <p className="text-sm uppercase tracking-[0.22em] text-white/45">Selected Room</p>
+                <p className="mt-2 text-xl text-white">
+                  {selectedRoom ? selectedRoom.name : 'Choose a room to continue'}
+                </p>
+                <p className="mt-1 text-sm text-slate-400">
+                  {selectedRoom
+                    ? 'Preview the room details before moving into the booking form.'
+                    : 'Tap any card to select it, or keep exploring the room details.'}
+                </p>
+              </div>
+              <button
+                disabled={!selectedRoomId || loading || isLoadingRooms || Boolean(roomsError) || rooms.length === 0}
+                onClick={handleContinue}
+                className={`flex items-center gap-3 rounded-full px-12 py-5 font-semibold text-xl transition-all duration-300 shadow-2xl ${selectedRoomId && !loading
+                  ? 'bg-blue-600 text-white hover:bg-blue-500 hover:-translate-y-1'
+                  : 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                  }`}
+              >
+                {loading && <Loader2 className="animate-spin" size={24} />}
+                <span>{loading ? 'Opening room...' : selectedRoom ? `Continue with ${selectedRoom.name}` : 'Continue to preview'}</span>
+              </button>
+            </div>
           </div>
         </div>
       </div>

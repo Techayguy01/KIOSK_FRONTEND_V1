@@ -1,12 +1,127 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { BedDouble, Check, ChevronLeft, ChevronRight, ImageIcon, ShieldCheck, Sparkles, Users } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, ImageIcon, Sparkles, Users } from 'lucide-react';
 import { optimizeCloudinaryUrl } from '../lib/cloudinary';
-import type { RoomDTO } from '../services/room.service';
+import type { RoomDTO, RoomImageDTO } from '../services/room.service';
 
 interface RoomCardProps {
   room: RoomDTO;
   onSelect: (room: RoomDTO) => void;
   selected: boolean;
+}
+
+function formatPrice(room: RoomDTO): string {
+  const currency = String(room.currency || 'INR').toUpperCase();
+  const numericPrice = Number(room.price || 0);
+  const amount = Number.isFinite(numericPrice) ? numericPrice.toLocaleString('en-IN') : String(room.price || '');
+  return currency === 'INR' ? `INR ${amount}` : `${currency} ${amount}`;
+}
+
+function normalizeCaption(value: unknown): string {
+  const raw = String(value || '').trim().replace(/[.]+$/g, '');
+  if (!raw) return '';
+  return raw.charAt(0).toLowerCase() + raw.slice(1);
+}
+
+function sortImages(images: RoomImageDTO[]): RoomImageDTO[] {
+  return [...images].sort((a, b) => {
+    if (Boolean(a.isPrimary) !== Boolean(b.isPrimary)) {
+      return a.isPrimary ? -1 : 1;
+    }
+
+    const aOrder = typeof a.displayOrder === 'number' ? a.displayOrder : 999;
+    const bOrder = typeof b.displayOrder === 'number' ? b.displayOrder : 999;
+    return aOrder - bOrder;
+  });
+}
+
+function describeImage(image: RoomImageDTO): string | null {
+  const caption = normalizeCaption(image.caption);
+  if (caption) return caption;
+
+  const searchable = [
+    String(image.category || ''),
+    ...(Array.isArray(image.tags) ? image.tags.map((tag) => String(tag || '')) : []),
+  ]
+    .join(' ')
+    .toLowerCase();
+
+  if (searchable.includes('living') || searchable.includes('lounge') || searchable.includes('sofa') || searchable.includes('sitting')) {
+    return 'a living area for relaxing';
+  }
+  if (searchable.includes('balcony') || searchable.includes('terrace')) {
+    return 'a private balcony with seating';
+  }
+  if (searchable.includes('bathroom') || searchable.includes('bathtub') || searchable.includes('shower')) {
+    return searchable.includes('bathtub') ? 'a private bathroom with a bathtub' : 'a private bathroom';
+  }
+  if (searchable.includes('bedroom') || searchable.includes('bed')) {
+    return 'a comfortable bedroom';
+  }
+  if (searchable.includes('view') || searchable.includes('ocean')) {
+    return 'a lovely view';
+  }
+
+  return null;
+}
+
+function humanizeFeature(featureLike: unknown): string {
+  const feature = String(featureLike || '').trim();
+  if (!feature) return '';
+
+  const normalized = feature.toLowerCase();
+  if (normalized === 'wifi') return 'Wi-Fi';
+  if (normalized === 'tv') return 'TV';
+  if (normalized === 'ac') return 'Air conditioning';
+  if (normalized === 'hottub') return 'Hot tub';
+  return feature;
+}
+
+function buildRoomNarrative(room: RoomDTO): { headline: string; details: string[]; amenities: string[] } {
+  const sortedImages = sortImages(Array.isArray(room.images) ? room.images : []);
+  const imageDetails = sortedImages
+    .map((image) => describeImage(image))
+    .filter((detail): detail is string => Boolean(detail));
+
+  const uniqueDetails: string[] = [];
+  const seenDetails = new Set<string>();
+  for (const detail of imageDetails) {
+    const key = detail.toLowerCase();
+    if (seenDetails.has(key)) continue;
+    seenDetails.add(key);
+    uniqueDetails.push(detail);
+  }
+
+  const details = uniqueDetails.slice(0, 3);
+  const narrativeLead = details.length > 0
+    ? details
+    : ['a comfortable stay with thoughtfully designed interiors'];
+
+  const featureAmenities: string[] = [];
+  const seenAmenities = new Set<string>();
+  for (const feature of Array.isArray(room.features) ? room.features : []) {
+    const label = humanizeFeature(feature);
+    const key = label.toLowerCase();
+    if (!label || seenAmenities.has(key)) continue;
+    if (
+      (key === 'bathtub' && details.some((detail) => detail.toLowerCase().includes('bathtub'))) ||
+      (key === 'fireplace' && details.some((detail) => detail.toLowerCase().includes('fireplace')))
+    ) {
+      continue;
+    }
+    seenAmenities.add(key);
+    featureAmenities.push(label);
+  }
+
+  const capacityText = room.maxAdults
+    ? `for up to ${room.maxAdults} guest${room.maxAdults === 1 ? '' : 's'}`
+    : 'for a comfortable stay';
+  const headline = `A welcoming room ${capacityText}, with ${narrativeLead.join(', ')}.`;
+
+  return {
+    headline,
+    details,
+    amenities: featureAmenities.slice(0, 5),
+  };
 }
 
 export const RoomCard: React.FC<RoomCardProps> = ({ room, onSelect, selected }) => {
@@ -20,13 +135,24 @@ export const RoomCard: React.FC<RoomCardProps> = ({ room, onSelect, selected }) 
       : [room.image];
 
     return raw
-      .map((url) => String(url || "").trim())
-      .filter((url) => Boolean(url))
+      .map((url) => String(url || '').trim())
+      .filter(Boolean)
       .map((rawUrl) => ({
         rawUrl,
         optimizedUrl: optimizeCloudinaryUrl(rawUrl),
       }));
   }, [room.image, room.imageUrls]);
+
+  const narrative = useMemo(() => buildRoomNarrative(room), [room]);
+  const imageCount = imageEntries.length;
+  const currentEntry = imageEntries[activeImageIndex];
+  const currentImageSrc = currentEntry
+    ? (failedOptimizedIndexes[activeImageIndex] ? currentEntry.rawUrl : currentEntry.optimizedUrl)
+    : '';
+  const selectedImageCaption = useMemo(() => {
+    const images = sortImages(Array.isArray(room.images) ? room.images : []);
+    return normalizeCaption(images[activeImageIndex]?.caption);
+  }, [activeImageIndex, room.images]);
 
   useEffect(() => {
     setActiveImageIndex(0);
@@ -38,18 +164,6 @@ export const RoomCard: React.FC<RoomCardProps> = ({ room, onSelect, selected }) 
       setActiveImageIndex(0);
     }
   }, [activeImageIndex, imageEntries.length]);
-
-  const goToPreviousImage = (event: React.MouseEvent) => {
-    event.stopPropagation();
-    if (imageEntries.length <= 1) return;
-    setActiveImageIndex((current) => (current - 1 + imageEntries.length) % imageEntries.length);
-  };
-
-  const goToNextImage = (event: React.MouseEvent) => {
-    event.stopPropagation();
-    if (imageEntries.length <= 1) return;
-    setActiveImageIndex((current) => (current + 1) % imageEntries.length);
-  };
 
   const onTouchStart = (event: React.TouchEvent) => {
     touchStartX.current = event.changedTouches[0]?.clientX ?? null;
@@ -70,59 +184,45 @@ export const RoomCard: React.FC<RoomCardProps> = ({ room, onSelect, selected }) 
     }
   };
 
-  const currentEntry = imageEntries[activeImageIndex];
-  const currentImageSrc = currentEntry
-    ? (failedOptimizedIndexes[activeImageIndex] ? currentEntry.rawUrl : currentEntry.optimizedUrl)
-    : "";
-  const imageCount = imageEntries.length;
-  const categoryHighlights = Array.isArray(room.images)
-    ? Array.from(
-      new Set(
-        room.images
-          .map((image) => String(image.category || image.caption || '').trim())
-          .filter(Boolean)
-      )
-    ).slice(0, 3)
-    : [];
-  const guestCapacity = room.maxTotalGuests || room.maxAdults || null;
-  const guestLabel = guestCapacity
-    ? `${guestCapacity} guest${guestCapacity === 1 ? '' : 's'}`
+  const goToPreviousImage = (event: React.MouseEvent) => {
+    event.stopPropagation();
+    if (imageEntries.length <= 1) return;
+    setActiveImageIndex((current) => (current - 1 + imageEntries.length) % imageEntries.length);
+  };
+
+  const goToNextImage = (event: React.MouseEvent) => {
+    event.stopPropagation();
+    if (imageEntries.length <= 1) return;
+    setActiveImageIndex((current) => (current + 1) % imageEntries.length);
+  };
+
+  const guestsLine = room.maxAdults
+    ? `${room.maxAdults} guest${room.maxAdults === 1 ? '' : 's'}`
     : 'Flexible stay';
-  const childLabel = typeof room.maxChildren === 'number'
+  const supportLine = typeof room.maxChildren === 'number'
     ? `${room.maxChildren} child${room.maxChildren === 1 ? '' : 'ren'}`
-    : 'Voice-guided preview';
-  const imageLabel = imageCount > 1 ? `${imageCount} visuals` : '1 visual';
-  const featureHighlights = room.features.slice(0, 6);
-  const summary = [
-    room.maxAdults ? `Designed for up to ${room.maxAdults} adult${room.maxAdults === 1 ? '' : 's'}` : null,
-    room.maxChildren ? `and ${room.maxChildren} child${room.maxChildren === 1 ? '' : 'ren'}` : null,
-    featureHighlights.length > 0 ? `with ${featureHighlights.slice(0, 3).join(', ')}` : null,
-  ]
-    .filter(Boolean)
-    .join(' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  const pricePrefix = room.currency === 'USD' ? '$' : room.currency;
+    : 'Room details ready';
 
   return (
-      <div 
-        onClick={() => onSelect(room)}
-        className={`group relative overflow-hidden rounded-3xl border-2 cursor-pointer transition-all duration-300 ${
-          selected 
-            ? 'border-cyan-300 bg-slate-900/95 scale-[1.02] shadow-2xl shadow-cyan-500/20' 
-            : 'border-slate-700 bg-slate-900/70 hover:border-slate-500 hover:bg-slate-900/90'
-        }`}
+    <button
+      type="button"
+      onClick={() => onSelect(room)}
+      className={`group relative overflow-hidden rounded-[2rem] border text-left transition-all duration-300 ${
+        selected
+          ? 'border-amber-200/80 bg-slate-950/95 shadow-[0_26px_70px_rgba(250,204,21,0.16)]'
+          : 'border-white/10 bg-slate-950/72 hover:border-sky-200/35 hover:bg-slate-950/88'
+      }`}
+    >
+      <div
+        className="relative aspect-[16/10] overflow-hidden"
+        onTouchStart={onTouchStart}
+        onTouchEnd={onTouchEnd}
       >
-        <div
-          className="aspect-[16/10] w-full overflow-hidden relative"
-          onTouchStart={onTouchStart}
-          onTouchEnd={onTouchEnd}
-        >
         {currentImageSrc ? (
           <img
             src={currentImageSrc}
             alt={room.name}
-              className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105"
+            className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-[1.03]"
             onError={() => {
               const entry = imageEntries[activeImageIndex];
               if (!entry) return;
@@ -130,162 +230,151 @@ export const RoomCard: React.FC<RoomCardProps> = ({ room, onSelect, selected }) 
               const isUsingOptimized = !failedOptimizedIndexes[activeImageIndex] && entry.optimizedUrl !== entry.rawUrl;
               if (isUsingOptimized) {
                 setFailedOptimizedIndexes((prev) => ({ ...prev, [activeImageIndex]: true }));
-                if (import.meta.env.DEV) {
-                  console.warn("[RoomCard] Optimized image failed, falling back to raw URL", {
-                    roomId: room.id,
-                    roomName: room.name,
-                    optimizedUrl: entry.optimizedUrl,
-                    rawUrl: entry.rawUrl,
-                  });
-                }
-                return;
-              }
-
-              if (import.meta.env.DEV) {
-                console.error("[RoomCard] Image failed to load", {
-                  roomId: room.id,
-                  roomName: room.name,
-                  attemptedUrl: currentImageSrc,
-                });
               }
             }}
           />
         ) : (
-          <div className="h-full w-full bg-slate-700/70 flex items-center justify-center text-slate-300 text-sm">
+          <div className="flex h-full w-full items-center justify-center bg-slate-800 text-sm text-slate-300">
             No image available
           </div>
         )}
-        <div className="absolute inset-x-0 top-0 flex items-start justify-between gap-3 p-4">
+
+        <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/12 to-transparent" />
+
+        <div className="absolute inset-x-0 top-0 flex items-start justify-between p-5">
           <div className="flex flex-wrap gap-2">
-            {room.code && (
-              <span className="rounded-full border border-white/15 bg-slate-950/70 px-3 py-1 text-xs font-medium uppercase tracking-[0.2em] text-white/80">
-                {room.code}
+            <span className="rounded-full border border-white/15 bg-slate-950/65 px-3 py-1 text-[11px] font-medium uppercase tracking-[0.2em] text-white/85">
+              {guestsLine}
+            </span>
+            {imageCount > 1 && (
+              <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-slate-950/65 px-3 py-1 text-[11px] text-white/78">
+                <ImageIcon size={13} />
+                {imageCount} photos
               </span>
             )}
-            <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-slate-950/70 px-3 py-1 text-xs font-medium text-white/80">
-              <ImageIcon size={14} />
-              {imageLabel}
-            </span>
           </div>
           {selected && (
-            <div className="bg-cyan-300 text-slate-950 p-3 rounded-full shadow-xl">
-              <Check size={22} />
-            </div>
+            <span className="inline-flex items-center gap-2 rounded-full bg-amber-200 px-3 py-2 text-xs font-semibold text-slate-950 shadow-lg">
+              <Check size={15} />
+              Selected
+            </span>
           )}
         </div>
-        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950 via-slate-950/70 to-transparent px-5 pb-5 pt-20">
-          <div className="flex flex-wrap gap-2">
-            <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/[0.08] px-3 py-1 text-xs text-white/88">
-              <Users size={14} />
-              {guestLabel}
-            </span>
-            {categoryHighlights.map((category) => (
-              <span
-                key={category}
-                className="rounded-full border border-white/15 bg-white/[0.08] px-3 py-1 text-xs text-white/78"
-              >
-                {category}
-              </span>
-            ))}
+
+        <div className="absolute inset-x-0 bottom-0 p-5">
+          <div className="max-w-[85%] rounded-2xl border border-white/10 bg-slate-950/58 px-4 py-3 backdrop-blur-sm">
+            <p className="text-[11px] uppercase tracking-[0.22em] text-amber-100/70">Room Snapshot</p>
+            <p className="mt-2 text-sm leading-6 text-white/92">
+              {selectedImageCaption || narrative.details[0] || narrative.headline}
+            </p>
           </div>
         </div>
+
         {imageEntries.length > 1 && (
           <>
             <button
               type="button"
               onClick={goToPreviousImage}
-              className="absolute left-3 top-1/2 -translate-y-1/2 bg-black/50 hover:bg-black/65 text-white rounded-full p-3 transition-colors"
+              className="absolute left-4 top-1/2 -translate-y-1/2 rounded-full border border-white/15 bg-slate-950/55 p-3 text-white transition-colors hover:bg-slate-950/72"
               aria-label="Previous room image"
             >
-              <ChevronLeft size={22} />
+              <ChevronLeft size={20} />
             </button>
             <button
               type="button"
               onClick={goToNextImage}
-              className="absolute right-3 top-1/2 -translate-y-1/2 bg-black/50 hover:bg-black/65 text-white rounded-full p-3 transition-colors"
+              className="absolute right-4 top-1/2 -translate-y-1/2 rounded-full border border-white/15 bg-slate-950/55 p-3 text-white transition-colors hover:bg-slate-950/72"
               aria-label="Next room image"
             >
-              <ChevronRight size={22} />
+              <ChevronRight size={20} />
             </button>
-            <div className="absolute bottom-4 left-0 right-0 flex items-center justify-center gap-2">
+            <div className="absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-2">
               {imageEntries.map((_, index) => (
-                <button
+                <span
                   key={index}
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setActiveImageIndex(index);
-                  }}
-                  className={`h-2 rounded-full transition-all ${
-                    index === activeImageIndex ? 'w-6 bg-white' : 'w-3 bg-white/50'
+                  className={`rounded-full transition-all ${
+                    index === activeImageIndex ? 'h-2 w-7 bg-white' : 'h-2 w-2 bg-white/45'
                   }`}
-                  aria-label={`Go to room image ${index + 1}`}
                 />
               ))}
             </div>
           </>
         )}
       </div>
-      
-      <div className="p-7">
-        <div className="flex justify-between items-start gap-4 mb-3">
-          <div>
-            <h3 className="text-2xl font-semibold text-white">{room.name}</h3>
-            <p className="mt-2 text-sm leading-6 text-slate-300">
-              {summary || 'Ask Siya to describe the stay, features, and best fit for this room.'}
+
+      <div className="space-y-6 px-6 pb-6 pt-5">
+        <div className="flex items-start justify-between gap-5">
+          <div className="space-y-2">
+            <h3 className="text-[1.9rem] font-semibold tracking-[-0.03em] text-white">{room.name}</h3>
+            <p className="max-w-xl text-[15px] leading-7 text-slate-300">
+              {narrative.headline}
             </p>
           </div>
-          <div className="text-right">
-            <span className="block text-2xl font-bold text-cyan-200">
-              {pricePrefix}{room.price}
-            </span>
-            <span className="text-sm text-slate-400">/ night</span>
+          <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-right">
+            <p className="text-xs uppercase tracking-[0.22em] text-white/45">From</p>
+            <p className="mt-1 text-[1.9rem] font-semibold tracking-[-0.04em] text-cyan-200">{formatPrice(room)}</p>
+            <p className="text-sm text-slate-400">per night</p>
           </div>
         </div>
 
-        <div className="mt-5 grid grid-cols-3 gap-3">
-          <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">
-            <div className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-cyan-300/12 text-cyan-100">
-              <Users size={16} />
+        <div className="grid gap-3 md:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
+          <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.035] px-5 py-4">
+            <div className="flex items-center gap-2 text-xs uppercase tracking-[0.22em] text-white/45">
+              <Sparkles size={13} />
+              Inside The Room
             </div>
-            <p className="mt-3 text-xs uppercase tracking-[0.18em] text-white/45">Stay</p>
-            <p className="mt-1 text-sm text-white">{guestLabel}</p>
+            <div className="mt-4 space-y-3">
+              {narrative.details.length > 0 ? narrative.details.map((detail) => (
+                <p key={detail} className="text-sm leading-6 text-white/88">
+                  {detail.charAt(0).toUpperCase() + detail.slice(1)}
+                </p>
+              )) : (
+                <p className="text-sm leading-6 text-white/78">Room details will appear here as soon as the inventory finishes loading.</p>
+              )}
+            </div>
           </div>
-          <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">
-            <div className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-cyan-300/12 text-cyan-100">
-              <BedDouble size={16} />
+
+          <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.035] px-5 py-4">
+            <div className="flex items-center gap-2 text-xs uppercase tracking-[0.22em] text-white/45">
+              <Users size={13} />
+              Stay Details
             </div>
-            <p className="mt-3 text-xs uppercase tracking-[0.18em] text-white/45">Fit</p>
-            <p className="mt-1 text-sm text-white">{childLabel}</p>
-          </div>
-          <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">
-            <div className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-cyan-300/12 text-cyan-100">
-              <ShieldCheck size={16} />
+            <div className="mt-4 space-y-3 text-sm text-white/88">
+              <p>Ideal for {guestsLine.toLowerCase()}.</p>
+              <p>{typeof room.maxChildren === 'number' ? `Children: ${supportLine.toLowerCase()}.` : supportLine}.</p>
+              {room.code && <p className="text-white/62">Category: {room.code}</p>}
             </div>
-            <p className="mt-3 text-xs uppercase tracking-[0.18em] text-white/45">Flow</p>
-            <p className="mt-1 text-sm text-white">Preview before booking</p>
           </div>
         </div>
 
-        <div className="mt-5">
-          <div className="mb-3 flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-white/45">
-            <Sparkles size={14} />
-            Room Highlights
+        {narrative.amenities.length > 0 && (
+          <div>
+            <div className="mb-3 text-xs uppercase tracking-[0.22em] text-white/45">Included Comforts</div>
+            <div className="flex flex-wrap gap-2.5">
+              {narrative.amenities.map((feature) => (
+                <span
+                  key={feature}
+                  className="rounded-full border border-sky-200/20 bg-sky-300/10 px-3 py-2 text-sm text-sky-50"
+                >
+                  {feature}
+                </span>
+              ))}
+            </div>
           </div>
-          <div className="flex flex-wrap gap-3">
-            {featureHighlights.map((feature, i) => (
-              <span key={i} className="px-3 py-2 bg-slate-700/70 text-slate-100 text-sm rounded-xl flex items-center gap-2 border border-white/8">
-                <span className="w-1.5 h-1.5 bg-cyan-200 rounded-full"></span>
-                {feature}
-              </span>
-            ))}
-          </div>
-        </div>
+        )}
 
-        <div className="mt-5 rounded-2xl border border-white/8 bg-slate-950/45 px-4 py-3 text-sm text-slate-300">
-          Say: "Tell me about {room.name}", "Show me the bedroom", or "I want another room".
+        <div className="flex items-center justify-between gap-4 rounded-[1.4rem] border border-white/10 bg-slate-900/78 px-4 py-4">
+          <div>
+            <p className="text-sm font-medium text-white">{selected ? 'This room is selected' : 'Tap to select this room'}</p>
+            <p className="mt-1 text-sm text-slate-400">
+              {selected ? 'Continue below when this feels right for the guest.' : 'You can still ask Siya to describe another room before continuing.'}
+            </p>
+          </div>
+          <div className={`rounded-full px-4 py-2 text-sm font-semibold ${selected ? 'bg-amber-200 text-slate-950' : 'bg-white/8 text-white/88'}`}>
+            {selected ? 'Selected' : 'Choose Room'}
+          </div>
         </div>
       </div>
-    </div>
+    </button>
   );
 };

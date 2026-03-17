@@ -461,19 +461,21 @@ class AgentAdapterService {
                     }),
                 };
             case "ROOM_SELECT":
+                const roomSelectPrompt = this.buildRoomSelectionPrompt(Array.isArray(this.viewData?.rooms) ? this.viewData.rooms : []);
                 return {
                     delayMs: 6500,
                     prompt: this.pickLocalizedText({
-                        en: "If you'd like, I can suggest a comfortable room for you, or you can simply say the room name you prefer.",
+                        en: roomSelectPrompt,
                         hi: "आराम से चुनिए। तैयार होने पर room का नाम बोलिए।",
                         mr: "निवांत निवडा. तयार झाल्यावर room चे नाव सांगा.",
                     }),
                 };
             case "ROOM_PREVIEW":
+                const roomPreviewPrompt = this.buildRoomPreviewPrompt(this.viewData?.selectedRoom);
                 return {
                     delayMs: 7000,
                     prompt: this.pickLocalizedText({
-                        en: "If you'd like, I can tell you a little more about this room, or I can show you another option.",
+                        en: roomPreviewPrompt,
                         hi: "Aap features ke baare mein pooch sakte hain, ya yes bolkar is room ke saath aage badh sakte hain.",
                         mr: "Tumhi features babat vicharu shakta, kiwa yes mhunun ya room sobat pudhe jau shakta.",
                     }),
@@ -884,6 +886,12 @@ class AgentAdapterService {
         return feature;
     }
 
+    private normalizeCaptionFragment(textLike: unknown): string {
+        const raw = String(textLike || "").trim().replace(/[.]+$/g, "");
+        if (!raw) return "";
+        return raw.charAt(0).toLowerCase() + raw.slice(1);
+    }
+
     private formatRoomPrice(roomLike: any): string | null {
         const rawPrice = roomLike?.price;
         if (rawPrice == null || rawPrice === "") return null;
@@ -897,6 +905,135 @@ class AgentAdapterService {
             : Number(numericPrice.toFixed(2));
 
         return `${currency} ${roundedPrice.toLocaleString("en-IN")}`;
+    }
+
+    private describeRoomImage(imageLike: any): string | null {
+        const category = String(imageLike?.category || "").trim().toLowerCase();
+        const caption = this.normalizeCaptionFragment(imageLike?.caption);
+        const tags = Array.isArray(imageLike?.tags)
+            ? imageLike.tags.map((tag: unknown) => String(tag || "").trim().toLowerCase()).filter(Boolean)
+            : [];
+        const searchable = [category, caption, ...tags].join(" ");
+
+        if (caption) {
+            return caption;
+        }
+
+        if (searchable.includes("living") || searchable.includes("lounge") || searchable.includes("sofa") || searchable.includes("sitting area")) {
+            return "a living area for relaxing";
+        }
+        if (searchable.includes("balcony") || searchable.includes("terrace")) {
+            return "a private balcony with seating";
+        }
+        if (searchable.includes("bathroom") || searchable.includes("bathtub") || searchable.includes("shower")) {
+            return searchable.includes("bathtub")
+                ? "a private bathroom with a bathtub"
+                : "a private bathroom";
+        }
+        if (searchable.includes("bedroom") || searchable.includes("bed")) {
+            return "a comfortable bedroom";
+        }
+        if (searchable.includes("view") || searchable.includes("ocean")) {
+            return "a lovely view";
+        }
+        if (searchable.includes("fireplace")) {
+            return "a fireplace";
+        }
+
+        return null;
+    }
+
+    private buildRoomImageNarration(roomLike: any): string[] {
+        const room = roomLike || {};
+        const rawImages = Array.isArray(room?.images) ? room.images : [];
+        const categoryPriority: Record<string, number> = {
+            bedroom: 1,
+            living: 2,
+            lounge: 2,
+            balcony: 3,
+            terrace: 3,
+            bathroom: 4,
+            fireplace: 5,
+            view: 6,
+        };
+
+        const images = [...rawImages].sort((a: any, b: any) => {
+            const aCategory = String(a?.category || "").trim().toLowerCase();
+            const bCategory = String(b?.category || "").trim().toLowerCase();
+            const aPriority = categoryPriority[aCategory] ?? 99;
+            const bPriority = categoryPriority[bCategory] ?? 99;
+            if (aPriority !== bPriority) return aPriority - bPriority;
+
+            const aOrder = Number.isFinite(Number(a?.displayOrder)) ? Number(a.displayOrder) : 999;
+            const bOrder = Number.isFinite(Number(b?.displayOrder)) ? Number(b.displayOrder) : 999;
+            return aOrder - bOrder;
+        });
+
+        const phrases: string[] = [];
+        const seen = new Set<string>();
+        for (const image of images) {
+            const phrase = this.describeRoomImage(image);
+            if (!phrase) continue;
+            const key = phrase.toLowerCase();
+            if (seen.has(key)) continue;
+            seen.add(key);
+            phrases.push(phrase);
+        }
+        return phrases;
+    }
+
+    private buildRemainingFeatureList(roomLike: any, usedNarration: string[]): string[] {
+        const room = roomLike || {};
+        const narrationText = usedNarration.join(" ").toLowerCase();
+        const features = Array.isArray(room?.features) ? room.features : [];
+        const remaining: string[] = [];
+        const seen = new Set<string>();
+
+        for (const feature of features) {
+            const label = this.formatRoomFeatureLabel(feature);
+            if (!label) continue;
+
+            const normalized = label.toLowerCase();
+            if (seen.has(normalized)) continue;
+            if (
+                (normalized === "bathtub" && narrationText.includes("bathtub")) ||
+                (normalized === "fireplace" && narrationText.includes("fireplace")) ||
+                (normalized === "wi-fi" && narrationText.includes("wi-fi")) ||
+                (normalized === "tv" && narrationText.includes("tv"))
+            ) {
+                continue;
+            }
+
+            seen.add(normalized);
+            remaining.push(label);
+        }
+
+        return remaining;
+    }
+
+    private buildRoomDetailsLine(roomLike: any): string {
+        const room = roomLike || {};
+        const imageNarration = this.buildRoomImageNarration(room);
+        const remainingFeatures = this.buildRemainingFeatureList(room, imageNarration);
+        const detailSegments: string[] = [];
+
+        if (imageNarration.length > 0) {
+            detailSegments.push(`It includes ${this.formatSpokenList(imageNarration)}.`);
+        }
+        if (remainingFeatures.length > 0) {
+            detailSegments.push(`It also comes with ${this.formatSpokenList(remainingFeatures)}.`);
+        }
+
+        if (detailSegments.length > 0) {
+            return detailSegments.join(" ");
+        }
+
+        const fallbackFeatures = this.buildRoomHighlightPhrases(room, 4);
+        if (fallbackFeatures.length > 0) {
+            return `It includes ${this.formatSpokenList(fallbackFeatures)}.`;
+        }
+
+        return "I can describe the room once more as soon as the room details finish loading.";
     }
 
     private buildRoomHighlightPhrases(roomLike: any, limit = 3): string[] {
@@ -969,10 +1106,7 @@ class AgentAdapterService {
             const occupancyLine = typeof featuredRoom?.maxAdults === "number"
                 ? `It is a comfortable choice for up to ${featuredRoom.maxAdults} adult${featuredRoom.maxAdults === 1 ? "" : "s"}.`
                 : "It is a comfortable option for a pleasant stay.";
-            const highlights = this.buildRoomHighlightPhrases(featuredRoom, 3);
-            const highlightLine = highlights.length > 0
-                ? `It includes ${this.formatSpokenList(highlights)}.`
-                : "";
+            const detailLine = this.buildRoomDetailsLine(featuredRoom);
             const alternateRoomName = this.getCanonicalSelectedRoomLabel(hydratedRooms[1]);
             const followUp = alternateRoomName
                 ? `Would you like me to show you this room, or shall I suggest ${alternateRoomName} instead?`
@@ -983,7 +1117,7 @@ class AgentAdapterService {
                     ? `Certainly. Our ${roomName} is available for ${priceText}.`
                     : `Certainly. We have ${roomName} available right now.`,
                 occupancyLine,
-                highlightLine,
+                detailLine,
                 followUp,
             ]
                 .filter(Boolean)
@@ -1332,7 +1466,7 @@ class AgentAdapterService {
 
         const backendSpeech = String(payload?.speech || "").trim();
         const roomList = Array.isArray(payload?.rooms) ? payload.rooms : [];
-        const prompt = backendSpeech || this.buildRoomSelectionPrompt(roomList);
+        const prompt = roomList.length > 0 ? this.buildRoomSelectionPrompt(roomList) : backendSpeech;
         if (!prompt) return false;
 
         this.hasAnnouncedRoomOptions = true;
@@ -1342,15 +1476,12 @@ class AgentAdapterService {
     }
 
     private buildRoomPreviewPrompt(roomLike?: any, backendSpeech?: string): string {
-        const spoken = String(backendSpeech || "").trim();
-        if (spoken) return spoken;
-
         const room = this.hydrateRoomDetails(roomLike || this.viewData.selectedRoom);
+        const spoken = String(backendSpeech || "").trim();
+        if (!room) return spoken;
+
         const roomName = this.getCanonicalSelectedRoomLabel(room) || "this room";
-        const cozyHighlights = this.buildRoomHighlightPhrases(room, 3);
-        const cozyDetailLine = cozyHighlights.length > 0
-            ? `It offers ${this.formatSpokenList(cozyHighlights)}.`
-            : "It is a comfortable and welcoming option.";
+        const detailLine = this.buildRoomDetailsLine(room);
         const cozyCapacityLine = typeof room?.maxAdults === "number"
             ? `It is well suited for up to ${room.maxAdults} adult${room.maxAdults === 1 ? "" : "s"}.`
             : "";
@@ -1359,7 +1490,7 @@ class AgentAdapterService {
 
         return [
             `This is our ${roomName}.`,
-            cozyDetailLine,
+            detailLine,
             cozyCapacityLine,
             cozyPriceLine,
             "Would you like to continue with this room, or shall I show you another option?",

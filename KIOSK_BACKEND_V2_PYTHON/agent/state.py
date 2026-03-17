@@ -21,6 +21,7 @@ UIScreen = Literal[
     "ID_VERIFY",
     "CHECK_IN_SUMMARY",
     "ROOM_SELECT",
+    "ROOM_PREVIEW",
     "BOOKING_COLLECT",
     "BOOKING_SUMMARY",
     "PAYMENT",
@@ -30,7 +31,7 @@ UIScreen = Literal[
 ]
 
 # Backend-owned progression states for booking orchestration.
-BOOKING_PROGRESS_SCREENS = {"ROOM_SELECT", "BOOKING_COLLECT", "BOOKING_SUMMARY"}
+BOOKING_PROGRESS_SCREENS = {"ROOM_SELECT", "ROOM_PREVIEW", "BOOKING_COLLECT", "BOOKING_SUMMARY"}
 
 # Frontend presentation states that are chat-compatible but not booking progression states.
 FRONTEND_PRESENTATION_SCREENS = {"AI_CHAT", "MANUAL_MENU"}

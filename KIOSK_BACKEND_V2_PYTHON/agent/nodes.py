@@ -399,6 +399,33 @@ def _build_room_options_text(room_inventory: list[RoomInventoryItem]) -> str:
     return _join_spoken_list(names)
 
 
+def _should_stay_in_room_preview(
+    state: KioskState,
+    selected_room: Optional[RoomInventoryItem],
+    room_type: Optional[str],
+) -> bool:
+    if not selected_room and not room_type:
+        return False
+
+    collection_intents = {"CONFIRM_BOOKING", "PROVIDE_GUESTS", "PROVIDE_DATES", "PROVIDE_NAME"}
+    if state.resolved_intent in collection_intents:
+        return False
+
+    return state.current_ui_screen in {"WELCOME", "AI_CHAT", "MANUAL_MENU", "ROOM_SELECT", "ROOM_PREVIEW"}
+
+
+def _is_booking_collection_prompt(speech: str) -> bool:
+    text = (speech or "").strip().lower()
+    if not text:
+        return False
+    return bool(
+        re.search(
+            r"\bhow many adults\b|\bcheck in date\b|\bcheck out date\b|\bname for this booking\b|\bconfirm booking\b|\bnext booking detail\b",
+            text,
+        )
+    )
+
+
 def _is_summary_confirmation_transcript(transcript: str) -> bool:
     text = (transcript or "").strip().lower()
     if not text:
@@ -665,6 +692,8 @@ Rules:
 - Ask at most one gentle follow-up question at the end of the speech.
 - Prefer live tenant inventory over generic room wording.
 - If the guest has not chosen a room yet, recommend one available room by name, price, and occupancy when possible.
+- Do not start asking for adults, dates, or guest name immediately after a room is selected.
+- While the guest is still browsing rooms or asking about room details, keep next_slot_to_ask as null and keep the speech focused on describing the selected room and offering to continue or show another option.
 - If the guest mentions a preference but not a room name, match it to the closest suitable room from the live inventory when possible.
 - If a specific room detail is not present in the authoritative inventory, do not invent it.
 - Only include slots in extracted_slots if they were mentioned in this turn.
@@ -838,23 +867,36 @@ async def booking_logic(state: KioskState) -> dict:
             speech = _fallback_booking_prompt("room_type", None, room_inventory)
 
     missing_required = updated_slots.missing_required_slots()
+    stay_in_room_preview = _should_stay_in_room_preview(state, selected_room, updated_slots.room_type)
     if not is_complete:
         if not next_slot or next_slot not in missing_required:
             next_slot = missing_required[0] if missing_required else None
-        if not str(speech or "").strip():
+        if stay_in_room_preview:
+            should_use_frontend_room_preview = (
+                not str(speech or "").strip()
+                or next_slot is not None
+                or _is_booking_collection_prompt(speech)
+            )
+            next_slot = None
+            if should_use_frontend_room_preview:
+                speech = ""
+        elif not str(speech or "").strip():
             speech = _fallback_booking_prompt(
                 next_slot,
                 selected_room.name if selected_room else updated_slots.room_type,
                 room_inventory,
             )
 
+    # Determine next screen based on what's still missing
+    next_screen = _determine_next_screen(updated_slots, is_complete, stay_in_room_preview)
+    history_speech = speech
+    if not history_speech and next_screen == "ROOM_PREVIEW" and selected_room and selected_room.name:
+        history_speech = f"Previewing {selected_room.name}."
+
     updated_history = state.history + [
         ConversationTurn(role="user", content=state.latest_transcript),
-        ConversationTurn(role="assistant", content=speech),
+        ConversationTurn(role="assistant", content=history_speech),
     ]
-
-    # Determine next screen based on what's still missing
-    next_screen = _determine_next_screen(updated_slots, is_complete)
 
     print(
         "[BookingLogic] "
@@ -869,14 +911,14 @@ async def booking_logic(state: KioskState) -> dict:
     return {
         "speech_response": speech,
         "booking_slots": updated_slots,
-        "active_slot": next_slot,
+        "active_slot": None if next_screen == "ROOM_PREVIEW" else next_slot,
         "selected_room": selected_room,
         "history": updated_history,
         "next_ui_screen": next_screen,
     }
 
 
-def _determine_next_screen(slots: BookingSlots, is_complete: bool) -> str:
+def _determine_next_screen(slots: BookingSlots, is_complete: bool, stay_in_room_preview: bool) -> str:
     """Map missing slots to the correct UI screen.
     
     Flow:  ROOM_SELECT  ?  BOOKING_COLLECT  ?  BOOKING_SUMMARY
@@ -887,6 +929,9 @@ def _determine_next_screen(slots: BookingSlots, is_complete: bool) -> str:
     # If we don't know the room yet, show the room picker
     if slots.room_type is None:
         return "ROOM_SELECT"
+
+    if stay_in_room_preview:
+        return "ROOM_PREVIEW"
 
     # For all other missing info (dates, guests, name), use the conversational collector
     return "BOOKING_COLLECT"
