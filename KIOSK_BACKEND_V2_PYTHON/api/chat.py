@@ -922,6 +922,8 @@ async def _load_room_inventory(session: AsyncSession, resolved_tenant_id: Option
         select_fields.append("max_children")
     if "max_total_guests" in available_columns:
         select_fields.append("max_total_guests")
+    if "amenities" in available_columns:
+        select_fields.append("amenities")
 
     rooms_result = await session.exec(
         text(
@@ -944,6 +946,7 @@ async def _load_room_inventory(session: AsyncSession, resolved_tenant_id: Option
             "maxAdults": row._mapping.get("max_adults"),
             "maxChildren": row._mapping.get("max_children"),
             "maxTotalGuests": row._mapping.get("max_total_guests"),
+            "amenities": row._mapping.get("amenities") or [],
         }
         for row in rooms
     ]
@@ -1067,6 +1070,7 @@ async def chat(
                         "maxChildren": room.get("maxChildren"),
                         "maxTotalGuests": room.get("maxTotalGuests"),
                         "features": room.get("features") or [],
+                        "amenities": room.get("amenities") or [],
                     }
                     for room in req.room_catalog
                     if room.get("id") and room.get("name")

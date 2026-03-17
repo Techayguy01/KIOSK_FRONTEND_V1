@@ -62,6 +62,7 @@ def _room_prompt_catalog(room_inventory: list[RoomInventoryItem]) -> list[dict]:
             "currency": room.currency,
             "max_adults": room.max_adults,
             "features": room.features,
+            "amenities": room.amenities,
         }
         for room in room_inventory
     ]

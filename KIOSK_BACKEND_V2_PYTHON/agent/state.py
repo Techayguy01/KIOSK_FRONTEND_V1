@@ -98,6 +98,7 @@ class RoomInventoryItem(BaseModel):
     max_children: Optional[int] = Field(default=None, alias="maxChildren")
     max_total_guests: Optional[int] = Field(default=None, alias="maxTotalGuests")
     features: list[str] = Field(default_factory=list)
+    amenities: list[str] = Field(default_factory=list)
 
     class Config:
         populate_by_name = True
