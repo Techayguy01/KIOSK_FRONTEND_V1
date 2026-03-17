@@ -1094,31 +1094,38 @@ class AgentAdapterService {
         const hydratedRooms = rooms
             .map((room: any) => this.hydrateRoomDetails(room) || room)
             .filter(Boolean);
-        const featuredRoom = hydratedRooms[0];
         const names = hydratedRooms
             .map((room: any) => String(room?.name || "").trim())
             .filter(Boolean)
             .slice(0, 4);
 
-        if (featuredRoom) {
-            const roomName = this.getCanonicalSelectedRoomLabel(featuredRoom) || "our available room";
-            const priceText = this.formatRoomPrice(featuredRoom);
-            const occupancyLine = typeof featuredRoom?.maxAdults === "number"
-                ? `It is a comfortable choice for up to ${featuredRoom.maxAdults} adult${featuredRoom.maxAdults === 1 ? "" : "s"}.`
-                : "It is a comfortable option for a pleasant stay.";
-            const detailLine = this.buildRoomDetailsLine(featuredRoom);
-            const alternateRoomName = this.getCanonicalSelectedRoomLabel(hydratedRooms[1]);
-            const followUp = alternateRoomName
-                ? `Would you like me to show you this room, or shall I suggest ${alternateRoomName} instead?`
-                : "Would you like me to show you this room in a little more detail?";
+        if (hydratedRooms.length > 0) {
+            const roomCount = hydratedRooms.length;
+            const describedRooms = hydratedRooms.slice(0, 2).map((room: any) => {
+                const roomName = this.getCanonicalSelectedRoomLabel(room) || "This room";
+                const priceText = this.formatRoomPrice(room);
+                const occupancyText = typeof room?.maxAdults === "number"
+                    ? `for up to ${room.maxAdults} adult${room.maxAdults === 1 ? "" : "s"}`
+                    : "for a comfortable stay";
+                const highlights = this.buildRoomHighlightPhrases(room, 3);
+                const highlightText = highlights.length > 0
+                    ? `with ${this.formatSpokenList(highlights)}`
+                    : "with its own thoughtful comforts";
+
+                return priceText
+                    ? `${roomName} is available for ${priceText}, ${occupancyText}, and comes ${highlightText}.`
+                    : `${roomName} is available ${occupancyText} and comes ${highlightText}.`;
+            });
+
+            const additionalRooms = roomCount - describedRooms.length;
+            const closingLine = additionalRooms > 0
+                ? `I also have ${additionalRooms} more option${additionalRooms === 1 ? "" : "s"} available if you'd like to compare further.`
+                : "If you'd like, I can show you any of these rooms in more detail.";
 
             return [
-                priceText
-                    ? `Certainly. Our ${roomName} is available for ${priceText}.`
-                    : `Certainly. We have ${roomName} available right now.`,
-                occupancyLine,
-                detailLine,
-                followUp,
+                `Certainly. We currently have ${roomCount} room option${roomCount === 1 ? "" : "s"} available, each with different amenities and room details.`,
+                ...describedRooms,
+                closingLine,
             ]
                 .filter(Boolean)
                 .join(" ")

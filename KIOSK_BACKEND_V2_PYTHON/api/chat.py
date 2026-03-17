@@ -1443,7 +1443,7 @@ async def chat(
                     response_speech = "Your booking is confirmed. Taking you to payment now."
 
         visual_focus = None
-        if normalized_ui_screen == "BOOKING_COLLECT":
+        if normalized_ui_screen in {"ROOM_PREVIEW", "BOOKING_COLLECT"}:
             visual_focus = _resolve_visual_focus(
                 transcript=req.transcript,
                 room_catalog=req.room_catalog,
@@ -1459,7 +1459,7 @@ async def chat(
             if (
                 concierge_reply
                 and updated_state.resolved_intent == "GENERAL_QUERY"
-                and response_next_screen == "BOOKING_COLLECT"
+                and response_next_screen in {"ROOM_PREVIEW", "BOOKING_COLLECT"}
                 and not constraint_error
                 and not persistence_error
             ):
@@ -1481,7 +1481,7 @@ async def chat(
                     updated_state.resolved_intent == "GENERAL_QUERY"
                     or _looks_like_visual_request(req.transcript)
                 )
-                and response_next_screen == "BOOKING_COLLECT"
+                and response_next_screen in {"ROOM_PREVIEW", "BOOKING_COLLECT"}
                 and not constraint_error
                 and not persistence_error
             ):
