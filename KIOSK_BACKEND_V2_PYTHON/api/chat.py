@@ -1053,25 +1053,32 @@ async def chat(
         tenant_config = await _load_tenant_config(session, resolved_tenant_id)
         effective_language = _resolve_effective_language(req.language, tenant_config)
         room_inventory = await _load_room_inventory(session, resolved_tenant_id)
-        if not room_inventory and req.room_catalog:
-            room_inventory = [
-                {
-                    "id": str(room.get("id") or ""),
-                    "name": room.get("name"),
-                    "code": room.get("code"),
-                    "price": float(room.get("price") or 0) if room.get("price") is not None else None,
-                    "currency": room.get("currency") or "INR",
-                    "maxAdults": room.get("maxAdults"),
-                    "maxChildren": room.get("maxChildren"),
-                    "maxTotalGuests": room.get("maxTotalGuests"),
-                }
-                for room in req.room_catalog
-                if room.get("id") and room.get("name")
-            ]
-            print(
-                "[ChatAPI] Using frontend room catalog fallback "
-                f"session={req.session_id} rooms={len(room_inventory)}"
-            )
+        if req.room_catalog:
+            catalog_by_id = {str(r.get("id", "")): r for r in req.room_catalog if r.get("id")}
+            if not room_inventory:
+                room_inventory = [
+                    {
+                        "id": str(room.get("id") or ""),
+                        "name": room.get("name"),
+                        "code": room.get("code"),
+                        "price": float(room.get("price") or 0) if room.get("price") is not None else None,
+                        "currency": room.get("currency") or "INR",
+                        "maxAdults": room.get("maxAdults"),
+                        "maxChildren": room.get("maxChildren"),
+                        "maxTotalGuests": room.get("maxTotalGuests"),
+                        "features": room.get("features") or [],
+                    }
+                    for room in req.room_catalog
+                    if room.get("id") and room.get("name")
+                ]
+                print(
+                    "[ChatAPI] Using frontend room catalog fallback "
+                    f"session={req.session_id} rooms={len(room_inventory)}"
+                )
+            else:
+                for inv_item in room_inventory:
+                    catalog_item = catalog_by_id.get(inv_item["id"])
+                    inv_item["features"] = catalog_item.get("features") or [] if catalog_item else []
         normalized_ui_screen = _normalize_ui_screen(req.current_ui_screen)
         persisted_booking_id = _persisted_booking_by_session.get(req.session_id)
         assigned_room_id = _persisted_room_id_by_session.get(req.session_id)

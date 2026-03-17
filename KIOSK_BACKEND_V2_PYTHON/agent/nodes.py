@@ -61,6 +61,7 @@ def _room_prompt_catalog(room_inventory: list[RoomInventoryItem]) -> list[dict]:
             "price": room.price,
             "currency": room.currency,
             "max_adults": room.max_adults,
+            "features": room.features,
         }
         for room in room_inventory
     ]
@@ -183,8 +184,16 @@ def _fallback_booking_prompt(
     next_slot: Optional[str],
     selected_room_name: Optional[str],
     room_inventory: Optional[list[RoomInventoryItem]] = None,
+    current_ui_screen: Optional[str] = None,
 ) -> str:
     slot = _normalize_slot_name(next_slot)
+    
+    if current_ui_screen in {"ROOM_SELECT", "ROOM_PREVIEW"}:
+        if not selected_room_name:
+            return "What are your requirements for the stay so I can help recommend a room?"
+        if slot != "room_type":
+            return "If you'd like to continue with this room, just let me know, or ask me any questions about it."
+
     if slot == "room_type":
         return _build_room_recommendation_prompt(room_inventory or [])
     if slot == "adults":
@@ -631,14 +640,20 @@ Available tenant rooms (authoritative catalog):
 Current kiosk date (authoritative):
 {today_iso}
 
+Current UI screen: {state.current_ui_screen}
+
 The guest just said: "{state.latest_transcript}"
 
 Your job:
 1. Extract any booking information from what the guest said and update the JSON.
 2. Reply like a real receptionist, not a form or questionnaire.
-3. If the guest wants to book a room but has not chosen one yet, gently recommend a suitable room from the live inventory before asking one simple follow-up question.
-4. If a room is already selected, describe it briefly and warmly before asking for the next missing booking detail.
-5. If all slots are filled, confirm the booking summary warmly.
+3. If the Current UI screen is ROOM_SELECT or ROOM_PREVIEW:
+   - Adopt a consultative tone ("What are your requirements for the stay?").
+   - Do NOT ask for slots like adults/children/dates while evaluating rooms. 
+   - Answer questions about the rooms, recommend rooms based on requirements, and ask if they'd like to select that room.
+4. If the Current UI screen is NOT ROOM_SELECT or ROOM_PREVIEW, and the guest has not chosen a room yet, gently recommend a suitable room from the live inventory before asking one simple follow-up question.
+5. If a room is already selected, describe it briefly and warmly before asking for the next missing booking detail.
+6. If all slots are filled, confirm the booking summary warmly.
 
 Respond ONLY with a JSON object like this:
 {{
@@ -667,6 +682,7 @@ Rules:
 - If the guest has not chosen a room yet, recommend one available room by name, price, and occupancy when possible.
 - If the guest mentions a preference but not a room name, match it to the closest suitable room from the live inventory when possible.
 - If a specific room detail is not present in the authoritative inventory, do not invent it.
+- Do NOT extract `room_type` just because the user asked a question about a room. Only extract `room_type` if the user explicitly confirms they want to select or book that specific room.
 - Only include slots in extracted_slots if they were mentioned in this turn.
 - Dates must be in YYYY-MM-DD format.
 - If user says month/day without year, choose the nearest upcoming future date from current kiosk date.
@@ -722,7 +738,7 @@ async def booking_logic(state: KioskState) -> dict:
             }
         if missing_required:
             next_slot = missing_required[0]
-            speech = _fallback_booking_prompt(next_slot, selected_room_name, state.tenant_room_inventory)
+            speech = _fallback_booking_prompt(next_slot, selected_room_name, state.tenant_room_inventory, state.current_ui_screen)
             updated_history = state.history + [
                 ConversationTurn(role="user", content=state.latest_transcript),
                 ConversationTurn(role="assistant", content=speech),
@@ -835,7 +851,7 @@ async def booking_logic(state: KioskState) -> dict:
         is_complete = False
         next_slot = "room_type"
         if not str(speech or "").strip():
-            speech = _fallback_booking_prompt("room_type", None, room_inventory)
+            speech = _fallback_booking_prompt("room_type", None, room_inventory, state.current_ui_screen)
 
     missing_required = updated_slots.missing_required_slots()
     if not is_complete:
@@ -846,6 +862,7 @@ async def booking_logic(state: KioskState) -> dict:
                 next_slot,
                 selected_room.name if selected_room else updated_slots.room_type,
                 room_inventory,
+                state.current_ui_screen,
             )
 
     updated_history = state.history + [
