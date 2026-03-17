@@ -1247,6 +1247,7 @@ class AgentAdapterService {
         const prompt = this.buildRoomPreviewPrompt(payload?.selectedRoom || payload?.room, payload?.speech);
         if (!prompt) return false;
 
+        this.clearActiveSlot();
         this.speak(prompt);
         return true;
     }
@@ -1313,7 +1314,7 @@ class AgentAdapterService {
     }
 
     private maybeTrackSlotFromPrompt(text: string): void {
-        if (!text || !["ROOM_SELECT", "ROOM_PREVIEW", "BOOKING_COLLECT", "BOOKING_SUMMARY"].includes(this.state)) {
+        if (!text || !["BOOKING_COLLECT", "BOOKING_SUMMARY", "PAYMENT"].includes(this.state)) {
             return;
         }
 
@@ -1645,6 +1646,10 @@ class AgentAdapterService {
         VoiceRuntime.pauseWatchdog();
 
         try {
+            if (this.state === "ROOM_PREVIEW" && this.slotContext.activeSlot) {
+                this.clearActiveSlot();
+            }
+
             if (this.pendingCancelConfirmation) {
                 if (this.isAffirmative(transcript)) {
                     this.pendingCancelConfirmation = false;
@@ -1862,6 +1867,10 @@ class AgentAdapterService {
             if (decision.nextUiScreen && !serverState) {
                 console.warn(`[AgentAdapter] Ignoring unknown backend nextUiScreen: ${decision.nextUiScreen}`);
             }
+            const previewShouldStayExploratory =
+                requestState === "ROOM_PREVIEW" &&
+                !roomChangedInPreview &&
+                !["CONFIRM_BOOKING", "BOOK_ROOM_SELECTED", "PROVIDE_GUESTS", "PROVIDE_DATES", "PROVIDE_NAME"].includes(strictEvent);
             const explicitRoomValidationFailure =
                 requestState === "ROOM_SELECT" &&
                 serverState === "ROOM_SELECT" &&
@@ -1876,13 +1885,15 @@ class AgentAdapterService {
                 serverState = "ROOM_PREVIEW";
             }
 
-            if (
-                requestState === "ROOM_PREVIEW" &&
-                serverState === "BOOKING_COLLECT" &&
-                !["CONFIRM_BOOKING", "BOOK_ROOM_SELECTED", "PROVIDE_GUESTS", "PROVIDE_DATES", "PROVIDE_NAME"].includes(strictEvent)
-            ) {
+            if (previewShouldStayExploratory && serverState === "BOOKING_COLLECT") {
                 serverState = "ROOM_PREVIEW";
             }
+
+            const normalizedPayloadSlots = previewShouldStayExploratory
+                ? {}
+                : (decision.accumulatedSlots || decision.extractedSlots);
+            const normalizedMissingSlots = previewShouldStayExploratory ? [] : decision.missingSlots;
+            const normalizedNextSlotToAsk = previewShouldStayExploratory ? null : decision.nextSlotToAsk;
 
             if (
                 requestState === "ROOM_SELECT" &&
@@ -1976,9 +1987,9 @@ class AgentAdapterService {
                     nextUiScreen: serverState,
                     selectedRoom: backendSelectedRoom,
                     room: inferredRoom,
-                    slots: decision.accumulatedSlots || decision.extractedSlots,
-                    missingSlots: decision.missingSlots,
-                    nextSlotToAsk: decision.nextSlotToAsk,
+                    slots: normalizedPayloadSlots,
+                    missingSlots: normalizedMissingSlots,
+                    nextSlotToAsk: normalizedNextSlotToAsk,
                     error: decision.error,
                     visualFocus: resolvedVisualFocus,
                     backendDecision: true,
@@ -1994,10 +2005,9 @@ class AgentAdapterService {
                 const hasBookingDelta = Boolean(
                     backendSelectedRoom ||
                     inferredRoom ||
-                    decision.accumulatedSlots ||
-                    decision.extractedSlots ||
-                    decision.missingSlots ||
-                    decision.nextSlotToAsk !== undefined ||
+                    normalizedPayloadSlots ||
+                    normalizedMissingSlots ||
+                    normalizedNextSlotToAsk !== undefined ||
                     resolvedVisualFocus
                 );
                 const shouldDispatch = strictEvent !== 'GENERAL_QUERY' || hasBookingDelta;
@@ -2008,9 +2018,9 @@ class AgentAdapterService {
                         llmIntent: rawIntent,
                         selectedRoom: backendSelectedRoom,
                         room: inferredRoom,
-                        slots: decision.accumulatedSlots || decision.extractedSlots,
-                        missingSlots: decision.missingSlots,
-                        nextSlotToAsk: decision.nextSlotToAsk,
+                        slots: normalizedPayloadSlots,
+                        missingSlots: normalizedMissingSlots,
+                        nextSlotToAsk: normalizedNextSlotToAsk,
                         isComplete: decision.isComplete,
                         nextUiScreen: serverState || undefined,
                         error: decision.error,
@@ -2297,6 +2307,12 @@ class AgentAdapterService {
                     };
                 }
             }
+        }
+
+        if (resolvedState === "ROOM_PREVIEW") {
+            merged.missingSlots = [];
+            merged.nextSlotToAsk = null;
+            this.clearActiveSlot();
         }
 
         if (payload?.ocr !== undefined) {

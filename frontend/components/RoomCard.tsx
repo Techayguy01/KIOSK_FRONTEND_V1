@@ -1,20 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronLeft, ChevronRight } from 'lucide-react';
+import { BedDouble, Check, ChevronLeft, ChevronRight, ImageIcon, ShieldCheck, Sparkles, Users } from 'lucide-react';
 import { optimizeCloudinaryUrl } from '../lib/cloudinary';
-
-interface Room {
-  id: string;
-  name: string;
-  price: number;
-  currency: string;
-  image: string;
-  imageUrls?: string[];
-  features: string[];
-}
+import type { RoomDTO } from '../services/room.service';
 
 interface RoomCardProps {
-  room: Room;
-  onSelect: (room: Room) => void;
+  room: RoomDTO;
+  onSelect: (room: RoomDTO) => void;
   selected: boolean;
 }
 
@@ -83,14 +74,43 @@ export const RoomCard: React.FC<RoomCardProps> = ({ room, onSelect, selected }) 
   const currentImageSrc = currentEntry
     ? (failedOptimizedIndexes[activeImageIndex] ? currentEntry.rawUrl : currentEntry.optimizedUrl)
     : "";
+  const imageCount = imageEntries.length;
+  const categoryHighlights = Array.isArray(room.images)
+    ? Array.from(
+      new Set(
+        room.images
+          .map((image) => String(image.category || image.caption || '').trim())
+          .filter(Boolean)
+      )
+    ).slice(0, 3)
+    : [];
+  const guestCapacity = room.maxTotalGuests || room.maxAdults || null;
+  const guestLabel = guestCapacity
+    ? `${guestCapacity} guest${guestCapacity === 1 ? '' : 's'}`
+    : 'Flexible stay';
+  const childLabel = typeof room.maxChildren === 'number'
+    ? `${room.maxChildren} child${room.maxChildren === 1 ? '' : 'ren'}`
+    : 'Voice-guided preview';
+  const imageLabel = imageCount > 1 ? `${imageCount} visuals` : '1 visual';
+  const featureHighlights = room.features.slice(0, 6);
+  const summary = [
+    room.maxAdults ? `Designed for up to ${room.maxAdults} adult${room.maxAdults === 1 ? '' : 's'}` : null,
+    room.maxChildren ? `and ${room.maxChildren} child${room.maxChildren === 1 ? '' : 'ren'}` : null,
+    featureHighlights.length > 0 ? `with ${featureHighlights.slice(0, 3).join(', ')}` : null,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const pricePrefix = room.currency === 'USD' ? '$' : room.currency;
 
   return (
       <div 
         onClick={() => onSelect(room)}
         className={`group relative overflow-hidden rounded-3xl border-2 cursor-pointer transition-all duration-300 ${
           selected 
-            ? 'border-blue-500 bg-slate-800 scale-[1.02] shadow-2xl shadow-blue-500/25' 
-            : 'border-slate-700 bg-slate-800/50 hover:border-slate-500'
+            ? 'border-cyan-300 bg-slate-900/95 scale-[1.02] shadow-2xl shadow-cyan-500/20' 
+            : 'border-slate-700 bg-slate-900/70 hover:border-slate-500 hover:bg-slate-900/90'
         }`}
       >
         <div
@@ -135,6 +155,40 @@ export const RoomCard: React.FC<RoomCardProps> = ({ room, onSelect, selected }) 
             No image available
           </div>
         )}
+        <div className="absolute inset-x-0 top-0 flex items-start justify-between gap-3 p-4">
+          <div className="flex flex-wrap gap-2">
+            {room.code && (
+              <span className="rounded-full border border-white/15 bg-slate-950/70 px-3 py-1 text-xs font-medium uppercase tracking-[0.2em] text-white/80">
+                {room.code}
+              </span>
+            )}
+            <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-slate-950/70 px-3 py-1 text-xs font-medium text-white/80">
+              <ImageIcon size={14} />
+              {imageLabel}
+            </span>
+          </div>
+          {selected && (
+            <div className="bg-cyan-300 text-slate-950 p-3 rounded-full shadow-xl">
+              <Check size={22} />
+            </div>
+          )}
+        </div>
+        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950 via-slate-950/70 to-transparent px-5 pb-5 pt-20">
+          <div className="flex flex-wrap gap-2">
+            <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/[0.08] px-3 py-1 text-xs text-white/88">
+              <Users size={14} />
+              {guestLabel}
+            </span>
+            {categoryHighlights.map((category) => (
+              <span
+                key={category}
+                className="rounded-full border border-white/15 bg-white/[0.08] px-3 py-1 text-xs text-white/78"
+              >
+                {category}
+              </span>
+            ))}
+          </div>
+        </div>
         {imageEntries.length > 1 && (
           <>
             <button
@@ -171,31 +225,65 @@ export const RoomCard: React.FC<RoomCardProps> = ({ room, onSelect, selected }) 
             </div>
           </>
         )}
-        {selected && (
-          <div className="absolute top-4 right-4 bg-blue-500 text-white p-3 rounded-full shadow-xl">
-            <Check size={24} />
-          </div>
-        )}
       </div>
       
       <div className="p-7">
-        <div className="flex justify-between items-start mb-3">
-          <h3 className="text-2xl font-semibold text-white">{room.name}</h3>
+        <div className="flex justify-between items-start gap-4 mb-3">
+          <div>
+            <h3 className="text-2xl font-semibold text-white">{room.name}</h3>
+            <p className="mt-2 text-sm leading-6 text-slate-300">
+              {summary || 'Ask Siya to describe the stay, features, and best fit for this room.'}
+            </p>
+          </div>
           <div className="text-right">
-            <span className="block text-2xl font-bold text-blue-300">
-              {room.currency === 'USD' ? '$' : room.currency}{room.price}
+            <span className="block text-2xl font-bold text-cyan-200">
+              {pricePrefix}{room.price}
             </span>
             <span className="text-sm text-slate-400">/ night</span>
           </div>
         </div>
 
-        <div className="flex flex-wrap gap-3 mt-5">
-          {room.features.map((feature, i) => (
-            <span key={i} className="px-3 py-2 bg-slate-700 text-slate-200 text-sm rounded-lg flex items-center gap-2">
-              <span className="w-1.5 h-1.5 bg-slate-300 rounded-full"></span>
-              {feature}
-            </span>
-          ))}
+        <div className="mt-5 grid grid-cols-3 gap-3">
+          <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">
+            <div className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-cyan-300/12 text-cyan-100">
+              <Users size={16} />
+            </div>
+            <p className="mt-3 text-xs uppercase tracking-[0.18em] text-white/45">Stay</p>
+            <p className="mt-1 text-sm text-white">{guestLabel}</p>
+          </div>
+          <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">
+            <div className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-cyan-300/12 text-cyan-100">
+              <BedDouble size={16} />
+            </div>
+            <p className="mt-3 text-xs uppercase tracking-[0.18em] text-white/45">Fit</p>
+            <p className="mt-1 text-sm text-white">{childLabel}</p>
+          </div>
+          <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">
+            <div className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-cyan-300/12 text-cyan-100">
+              <ShieldCheck size={16} />
+            </div>
+            <p className="mt-3 text-xs uppercase tracking-[0.18em] text-white/45">Flow</p>
+            <p className="mt-1 text-sm text-white">Preview before booking</p>
+          </div>
+        </div>
+
+        <div className="mt-5">
+          <div className="mb-3 flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-white/45">
+            <Sparkles size={14} />
+            Room Highlights
+          </div>
+          <div className="flex flex-wrap gap-3">
+            {featureHighlights.map((feature, i) => (
+              <span key={i} className="px-3 py-2 bg-slate-700/70 text-slate-100 text-sm rounded-xl flex items-center gap-2 border border-white/8">
+                <span className="w-1.5 h-1.5 bg-cyan-200 rounded-full"></span>
+                {feature}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-5 rounded-2xl border border-white/8 bg-slate-950/45 px-4 py-3 text-sm text-slate-300">
+          Say: "Tell me about {room.name}", "Show me the bedroom", or "I want another room".
         </div>
       </div>
     </div>
