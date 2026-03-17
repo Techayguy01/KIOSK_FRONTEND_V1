@@ -464,7 +464,7 @@ class AgentAdapterService {
                 return {
                     delayMs: 6500,
                     prompt: this.pickLocalizedText({
-                        en: "Tell me what matters most for this stay, like guest count, view, balcony, or bathtub, or say a room name directly.",
+                        en: "If you'd like, I can suggest a comfortable room for you, or you can simply say the room name you prefer.",
                         hi: "आराम से चुनिए। तैयार होने पर room का नाम बोलिए।",
                         mr: "निवांत निवडा. तयार झाल्यावर room चे नाव सांगा.",
                     }),
@@ -473,7 +473,7 @@ class AgentAdapterService {
                 return {
                     delayMs: 7000,
                     prompt: this.pickLocalizedText({
-                        en: "You can ask about features, or say yes to continue with this room.",
+                        en: "If you'd like, I can tell you a little more about this room, or I can show you another option.",
                         hi: "Aap features ke baare mein pooch sakte hain, ya yes bolkar is room ke saath aage badh sakte hain.",
                         mr: "Tumhi features babat vicharu shakta, kiwa yes mhunun ya room sobat pudhe jau shakta.",
                     }),
@@ -864,14 +864,136 @@ class AgentAdapterService {
         return null;
     }
 
+    private formatSpokenList(items: string[]): string {
+        const clean = items
+            .map((item) => String(item || "").trim())
+            .filter(Boolean);
+        if (clean.length === 0) return "";
+        if (clean.length === 1) return clean[0];
+        if (clean.length === 2) return `${clean[0]} and ${clean[1]}`;
+        return `${clean.slice(0, -1).join(", ")}, and ${clean[clean.length - 1]}`;
+    }
+
+    private formatRoomFeatureLabel(featureLike: unknown): string {
+        const feature = String(featureLike || "").trim();
+        if (!feature) return "";
+
+        const normalized = feature.toLowerCase();
+        if (normalized === "wifi") return "Wi-Fi";
+        if (normalized === "tv") return "TV";
+        return feature;
+    }
+
+    private formatRoomPrice(roomLike: any): string | null {
+        const rawPrice = roomLike?.price;
+        if (rawPrice == null || rawPrice === "") return null;
+
+        const numericPrice = Number(rawPrice);
+        if (!Number.isFinite(numericPrice)) return null;
+
+        const currency = String(roomLike?.currency || "INR").trim().toUpperCase() || "INR";
+        const roundedPrice = Number.isInteger(numericPrice)
+            ? Math.trunc(numericPrice)
+            : Number(numericPrice.toFixed(2));
+
+        return `${currency} ${roundedPrice.toLocaleString("en-IN")}`;
+    }
+
+    private buildRoomHighlightPhrases(roomLike: any, limit = 3): string[] {
+        const room = roomLike || {};
+        const phrases: string[] = [];
+        const seen = new Set<string>();
+        const addPhrase = (phrase: string): void => {
+            const clean = String(phrase || "").trim();
+            if (!clean) return;
+            const key = clean.toLowerCase();
+            if (seen.has(key)) return;
+            seen.add(key);
+            phrases.push(clean);
+        };
+
+        const images = Array.isArray(room?.images) ? room.images : [];
+        for (const image of images) {
+            const imageText = [
+                String(image?.category || ""),
+                String(image?.caption || ""),
+                ...(Array.isArray(image?.tags) ? image.tags.map((tag: unknown) => String(tag || "")) : []),
+            ]
+                .join(" ")
+                .toLowerCase();
+
+            if (imageText.includes("balcony") || imageText.includes("terrace")) {
+                addPhrase("a private balcony");
+            } else if (imageText.includes("bathroom") || imageText.includes("bathtub") || imageText.includes("shower")) {
+                addPhrase(imageText.includes("bathtub") ? "a bathroom with a bathtub" : "a private bathroom");
+            } else if (imageText.includes("bedroom") || imageText.includes("bed")) {
+                addPhrase("a comfortable bedroom");
+            } else if (imageText.includes("view") || imageText.includes("ocean")) {
+                addPhrase("a lovely view");
+            }
+
+            if (phrases.length >= limit) {
+                return phrases.slice(0, limit);
+            }
+        }
+
+        const features = Array.isArray(room?.features) ? room.features : [];
+        for (const feature of features) {
+            const label = this.formatRoomFeatureLabel(feature);
+            if (!label) continue;
+            if (label.toLowerCase() === "bathtub" && phrases.some((phrase) => phrase.toLowerCase().includes("bathtub"))) {
+                continue;
+            }
+            addPhrase(label);
+            if (phrases.length >= limit) {
+                break;
+            }
+        }
+
+        return phrases.slice(0, limit);
+    }
+
     private buildRoomSelectionPrompt(rooms: any[]): string {
-        const names = rooms
+        const hydratedRooms = rooms
+            .map((room: any) => this.hydrateRoomDetails(room) || room)
+            .filter(Boolean);
+        const featuredRoom = hydratedRooms[0];
+        const names = hydratedRooms
             .map((room: any) => String(room?.name || "").trim())
             .filter(Boolean)
             .slice(0, 4);
+
+        if (featuredRoom) {
+            const roomName = this.getCanonicalSelectedRoomLabel(featuredRoom) || "our available room";
+            const priceText = this.formatRoomPrice(featuredRoom);
+            const occupancyLine = typeof featuredRoom?.maxAdults === "number"
+                ? `It is a comfortable choice for up to ${featuredRoom.maxAdults} adult${featuredRoom.maxAdults === 1 ? "" : "s"}.`
+                : "It is a comfortable option for a pleasant stay.";
+            const highlights = this.buildRoomHighlightPhrases(featuredRoom, 3);
+            const highlightLine = highlights.length > 0
+                ? `It includes ${this.formatSpokenList(highlights)}.`
+                : "";
+            const alternateRoomName = this.getCanonicalSelectedRoomLabel(hydratedRooms[1]);
+            const followUp = alternateRoomName
+                ? `Would you like me to show you this room, or shall I suggest ${alternateRoomName} instead?`
+                : "Would you like me to show you this room in a little more detail?";
+
+            return [
+                priceText
+                    ? `Certainly. Our ${roomName} is available for ${priceText}.`
+                    : `Certainly. We have ${roomName} available right now.`,
+                occupancyLine,
+                highlightLine,
+                followUp,
+            ]
+                .filter(Boolean)
+                .join(" ")
+                .replace(/\s+/g, " ")
+                .trim();
+        }
         if (names.length === 0) {
             return this.pickLocalizedText({
-                en: "Please tell me which room you would like to book.",
+                en: "Certainly. I can help you find a comfortable room. If you already have one in mind, say the room name, and I can guide you from there.",
                 hi: "कृपया बताइए, आप कौन सा room book करना चाहेंगे?",
                 mr: "कृपया सांगा, तुम्हाला कोणता room book करायचा आहे?",
             });
@@ -898,12 +1020,12 @@ class AgentAdapterService {
         if (slots.adults == null) {
             return selectedRoomName
                 ? this.pickLocalizedText({
-                    en: `Great choice. ${selectedRoomName} is selected. How many adults will be staying?`,
+                    en: `Certainly. ${selectedRoomName} is a lovely choice. How many adults will be staying?`,
                     hi: `बहुत बढ़िया। ${selectedRoomName} select हो गया है। कितने adults stay करेंगे?`,
                     mr: `छान निवड. ${selectedRoomName} select झाले आहे. किती adults stay करणार आहेत?`,
                 })
                 : this.pickLocalizedText({
-                    en: "Great. How many adults will be staying?",
+                    en: "Certainly. How many adults will be staying?",
                     hi: "ठीक है। कितने adults stay करेंगे?",
                     mr: "छान. किती adults stay करणार आहेत?",
                 });
@@ -911,7 +1033,7 @@ class AgentAdapterService {
 
         if (!slots.checkInDate || !slots.checkOutDate) {
             return this.pickLocalizedText({
-                en: "Please tell me your check in and check out dates.",
+                en: "Certainly. Please tell me your check in and check out dates.",
                 hi: "कृपया अपनी check in और check out dates बताइए।",
                 mr: "कृपया तुमच्या check in आणि check out dates सांगा.",
             });
@@ -919,14 +1041,14 @@ class AgentAdapterService {
 
         if (!slots.guestName) {
             return this.pickLocalizedText({
-                en: "What name should I use for this booking?",
+                en: "May I have the name for this booking?",
                 hi: "इस booking के लिए मैं कौन सा नाम उपयोग करूँ?",
                 mr: "या booking साठी मी कोणते नाव वापरू?",
             });
         }
 
         return this.pickLocalizedText({
-            en: "Please review the details. Say confirm booking when you are ready.",
+            en: "Please review the details, and when you're ready, say confirm booking.",
             hi: "कृपया details देख लीजिए। तैयार होने पर confirm booking कहिए।",
             mr: "कृपया details पाहा. तयार झाल्यावर confirm booking म्हणा.",
         });
@@ -1157,37 +1279,37 @@ class AgentAdapterService {
         switch (slot) {
             case "roomType":
                 return this.pickLocalizedText({
-                    en: "Please tell me which room you would like to book.",
+                    en: "Certainly. I can help you find a comfortable room. If you already have one in mind, say the room name, and I can guide you from there.",
                     hi: "कृपया बताइए, आप कौन सा room book करना चाहेंगे?",
                     mr: "कृपया सांगा, तुम्हाला कोणता room book करायचा आहे?",
                 });
             case "adults":
                 return selectedRoomName
                     ? this.pickLocalizedText({
-                        en: `Great choice. ${selectedRoomName} is selected. How many adults will be staying?`,
+                        en: `Certainly. ${selectedRoomName} is a lovely choice. How many adults will be staying?`,
                         hi: `बहुत बढ़िया। ${selectedRoomName} select हो गया है। कितने adults stay करेंगे?`,
                         mr: `छान निवड. ${selectedRoomName} select झाले आहे. किती adults stay करणार आहेत?`,
                     })
                     : this.pickLocalizedText({
-                        en: "How many adults will be staying?",
+                        en: "Certainly. How many adults will be staying?",
                         hi: "कितने adults stay करेंगे?",
                         mr: "किती adults stay करणार आहेत?",
                     });
             case "checkInDate":
                 return this.pickLocalizedText({
-                    en: "What is your check in date?",
+                    en: "Certainly. What is your check in date?",
                     hi: "आपकी check in date क्या है?",
                     mr: "तुमची check in date काय आहे?",
                 });
             case "checkOutDate":
                 return this.pickLocalizedText({
-                    en: "What is your check out date?",
+                    en: "And what is your check out date?",
                     hi: "आपकी check out date क्या है?",
                     mr: "तुमची check out date काय आहे?",
                 });
             case "guestName":
                 return this.pickLocalizedText({
-                    en: "What name should I use for this booking?",
+                    en: "May I have the name for this booking?",
                     hi: "इस booking के लिए मैं कौन सा नाम उपयोग करूँ?",
                     mr: "या booking साठी मी कोणते नाव वापरू?",
                 });
@@ -1210,7 +1332,7 @@ class AgentAdapterService {
 
         const backendSpeech = String(payload?.speech || "").trim();
         const roomList = Array.isArray(payload?.rooms) ? payload.rooms : [];
-        const prompt = backendSpeech || (roomList.length > 0 ? "I can help tailor the best room for you. Tell me your guest count, preferred view, or features like balcony or bathtub, or say a room name directly." : "");
+        const prompt = backendSpeech || this.buildRoomSelectionPrompt(roomList);
         if (!prompt) return false;
 
         this.hasAnnouncedRoomOptions = true;
@@ -1225,17 +1347,28 @@ class AgentAdapterService {
 
         const room = this.hydrateRoomDetails(roomLike || this.viewData.selectedRoom);
         const roomName = this.getCanonicalSelectedRoomLabel(room) || "this room";
-        const features = Array.isArray(room?.features)
-            ? room.features.map((feature: unknown) => String(feature || "").trim()).filter(Boolean).slice(0, 4)
-            : [];
-        const featureLine = features.length > 0
-            ? `It includes ${features.join(", ")}.`
-            : "I can describe the room features in detail.";
-        const capacityLine = typeof room?.maxAdults === "number"
-            ? `It is set up for up to ${room.maxAdults} adult${room.maxAdults === 1 ? "" : "s"}.`
+        const cozyHighlights = this.buildRoomHighlightPhrases(room, 3);
+        const cozyDetailLine = cozyHighlights.length > 0
+            ? `It offers ${this.formatSpokenList(cozyHighlights)}.`
+            : "It is a comfortable and welcoming option.";
+        const cozyCapacityLine = typeof room?.maxAdults === "number"
+            ? `It is well suited for up to ${room.maxAdults} adult${room.maxAdults === 1 ? "" : "s"}.`
             : "";
+        const cozyPriceText = this.formatRoomPrice(room);
+        const cozyPriceLine = cozyPriceText ? `It is priced at ${cozyPriceText}.` : "";
 
-        return `This is ${roomName}. ${featureLine} ${capacityLine} Ask me about the bedroom, balcony, bathroom, or say yes to continue with this room.`.replace(/\s+/g, " ").trim();
+        return [
+            `This is our ${roomName}.`,
+            cozyDetailLine,
+            cozyCapacityLine,
+            cozyPriceLine,
+            "Would you like to continue with this room, or shall I show you another option?",
+        ]
+            .filter(Boolean)
+            .join(" ")
+            .replace(/\s+/g, " ")
+            .trim();
+
     }
 
     private maybeSpeakRoomPreviewGuidance(payload?: any): boolean {

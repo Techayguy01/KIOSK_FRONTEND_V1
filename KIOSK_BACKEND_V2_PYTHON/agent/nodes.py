@@ -60,9 +60,63 @@ def _room_prompt_catalog(room_inventory: list[RoomInventoryItem]) -> list[dict]:
             "code": room.code,
             "price": room.price,
             "currency": room.currency,
+            "max_adults": room.max_adults,
         }
         for room in room_inventory
     ]
+
+
+def _join_spoken_list(items: list[str]) -> str:
+    clean = [item.strip() for item in items if item and item.strip()]
+    if not clean:
+        return ""
+    if len(clean) == 1:
+        return clean[0]
+    if len(clean) == 2:
+        return f"{clean[0]} and {clean[1]}"
+    return f"{', '.join(clean[:-1])}, and {clean[-1]}"
+
+
+def _format_price_for_speech(price: Optional[float], currency: Optional[str]) -> Optional[str]:
+    if price is None:
+        return None
+    resolved_currency = (currency or "INR").upper()
+    rounded = int(price) if float(price).is_integer() else round(float(price), 2)
+    if resolved_currency == "INR":
+        return f"INR {rounded}"
+    return f"{resolved_currency} {rounded}"
+
+
+def _build_room_recommendation_prompt(room_inventory: list[RoomInventoryItem]) -> str:
+    if not room_inventory:
+        return (
+            "Certainly. I can help you with a room booking. "
+            "If you already have a room in mind, please say the room name, "
+            "or I can guide you through the available options."
+        )
+
+    featured_room = room_inventory[0]
+    room_name = featured_room.name or "our available room"
+    price_text = _format_price_for_speech(featured_room.price, featured_room.currency)
+    occupancy_text = (
+        f"It is a comfortable choice for up to {featured_room.max_adults} "
+        f"adult{'s' if featured_room.max_adults != 1 else ''}."
+        if featured_room.max_adults
+        else "It is a comfortable option for a pleasant stay."
+    )
+    alternative_names = [room.name for room in room_inventory[1:3] if room.name]
+    alternative_line = (
+        f"If you'd prefer, I can also show you {_join_spoken_list(alternative_names)}."
+        if alternative_names
+        else "If you'd like, I can also help you with another option."
+    )
+
+    intro = (
+        f"Certainly. Our {room_name} is available for {price_text}."
+        if price_text
+        else f"Certainly. We have {room_name} available right now."
+    )
+    return f"{intro} {occupancy_text} {alternative_line}".strip()
 
 
 def _normalize_text(value: str) -> str:
@@ -125,21 +179,25 @@ def _normalize_slot_name(slot_name: Optional[str]) -> Optional[str]:
     return canonical
 
 
-def _fallback_booking_prompt(next_slot: Optional[str], selected_room_name: Optional[str]) -> str:
+def _fallback_booking_prompt(
+    next_slot: Optional[str],
+    selected_room_name: Optional[str],
+    room_inventory: Optional[list[RoomInventoryItem]] = None,
+) -> str:
     slot = _normalize_slot_name(next_slot)
     if slot == "room_type":
-        return "Please tell me which room you would like to book."
+        return _build_room_recommendation_prompt(room_inventory or [])
     if slot == "adults":
         if selected_room_name:
-            return f"Great choice. {selected_room_name} is selected. How many adults will be staying?"
-        return "How many adults will be staying?"
+            return f"Certainly. {selected_room_name} is a lovely choice. How many adults will be staying?"
+        return "Certainly. How many adults will be staying?"
     if slot == "check_in_date":
-        return "What is your check in date?"
+        return "Certainly. What is your check in date?"
     if slot == "check_out_date":
-        return "What is your check out date?"
+        return "And what is your check out date?"
     if slot == "guest_name":
-        return "What name should I use for this booking?"
-    return "Please share the next booking detail when you're ready."
+        return "May I have the name for this booking?"
+    return "Whenever you're ready, please share the next booking detail."
 
 
 def _has_explicit_year(transcript: str) -> bool:
@@ -338,7 +396,7 @@ def _build_room_options_text(room_inventory: list[RoomInventoryItem]) -> str:
     names = [room.name for room in room_inventory if room.name][:5]
     if not names:
         return "No room names available."
-    return ", ".join(names)
+    return _join_spoken_list(names)
 
 
 def _is_summary_confirmation_transcript(transcript: str) -> bool:
@@ -556,7 +614,10 @@ def build_booking_prompt(state: KioskState) -> str:
     today_iso = date.today().isoformat()
 
     return f"""
-You are "Siya", a female hotel booking assistant. You are collecting booking information from a guest.
+You are "Siya", the warm front-desk voice of a premium hotel kiosk.
+Siya is a woman, and if you refer to yourself, do so naturally as a woman.
+Speak like a calm, polished hotel receptionist: cozy, attentive, and reassuring.
+Sound hospitable and confident, never aggressive, robotic, or pushy.
 
 Already collected:
 {json.dumps(filled, indent=2) if filled else "Nothing yet."}
@@ -574,8 +635,10 @@ The guest just said: "{state.latest_transcript}"
 
 Your job:
 1. Extract any booking information from what the guest said and update the JSON.
-2. Ask conversationally and naturally for the next missing piece.
-3. If all slots are filled, confirm the booking summary warmly.
+2. Reply like a real receptionist, not a form or questionnaire.
+3. If the guest wants to book a room but has not chosen one yet, gently recommend a suitable room from the live inventory before asking one simple follow-up question.
+4. If a room is already selected, describe it briefly and warmly before asking for the next missing booking detail.
+5. If all slots are filled, confirm the booking summary warmly.
 
 Respond ONLY with a JSON object like this:
 {{
@@ -594,6 +657,16 @@ Respond ONLY with a JSON object like this:
 
 Rules:
 - {_response_language_instruction(state.language)}
+- Keep the speech natural for spoken audio: short, smooth sentences and a warm hospitality tone.
+- Use gentle phrasing such as "Certainly", "If you'd like", "A comfortable choice", or "A lovely option" when it fits.
+- Never sound like a chatbot, workflow engine, or aggressive salesperson.
+- Do not say phrases like "Tell me what matters most", "Ask me about features", "Please provide room type", or "You can ask me questions".
+- Mention at most 2 or 3 concrete room details in one reply.
+- Ask at most one gentle follow-up question at the end of the speech.
+- Prefer live tenant inventory over generic room wording.
+- If the guest has not chosen a room yet, recommend one available room by name, price, and occupancy when possible.
+- If the guest mentions a preference but not a room name, match it to the closest suitable room from the live inventory when possible.
+- If a specific room detail is not present in the authoritative inventory, do not invent it.
 - Only include slots in extracted_slots if they were mentioned in this turn.
 - Dates must be in YYYY-MM-DD format.
 - If user says month/day without year, choose the nearest upcoming future date from current kiosk date.
@@ -649,7 +722,7 @@ async def booking_logic(state: KioskState) -> dict:
             }
         if missing_required:
             next_slot = missing_required[0]
-            speech = _fallback_booking_prompt(next_slot, selected_room_name)
+            speech = _fallback_booking_prompt(next_slot, selected_room_name, state.tenant_room_inventory)
             updated_history = state.history + [
                 ConversationTurn(role="user", content=state.latest_transcript),
                 ConversationTurn(role="assistant", content=speech),
@@ -664,7 +737,7 @@ async def booking_logic(state: KioskState) -> dict:
             }
 
     if state.resolved_intent == "MODIFY_BOOKING" and _is_room_change_request(state.latest_transcript):
-        speech = "Sure. Let's change your room. Please choose another room to continue."
+        speech = "Of course. Let's take another look at the rooms and find a comfortable option for you."
         updated_history = state.history + [
             ConversationTurn(role="user", content=state.latest_transcript),
             ConversationTurn(role="assistant", content=speech),
@@ -697,7 +770,7 @@ async def booking_logic(state: KioskState) -> dict:
         print("[BookingLogic] Failed to parse JSON response.")
         fallback_screen = "ROOM_SELECT" if _is_initial_booking_turn(state) else "BOOKING_COLLECT"
         return {
-            "speech_response": "I'm sorry, I did not quite catch that. Could you repeat?",
+            "speech_response": "I'm sorry, I didn't quite catch that. Could you please say it once more?",
             "next_ui_screen": fallback_screen,
         }
 
@@ -730,9 +803,12 @@ async def booking_logic(state: KioskState) -> dict:
             extracted["room_type"] = None
             if room_inventory:
                 available = _build_room_options_text(room_inventory)
-                speech = f"I'm sorry, we don't have a '{original_room}' room. Available options are {available}. Which would you prefer?"
+                speech = (
+                    f"I'm sorry, we don't currently have {original_room}. "
+                    f"We do have {available}. If you'd like, I can help you choose one of these."
+                )
             else:
-                speech = "I'm sorry, I could not validate that room right now. Please pick a room shown on screen."
+                speech = "I'm sorry, I could not confirm that room just now. Please choose one of the rooms shown on screen."
 
     current_slots = state.booking_slots.model_dump()
     for key, value in extracted.items():
@@ -759,14 +835,18 @@ async def booking_logic(state: KioskState) -> dict:
         is_complete = False
         next_slot = "room_type"
         if not str(speech or "").strip():
-            speech = _fallback_booking_prompt("room_type", None)
+            speech = _fallback_booking_prompt("room_type", None, room_inventory)
 
     missing_required = updated_slots.missing_required_slots()
     if not is_complete:
         if not next_slot or next_slot not in missing_required:
             next_slot = missing_required[0] if missing_required else None
         if not str(speech or "").strip():
-            speech = _fallback_booking_prompt(next_slot, selected_room.name if selected_room else updated_slots.room_type)
+            speech = _fallback_booking_prompt(
+                next_slot,
+                selected_room.name if selected_room else updated_slots.room_type,
+                room_inventory,
+            )
 
     updated_history = state.history + [
         ConversationTurn(role="user", content=state.latest_transcript),
