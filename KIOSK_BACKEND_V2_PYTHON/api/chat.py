@@ -430,25 +430,66 @@ def _build_visual_concierge_reply(
     category_label = str(visual_focus.get("category") or visual_focus.get("topic") or "room detail").strip() or "room detail"
     caption = str(visual_focus.get("caption") or "").strip()
     tag_values = [str(tag).strip() for tag in (visual_focus.get("tags") or []) if str(tag).strip()]
-    supporting_tags = [tag for tag in tag_values if _normalize_visual_text(tag) != _normalize_visual_text(category_label)]
+    normalized_category = _normalize_visual_text(category_label)
+    supporting_tags = []
+    seen_supporting_tags: set[str] = set()
+    for tag in tag_values:
+        normalized_tag = _normalize_visual_text(tag)
+        if not normalized_tag:
+            continue
+        if normalized_tag == normalized_category:
+            continue
+        if normalized_category.endswith(normalized_tag) or normalized_tag.endswith(normalized_category):
+            continue
+        if normalized_tag in {"luxury", "interior", "outdoor", "view"}:
+            continue
+        if normalized_tag in seen_supporting_tags:
+            continue
+        supporting_tags.append(_humanize_visual_label(tag))
+        seen_supporting_tags.add(normalized_tag)
+
+    room_features = [
+        str(feature).strip()
+        for feature in ((selected_room_payload or {}).get("features") or [])
+        if str(feature or "").strip()
+    ]
     room_phrase = f" in {room_name}" if room_name else ""
+
+    detail_sentence = ""
+    if normalized_category == "bathroom":
+        has_bathtub = (
+            any(_phrase_in_text(tag, "bathtub") or _phrase_in_text(tag, "soaking tub") for tag in supporting_tags)
+            or any(_phrase_in_text(feature, "bathtub") for feature in room_features)
+        )
+        detail_sentence = "It is a private bathroom."
+        if has_bathtub:
+            detail_sentence = "It is a private bathroom, and it also includes a bathtub."
+    elif normalized_category == "balcony":
+        has_view = any(_phrase_in_text(tag, "view") for tag in tag_values)
+        has_seating = any(_phrase_in_text(tag, "seating") for tag in tag_values)
+        if has_view and has_seating:
+            detail_sentence = "It includes a private balcony with seating and a view."
+        elif has_view:
+            detail_sentence = "It includes a private balcony with a view."
+    elif normalized_category == "bedroom" and caption:
+        detail_sentence = f"It shows {caption[:1].lower() + caption[1:]}."
 
     if caption:
         return (
             f"Absolutely. Let me show you the {category_label.lower()}{room_phrase} on screen. "
-            f"{caption}. If you'd like, I can continue with your booking whenever you're ready."
+            f"{detail_sentence or caption}. If you'd like, I can continue with your booking whenever you're ready."
         )
 
     if supporting_tags:
         detail_text = ", ".join(supporting_tags[:3])
         return (
             f"Absolutely. I'm bringing up the {category_label.lower()}{room_phrase} now. "
-            f"You can spot details like {detail_text}. If you'd like, I can carry on with your booking after this."
+            f"{detail_sentence or f'You can spot details like {detail_text}.'} If you'd like, I can carry on with your booking after this."
         )
 
     return (
         f"Absolutely. I'm bringing up the {category_label.lower()}{room_phrase} on screen for you now. "
-        "If you'd like, I can continue with your booking as soon as you're ready."
+        f"{detail_sentence + ' ' if detail_sentence else ''}If you'd like, I can continue with your booking as soon as you're ready."
     )
 
 
@@ -502,6 +543,117 @@ def _build_missing_visual_or_amenity_reply(
         )
 
     return f"No, {room_name or 'this room'} does not include {amenity_label.lower()}."
+
+
+def _should_use_room_overview_reply(transcript: str) -> bool:
+    normalized_transcript = _normalize_visual_text(transcript)
+    if not normalized_transcript:
+        return False
+
+    overview_phrases = [
+        "tell me more",
+        "describe",
+        "about this room",
+        "about the room",
+        "about ocean",
+        "about suite",
+        "all its features",
+        "all the features",
+        "what does this room have",
+        "what does the room have",
+        "what amenities",
+        "what features",
+        "know about",
+    ]
+    return any(_phrase_in_text(normalized_transcript, phrase) for phrase in overview_phrases)
+
+
+def _build_room_overview_reply(
+    transcript: str,
+    selected_room_payload: Optional[dict],
+    room_catalog: Optional[list[dict]],
+    slots_dict: Optional[dict],
+    language: str,
+) -> Optional[str]:
+    if normalize_language_code(language) != "en":
+        return None
+    if not _should_use_room_overview_reply(transcript):
+        return None
+
+    room_entry = _resolve_selected_room_catalog_entry(room_catalog, selected_room_payload, slots_dict)
+    if not room_entry and selected_room_payload:
+        room_entry = dict(selected_room_payload)
+    if not room_entry:
+        return None
+
+    room_name = str(room_entry.get("name") or room_entry.get("displayName") or "this room").strip() or "this room"
+    price_value = room_entry.get("price")
+    currency = str(room_entry.get("currency") or "INR").strip().upper() or "INR"
+    if isinstance(price_value, (int, float)):
+        price_text = f"{currency} {price_value:,.0f}"
+    else:
+        price_text = None
+
+    max_adults = room_entry.get("maxAdults")
+    occupancy_text = (
+        f"It is suited for up to {int(max_adults)} adult{'s' if int(max_adults) != 1 else ''}."
+        if isinstance(max_adults, (int, float))
+        else ""
+    )
+
+    image_descriptions: list[str] = []
+    seen_descriptions: set[str] = set()
+    for image in _extract_selected_room_images(room_catalog, selected_room_payload, slots_dict):
+        category = _humanize_visual_label(image.get("category"))
+        caption = str(image.get("caption") or "").strip()
+        phrase = caption or category
+        normalized_phrase = _normalize_visual_text(phrase)
+        if not normalized_phrase or normalized_phrase in seen_descriptions:
+            continue
+        seen_descriptions.add(normalized_phrase)
+        image_descriptions.append(phrase)
+        if len(image_descriptions) >= 3:
+            break
+
+    feature_values = _extract_selected_room_features(room_catalog, selected_room_payload, slots_dict)
+    feature_values = [feature for feature in feature_values if feature][:4]
+
+    detail_segments: list[str] = []
+    if image_descriptions:
+        detail_segments.append(
+            "It includes "
+            + ", ".join(image_descriptions[:-1] + ([f"and {image_descriptions[-1]}"] if len(image_descriptions) > 1 else image_descriptions))
+            + "."
+        )
+    if feature_values:
+        if len(feature_values) == 1:
+            feature_text = feature_values[0]
+        elif len(feature_values) == 2:
+            feature_text = f"{feature_values[0]} and {feature_values[1]}"
+        else:
+            feature_text = f"{', '.join(feature_values[:-1])}, and {feature_values[-1]}"
+        detail_segments.append(f"It also comes with {feature_text}.")
+
+    if not detail_segments and occupancy_text:
+        detail_segments.append(occupancy_text)
+
+    intro = (
+        f"Certainly. {room_name} is available for {price_text}."
+        if price_text
+        else f"Certainly. Let me tell you more about {room_name}."
+    )
+
+    closing = "If you'd like, I can also show you the bathroom, balcony, bedroom, or another room."
+
+    return " ".join(
+        segment for segment in [
+            intro,
+            occupancy_text if occupancy_text and occupancy_text not in detail_segments else "",
+            *detail_segments,
+            closing,
+        ]
+        if segment
+    ).strip()
 
 # Retrieval-first hotel policy architecture:
 # 1. FAQ / policy DB answers deterministic, tenant-scoped questions first.
@@ -824,6 +976,42 @@ def _normalize_ui_screen(raw_screen: Optional[str]) -> UIScreen:
     return "WELCOME"
 
 
+def _coerce_booking_context_screen(requested_screen: UIScreen, state: KioskState) -> UIScreen:
+    """
+    Preserve active booking/preview context when the frontend accidentally regresses
+    the current screen back to WELCOME/IDLE on a follow-up voice turn.
+    """
+    if requested_screen not in {"WELCOME", "IDLE"}:
+        return requested_screen
+
+    previous_screen = state.current_ui_screen
+    has_selected_room = state.selected_room is not None or bool(state.booking_slots.room_type)
+
+    if previous_screen == "ROOM_SELECT":
+        print(
+            "[ChatAPI] Preserving room selection context "
+            f"from={previous_screen} requested={requested_screen}"
+        )
+        return "ROOM_SELECT"
+
+    if previous_screen in {"ROOM_PREVIEW", "BOOKING_COLLECT", "BOOKING_SUMMARY"} and has_selected_room:
+        preserved_screen = "ROOM_PREVIEW" if not state.booking_slots.is_complete() else previous_screen
+        print(
+            "[ChatAPI] Preserving booking context "
+            f"from={previous_screen} requested={requested_screen} -> {preserved_screen}"
+        )
+        return preserved_screen
+
+    if has_selected_room:
+        print(
+            "[ChatAPI] Restoring preview context from selected room "
+            f"requested={requested_screen}"
+        )
+        return "ROOM_PREVIEW"
+
+    return requested_screen
+
+
 def _should_attempt_faq(transcript: str, normalized_ui_screen: UIScreen) -> bool:
     if normalized_ui_screen in FAQ_BLOCKED_SCREENS:
         print(
@@ -1079,15 +1267,6 @@ async def chat(
         persisted_booking_id = _persisted_booking_by_session.get(req.session_id)
         assigned_room_id = _persisted_room_id_by_session.get(req.session_id)
         assigned_room_number = _persisted_room_number_by_session.get(req.session_id)
-        print(
-            "[ChatAPI] request "
-            f"session={req.session_id} "
-            f"screen={normalized_ui_screen} "
-            f"tenant={resolved_tenant_id or req.tenant_id} "
-            f"language={effective_language} "
-            f"rooms={len(room_inventory)} "
-            f"db={_database_target_hint()}"
-        )
 
         # Load or create session
         if req.session_id not in _sessions:
@@ -1113,6 +1292,18 @@ async def chat(
         # keeps backend slot state coherent with UI state.
         if req.filled_slots:
             _merge_filled_slots(state, req.filled_slots, room_inventory)
+
+        normalized_ui_screen = _coerce_booking_context_screen(normalized_ui_screen, state)
+        state.current_ui_screen = normalized_ui_screen
+        print(
+            "[ChatAPI] request "
+            f"session={req.session_id} "
+            f"screen={normalized_ui_screen} "
+            f"tenant={resolved_tenant_id or req.tenant_id} "
+            f"language={effective_language} "
+            f"rooms={len(room_inventory)} "
+            f"db={_database_target_hint()}"
+        )
 
         summary_confirm_short_circuit = (
             normalized_ui_screen == "BOOKING_SUMMARY"
@@ -1488,6 +1679,37 @@ async def chat(
                 response_speech = missing_visual_reply
                 if updated_state.history and updated_state.history[-1].role == "assistant":
                     updated_state.history[-1] = ConversationTurn(role="assistant", content=response_speech)
+
+        room_overview_reply = _build_room_overview_reply(
+            transcript=req.transcript,
+            selected_room_payload=selected_room_payload,
+            room_catalog=req.room_catalog,
+            slots_dict=slots_dict,
+            language=updated_state.language,
+        )
+        if (
+            room_overview_reply
+            and updated_state.resolved_intent == "GENERAL_QUERY"
+            and response_next_screen in {"ROOM_PREVIEW", "BOOKING_COLLECT"}
+            and not constraint_error
+            and not persistence_error
+        ):
+            response_speech = room_overview_reply
+            if updated_state.history and updated_state.history[-1].role == "assistant":
+                updated_state.history[-1] = ConversationTurn(role="assistant", content=response_speech)
+
+        if (
+            normalized_ui_screen == "ROOM_PREVIEW"
+            and updated_state.resolved_intent == "GENERAL_QUERY"
+            and response_next_screen in {"WELCOME", "IDLE"}
+            and not constraint_error
+            and not persistence_error
+        ):
+            print(
+                "[ChatAPI] Preventing regressive preview transition "
+                f"session={req.session_id} from={response_next_screen} -> ROOM_PREVIEW"
+            )
+            response_next_screen = "ROOM_PREVIEW"
 
         return ChatResponse(
             speech=response_speech,

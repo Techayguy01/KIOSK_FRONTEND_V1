@@ -2159,6 +2159,15 @@ class AgentAdapterService {
             if (previewShouldStayExploratory && serverState === "BOOKING_COLLECT") {
                 serverState = "ROOM_PREVIEW";
             }
+            if (
+                previewShouldStayExploratory &&
+                (serverState === "WELCOME" || serverState === "IDLE" || serverState === null)
+            ) {
+                console.warn(
+                    `[AgentAdapter] Preventing regressive preview transition: ${requestState} -> ${serverState || "null"}`
+                );
+                serverState = "ROOM_PREVIEW";
+            }
 
             const normalizedPayloadSlots = previewShouldStayExploratory
                 ? {}

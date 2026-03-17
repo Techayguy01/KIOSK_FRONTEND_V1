@@ -202,11 +202,20 @@ export const RoomCard: React.FC<RoomCardProps> = ({ room, onSelect, selected }) 
   const supportLine = typeof room.maxChildren === 'number'
     ? `${room.maxChildren} child${room.maxChildren === 1 ? '' : 'ren'}`
     : 'Room details ready';
+  const activateCard = () => onSelect(room);
+  const onCardKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      activateCard();
+    }
+  };
 
   return (
-    <button
-      type="button"
-      onClick={() => onSelect(room)}
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={activateCard}
+      onKeyDown={onCardKeyDown}
       className={`group relative overflow-hidden rounded-[2rem] border text-left transition-all duration-300 ${
         selected
           ? 'border-amber-200/80 bg-slate-950/95 shadow-[0_26px_70px_rgba(250,204,21,0.16)]'
@@ -375,6 +384,6 @@ export const RoomCard: React.FC<RoomCardProps> = ({ room, onSelect, selected }) 
           </div>
         </div>
       </div>
-    </button>
+    </div>
   );
 };

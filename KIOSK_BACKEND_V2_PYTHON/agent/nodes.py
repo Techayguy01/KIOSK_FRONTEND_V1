@@ -95,28 +95,39 @@ def _build_room_recommendation_prompt(room_inventory: list[RoomInventoryItem]) -
             "or I can guide you through the available options."
         )
 
-    featured_room = room_inventory[0]
-    room_name = featured_room.name or "our available room"
-    price_text = _format_price_for_speech(featured_room.price, featured_room.currency)
-    occupancy_text = (
-        f"It is a comfortable choice for up to {featured_room.max_adults} "
-        f"adult{'s' if featured_room.max_adults != 1 else ''}."
-        if featured_room.max_adults
-        else "It is a comfortable option for a pleasant stay."
-    )
-    alternative_names = [room.name for room in room_inventory[1:3] if room.name]
-    alternative_line = (
-        f"If you'd prefer, I can also show you {_join_spoken_list(alternative_names)}."
-        if alternative_names
-        else "If you'd like, I can also help you with another option."
+    room_count = len(room_inventory)
+    described_rooms: list[str] = []
+    for room in room_inventory[:2]:
+        room_name = room.name or "This room"
+        price_text = _format_price_for_speech(room.price, room.currency)
+        occupancy_text = (
+            f"for up to {room.max_adults} adult{'s' if room.max_adults != 1 else ''}"
+            if room.max_adults
+            else "for a comfortable stay"
+        )
+        if price_text:
+            described_rooms.append(
+                f"{room_name} is available for {price_text} and is suited {occupancy_text}."
+            )
+        else:
+            described_rooms.append(
+                f"{room_name} is available now and is suited {occupancy_text}."
+            )
+
+    remaining_count = room_count - len(described_rooms)
+    follow_up = (
+        f"I also have {remaining_count} more option{'s' if remaining_count != 1 else ''} available if you'd like to compare further."
+        if remaining_count > 0
+        else "If you'd like, I can walk you through either room in more detail."
     )
 
-    intro = (
-        f"Certainly. Our {room_name} is available for {price_text}."
-        if price_text
-        else f"Certainly. We have {room_name} available right now."
-    )
-    return f"{intro} {occupancy_text} {alternative_line}".strip()
+    return " ".join(
+        [
+            f"Certainly. We currently have {room_count} room option{'s' if room_count != 1 else ''} available, each with different amenities and room details.",
+            *described_rooms,
+            follow_up,
+        ]
+    ).strip()
 
 
 def _normalize_text(value: str) -> str:
@@ -663,7 +674,7 @@ The guest just said: "{state.latest_transcript}"
 Your job:
 1. Extract any booking information from what the guest said and update the JSON.
 2. Reply like a real receptionist, not a form or questionnaire.
-3. If the guest wants to book a room but has not chosen one yet, gently recommend a suitable room from the live inventory before asking one simple follow-up question.
+3. If the guest wants to book a room but has not chosen one yet, first present the available room options from the live inventory before gently guiding the guest toward a choice.
 4. If a room is already selected, describe it briefly and warmly before asking for the next missing booking detail.
 5. If all slots are filled, confirm the booking summary warmly.
 
@@ -685,13 +696,13 @@ Respond ONLY with a JSON object like this:
 Rules:
 - {_response_language_instruction(state.language)}
 - Keep the speech natural for spoken audio: short, smooth sentences and a warm hospitality tone.
-- Use gentle phrasing such as "Certainly", "If you'd like", "A comfortable choice", or "A lovely option" when it fits.
+- Use gentle phrasing such as "Certainly", "If you'd like", "We currently have", or "I can walk you through the available options" when it fits.
 - Never sound like a chatbot, workflow engine, or aggressive salesperson.
 - Do not say phrases like "Tell me what matters most", "Ask me about features", "Please provide room type", or "You can ask me questions".
 - Mention at most 2 or 3 concrete room details in one reply.
 - Ask at most one gentle follow-up question at the end of the speech.
 - Prefer live tenant inventory over generic room wording.
-- If the guest has not chosen a room yet, recommend one available room by name, price, and occupancy when possible.
+- If the guest has not chosen a room yet, mention how many room options are available and briefly describe one or two of them by name, price, and occupancy when possible.
 - Do not start asking for adults, dates, or guest name immediately after a room is selected.
 - While the guest is still browsing rooms or asking about room details, keep next_slot_to_ask as null and keep the speech focused on describing the selected room and offering to continue or show another option.
 - If the guest mentions a preference but not a room name, match it to the closest suitable room from the live inventory when possible.

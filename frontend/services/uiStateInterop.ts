@@ -23,10 +23,6 @@ const STATE_ALIASES: Record<string, UIState> = {
   "KEY-DISPENSING": "KEY_DISPENSING",
 };
 
-const FRONTEND_TO_BACKEND_STATE_MAP: Record<string, UIState> = {
-  ROOM_PREVIEW: "ROOM_SELECT",
-};
-
 export function isUiState(value: unknown): value is UIState {
   return typeof value === "string" && ACCEPTED_STATE_SET.has(value);
 }
@@ -44,10 +40,7 @@ export function normalizeStateForBackendChat(rawState: string | null | undefined
   if (isUiState(rawState)) return rawState;
 
   const canonical = canonicalizeStateToken(rawState);
-  const frontendMapped = FRONTEND_TO_BACKEND_STATE_MAP[canonical];
-  if (frontendMapped) return frontendMapped;
   const mapped = STATE_ALIASES[canonical] || STATE_ALIASES[canonical.replace(/_/g, "")] || canonical;
-  if (mapped === "ROOM_PREVIEW") return "ROOM_SELECT";
   if (isUiState(mapped)) return mapped;
 
   return BACKEND_STATE_NORMALIZATION_FALLBACK;
