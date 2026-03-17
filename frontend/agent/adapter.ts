@@ -437,7 +437,7 @@ class AgentAdapterService {
                 return {
                     delayMs: 2200,
                     prompt: this.pickLocalizedText({
-                        en: "I can help you check in, book a room, or call for help.",
+                        en: "I'm Siya, your hotel assistant. I can help you check in, explore rooms, answer questions about the stay, or call for help.",
                         hi: "मैं check in, room booking, या मदद में आपकी सहायता कर सकती हूँ।",
                         mr: "मी check in, room booking किंवा मदत यासाठी तुमची मदत करू शकते.",
                     }),
@@ -3030,7 +3030,7 @@ class AgentAdapterService {
                 // First contact: Greet the guest, THEN listen.
                 const tenantName = getTenant()?.name || "our hotel";
                 const greeting = this.pickLocalizedText({
-                    en: `Welcome to ${tenantName}. How may I assist you today?`,
+                    en: `Welcome to ${tenantName}. I'm Siya, your hotel assistant. I can help you check in, explore rooms, or guide you through a booking. How may I help you today?`,
                     hi: `${tenantName} में आपका स्वागत है। मैं आज आपकी कैसे सहायता कर सकती हूँ?`,
                     mr: `${tenantName} मध्ये तुमचे स्वागत आहे. आज मी तुमची कशी मदत करू शकते?`,
                 });

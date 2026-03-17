@@ -295,7 +295,10 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
         <h2 className="text-4xl font-light text-white mb-4">
           Welcome to <SecretTrigger className="rounded-xl px-3 py-1 transition hover:bg-white/5" />
         </h2>
-        <p className="text-slate-400 text-lg">How would you like to proceed?</p>
+        <p className="text-slate-300 text-xl">I'm Siya, your hotel assistant.</p>
+        <p className="mt-3 text-slate-400 text-lg max-w-2xl">
+          I can help with check-in, room selection, booking guidance, and questions about your stay.
+        </p>
       </div>
 
       <HoverRevealCards
@@ -395,6 +398,20 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
           }}
         >
           SIYA
+        </motion.div>
+
+        <motion.div
+          initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: 12 }}
+          animate={prefersReducedMotion ? { opacity: 1 } : { opacity: 1, y: 0 }}
+          transition={{ duration: prefersReducedMotion ? 0.15 : 0.8, ease: "easeOut", delay: prefersReducedMotion ? 0 : 0.1 }}
+          className="mb-8 max-w-3xl px-6 text-center"
+        >
+          <p className="text-2xl font-light text-white/92">
+            I'm Siya, your hotel assistant.
+          </p>
+          <p className="mt-3 text-base leading-7 text-slate-300/85 md:text-lg">
+            I can help you check in, explore rooms, answer questions about the stay, and guide you through booking whenever you're ready.
+          </p>
         </motion.div>
 
         {/* Orb container */}

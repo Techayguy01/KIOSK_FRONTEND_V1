@@ -27,7 +27,7 @@ export type AgentResponse = {
 // Phase 9.3: State-based speech responses (deterministic, no LLM)
 // Maps state transitions to spoken responses
 export const STATE_SPEECH_MAP: Partial<Record<UiState, string>> = {
-    WELCOME: "Welcome to {{TENANT_NAME}}. How may I assist you today?",
+    WELCOME: "Welcome to {{TENANT_NAME}}. I'm Siya, your hotel assistant. I can help you check in, explore rooms, or guide you through booking.",
     AI_CHAT: "I'm listening. You can say check in, book a room, or ask for help.",
     MANUAL_MENU: "Please select an option from the menu.",
     SCAN_ID: "Please scan your ID or passport.",
