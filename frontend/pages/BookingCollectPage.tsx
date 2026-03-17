@@ -456,20 +456,20 @@ export const BookingCollectPage: React.FC = () => {
     const inputClassName = "mt-1 w-full rounded-xl border border-slate-600/70 bg-slate-950/50 px-3 py-2 text-sm text-white outline-none transition focus:border-blue-400";
 
     return (
-        <div className="relative h-screen w-full overflow-hidden text-white">
+        <div className="relative min-h-screen w-full text-white overflow-x-hidden">
             <AnimatedGradientBackground Breathing={true} />
-            <div className="relative z-10 flex h-full w-full overflow-hidden">
-                <div className="flex max-w-[60%] flex-1 flex-col p-8">
+            <div className="relative z-10 flex h-full min-h-screen w-full flex-col lg:flex-row">
+                <div className="flex w-full lg:w-[60%] flex-col p-6 md:p-8">
                     <div className="mb-6">
-                        <h1 className="text-3xl font-light text-white/90">Booking Your Stay</h1>
-                        <p className="mt-1 text-sm text-white/50">Speak naturally. The kiosk will keep the details in sync.</p>
-                        <p className="mt-2 text-xs text-white/30">Single-room booking only.</p>
+                        <h1 className="text-2xl md:text-3xl font-light text-white/90">Booking Your Stay</h1>
+                        <p className="mt-1 text-xs md:text-sm text-white/50">Speak naturally. The kiosk will keep the details in sync.</p>
+                        <p className="mt-2 text-[10px] md:text-xs text-white/30">Single-room booking only.</p>
                         {nextSlotHintLabel && (
                             <p className="mt-2 text-xs text-blue-200/80">Next detail: {nextSlotHintLabel}</p>
                         )}
                     </div>
 
-                    <div className="relative min-h-0 flex-1 pr-4">
+                    <div className="relative min-h-[300px] md:min-h-0 flex-1 pr-0 md:pr-4">
                         <ImagesScrollingAnimation
                             items={hotelImageItems}
                             className="absolute inset-0"
@@ -535,7 +535,7 @@ export const BookingCollectPage: React.FC = () => {
                     </div>
                 </div>
 
-                <div className="flex w-[40%] flex-col border-l border-slate-700/50 bg-slate-800/50 p-8">
+                <div className="flex w-full lg:w-[40%] flex-col border-t lg:border-t-0 lg:border-l border-slate-700/50 bg-slate-800/50 p-6 md:p-8">
                     <div className="mb-6">
                         <div className="mb-2 flex justify-between text-xs text-white/50">
                             <span>Booking Progress</span>

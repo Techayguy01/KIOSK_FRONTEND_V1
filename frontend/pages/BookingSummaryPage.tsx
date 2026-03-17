@@ -31,9 +31,9 @@ export const BookingSummaryPage: React.FC = () => {
     };
 
     return (
-        <div className="h-screen w-full overflow-hidden relative text-white">
+        <div className="min-h-screen w-full relative text-white overflow-x-hidden">
             <AnimatedGradientBackground Breathing={true} />
-            <div className="relative z-10 h-full w-full flex flex-col items-center justify-center p-8">
+            <div className="relative z-10 min-h-screen w-full flex flex-col items-center justify-center p-6 md:p-8">
 
                 <motion.div
                     initial={{ opacity: 0, y: 20 }}
@@ -42,8 +42,8 @@ export const BookingSummaryPage: React.FC = () => {
                     className="w-full max-w-lg"
                 >
                 {/* Header */}
-                <h1 className="text-3xl font-light text-center mb-2">Booking Summary</h1>
-                <p className="text-center text-white/50 text-sm mb-8">Please confirm your reservation</p>
+                <h1 className="text-2xl md:text-3xl font-light text-center mb-2">Booking Summary</h1>
+                <p className="text-center text-white/50 text-xs md:text-sm mb-6 md:mb-8">Please confirm your reservation</p>
 
                 {/* Summary Card */}
                 <div className="bg-slate-800/60 border border-slate-700/50 rounded-2xl p-6 space-y-4">
@@ -96,16 +96,16 @@ export const BookingSummaryPage: React.FC = () => {
                 )}
 
                 {/* Action Buttons */}
-                <div className="flex gap-4 mt-8">
+                <div className="flex flex-col sm:flex-row gap-3 md:gap-4 mt-8">
                     <button
                         onClick={() => emit("MODIFY_BOOKING")}
-                        className="flex-1 py-4 rounded-xl border border-slate-600/50 text-white/70 hover:text-white hover:border-white/30 transition-all"
+                        className="w-full sm:flex-1 py-4 rounded-xl border border-slate-600/50 text-white/70 hover:text-white hover:border-white/30 transition-all text-sm md:text-base"
                     >
                         Modify
                     </button>
                     <button
                         onClick={() => emit("CONFIRM_PAYMENT")}
-                        className="flex-1 py-4 rounded-xl bg-gradient-to-r from-blue-600 to-cyan-500 text-white font-medium hover:from-blue-500 hover:to-cyan-400 transition-all shadow-lg shadow-blue-500/20"
+                        className="w-full sm:flex-1 py-4 rounded-xl bg-gradient-to-r from-blue-600 to-cyan-500 text-white font-medium hover:from-blue-500 hover:to-cyan-400 transition-all shadow-lg shadow-blue-500/20 text-sm md:text-base"
                     >
                         Confirm & Pay
                     </button>

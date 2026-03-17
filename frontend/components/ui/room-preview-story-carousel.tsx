@@ -170,7 +170,7 @@ export function RoomPreviewStoryCarousel({
           <div className="absolute inset-y-0 right-0 w-1/2 bg-[radial-gradient(circle_at_bottom_right,rgba(56,189,248,0.18),transparent_58%)]" />
         </div>
 
-        <div className="relative grid min-h-[760px] lg:grid-cols-[340px_minmax(0,1fr)]">
+        <div className="relative grid min-h-0 lg:grid-cols-[340px_minmax(0,1fr)]">
           <aside className="flex flex-col border-b border-white/10 p-6 lg:border-b-0 lg:border-r">
             <div>
               <p className="text-xs uppercase tracking-[0.34em] text-cyan-100/70">Room Story</p>
@@ -194,7 +194,7 @@ export function RoomPreviewStoryCarousel({
             </div>
 
             <div
-              className="relative mt-8 min-h-[360px] flex-1 overflow-hidden"
+              className="relative mt-8 min-h-[360px] flex-1 overflow-hidden hidden lg:block"
               onMouseEnter={() => setIsPaused(true)}
               onMouseLeave={() => setIsPaused(false)}
             >
@@ -318,33 +318,33 @@ export function RoomPreviewStoryCarousel({
                 </div>
               )}
 
-              <div className="absolute left-6 top-6 right-6 flex items-start justify-between gap-4">
-                <div className="rounded-full border border-white/10 bg-black/28 px-4 py-2 backdrop-blur-md">
-                  <p className="text-[11px] uppercase tracking-[0.3em] text-cyan-100/72">
+              <div className="absolute left-4 top-4 right-4 md:left-6 md:top-6 md:right-6 flex items-start justify-between gap-4">
+                <div className="rounded-full border border-white/10 bg-black/28 px-3 py-1.5 md:px-4 md:py-2 backdrop-blur-md">
+                  <p className="text-[10px] md:text-[11px] uppercase tracking-[0.3em] text-cyan-100/72">
                     {activeVisual ? `${currentIndex + 1} of ${visuals.length}` : "Room preview"}
                   </p>
                 </div>
-                <div className="rounded-[24px] border border-white/10 bg-black/28 px-4 py-3 text-right backdrop-blur-md">
-                  <p className="text-[11px] uppercase tracking-[0.28em] text-white/45">Guest snapshot</p>
-                  <p className="mt-1 text-2xl font-light text-white">{formatRoomPrice(room)}</p>
-                  <p className="mt-1 text-sm text-white/62">{getGuestLabel(room)}</p>
+                <div className="rounded-xl md:rounded-[24px] border border-white/10 bg-black/28 px-3 py-2 md:px-4 md:py-3 text-right backdrop-blur-md">
+                  <p className="text-[10px] uppercase tracking-[0.28em] text-white/45">Guest snapshot</p>
+                  <p className="mt-1 text-xl md:text-2xl font-light text-white">{formatRoomPrice(room)}</p>
+                  <p className="mt-1 text-xs md:text-sm text-white/62">{getGuestLabel(room)}</p>
                 </div>
               </div>
 
               <div className="absolute inset-x-0 bottom-0 p-6 lg:p-8">
                 <div className="flex flex-col gap-5 rounded-[28px] border border-white/10 bg-slate-950/58 p-6 backdrop-blur-md">
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <p className="text-xs uppercase tracking-[0.28em] text-cyan-100/75">
-                        {activeVisual?.category || "Room view"}
-                      </p>
-                      <h2 className="mt-3 text-3xl font-medium tracking-[-0.03em] text-white">
-                        {activeVisual?.title || room?.name || "Room preview"}
-                      </h2>
-                      <p className="mt-3 max-w-3xl text-sm leading-7 text-white/72">
-                        {activeVisual?.description || narrative}
-                      </p>
-                    </div>
+                <div className="flex flex-col md:flex-row items-start justify-between gap-4">
+                  <div className="flex-1">
+                    <p className="text-[10px] md:text-xs uppercase tracking-[0.28em] text-cyan-100/75">
+                      {activeVisual?.category || "Room view"}
+                    </p>
+                    <h2 className="mt-2 md:mt-3 text-2xl md:text-3xl font-medium tracking-[-0.03em] text-white leading-tight">
+                      {activeVisual?.title || room?.name || "Room preview"}
+                    </h2>
+                    <p className="mt-2 md:mt-3 max-w-3xl text-sm leading-relaxed md:leading-7 text-white/72">
+                      {activeVisual?.description || narrative}
+                    </p>
+                  </div>
                     {activeVisual && (
                       <button
                         type="button"

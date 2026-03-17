@@ -136,10 +136,10 @@ export const RoomPreviewPage: React.FC = () => {
   const voicePrompts = useMemo(() => buildVoicePrompts(room, visuals), [room, visuals]);
 
   return (
-    <div className="relative h-screen w-full overflow-hidden text-white">
+    <div className="relative min-h-screen w-full text-white overflow-x-hidden">
       <AnimatedGradientBackground Breathing={true} />
 
-      <div className="relative z-10 flex h-full w-full flex-col p-8 lg:p-10">
+      <div className="relative z-10 flex h-full min-h-screen w-full flex-col p-6 md:p-8 lg:p-10">
         <ProgressBar
           currentStep={progress.currentStep}
           totalSteps={progress.totalSteps}
@@ -149,10 +149,10 @@ export const RoomPreviewPage: React.FC = () => {
         <div className="mx-auto flex w-full max-w-7xl flex-1 min-h-0 flex-col">
           <header className="mb-6 max-w-4xl">
             <p className="text-xs uppercase tracking-[0.34em] text-cyan-100/72">Room Preview</p>
-            <h1 className="mt-3 text-5xl font-light tracking-[-0.05em] text-white">
+            <h1 className="mt-2 md:mt-3 text-3xl md:text-5xl font-light tracking-[-0.05em] text-white leading-tight">
               {room?.name ? `Explore ${room.name}` : 'Explore the room before booking'}
             </h1>
-            <p className="mt-4 max-w-3xl text-base leading-7 text-white/68">
+            <p className="mt-3 md:mt-4 max-w-3xl text-sm md:text-base leading-relaxed text-white/68">
               This preview stays voice-first and guest-friendly. Let Siya walk through the real room visuals, comfort details, and spaces before you move into booking.
             </p>
           </header>

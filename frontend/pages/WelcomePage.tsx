@@ -347,7 +347,7 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
 
   if (visualMode === 'manual') {
     return (
-      <div className="h-screen w-full overflow-hidden pt-20 relative">
+      <div className="min-h-screen w-full pt-20 relative overflow-x-hidden">
         <AnimatedGradientBackground Breathing={true} />
         <div className="relative z-10 w-full h-full">
           <ManualMode />
@@ -359,7 +359,7 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
 
   // VOICE MODE LAYOUT
   return (
-    <div className="h-screen w-full flex flex-col relative overflow-hidden">
+    <div className="min-h-screen w-full flex flex-col relative overflow-x-hidden">
       <AnimatedGradientBackground Breathing={true} />
 
       {/* 1. TOP BAR */}
@@ -386,7 +386,7 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
           initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, y: -20 }}
           animate={prefersReducedMotion ? { opacity: 1 } : { opacity: 1, y: 0 }}
           transition={{ duration: prefersReducedMotion ? 0.15 : 0.8, ease: "easeOut" }}
-          className="text-5xl md:text-6xl font-black tracking-wider mb-6"
+          className="text-4xl md:text-5xl lg:text-6xl font-black tracking-wider mb-4 md:mb-6"
           style={{
             fontFamily: "'Montserrat', sans-serif",
             fontWeight: 900,
@@ -406,17 +406,17 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
           transition={{ duration: prefersReducedMotion ? 0.15 : 0.8, ease: "easeOut", delay: prefersReducedMotion ? 0 : 0.1 }}
           className="mb-8 max-w-3xl px-6 text-center"
         >
-          <p className="text-2xl font-light text-white/92">
+          <p className="text-xl md:text-2xl font-light text-white/92">
             I'm Siya, your hotel assistant.
           </p>
-          <p className="mt-3 text-base leading-7 text-slate-300/85 md:text-lg">
+          <p className="mt-3 text-sm md:text-base lg:text-lg leading-relaxed text-slate-300/85">
             I can help you check in, explore rooms, answer questions about the stay, and guide you through booking whenever you're ready.
           </p>
         </motion.div>
 
         {/* Orb container */}
         <div
-          className="w-[300px] h-[300px] md:w-[450px] md:h-[450px] rounded-full relative"
+          className="w-[240px] h-[240px] sm:w-[320px] sm:h-[320px] md:w-[420px] md:h-[420px] rounded-full relative"
           style={{
             boxShadow: '0 25px 60px rgba(0, 0, 0, 0.6), 0 10px 30px rgba(0, 0, 0, 0.4)',
           }}

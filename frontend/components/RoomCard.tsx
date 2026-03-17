@@ -214,7 +214,7 @@ export const RoomCard: React.FC<RoomCardProps> = ({ room, onSelect, selected }) 
       }`}
     >
       <div
-        className="relative aspect-[16/10] overflow-hidden"
+        className="relative aspect-[16/10] sm:aspect-[16/9] overflow-hidden"
         onTouchStart={onTouchStart}
         onTouchEnd={onTouchEnd}
       >
@@ -261,10 +261,10 @@ export const RoomCard: React.FC<RoomCardProps> = ({ room, onSelect, selected }) 
           )}
         </div>
 
-        <div className="absolute inset-x-0 bottom-0 p-5">
-          <div className="max-w-[85%] rounded-2xl border border-white/10 bg-slate-950/58 px-4 py-3 backdrop-blur-sm">
-            <p className="text-[11px] uppercase tracking-[0.22em] text-amber-100/70">Room Snapshot</p>
-            <p className="mt-2 text-sm leading-6 text-white/92">
+        <div className="absolute inset-x-0 bottom-0 p-4 md:p-5">
+          <div className="max-w-[90%] sm:max-w-[85%] rounded-xl md:rounded-2xl border border-white/10 bg-slate-950/58 px-3 py-2 md:px-4 md:py-3 backdrop-blur-sm">
+            <p className="text-[10px] uppercase tracking-[0.22em] text-amber-100/70">Room Snapshot</p>
+            <p className="mt-1 md:mt-2 text-xs md:text-sm leading-relaxed md:leading-6 text-white/92">
               {selectedImageCaption || narrative.details[0] || narrative.headline}
             </p>
           </div>
@@ -303,17 +303,17 @@ export const RoomCard: React.FC<RoomCardProps> = ({ room, onSelect, selected }) 
       </div>
 
       <div className="space-y-6 px-6 pb-6 pt-5">
-        <div className="flex items-start justify-between gap-5">
-          <div className="space-y-2">
-            <h3 className="text-[1.9rem] font-semibold tracking-[-0.03em] text-white">{room.name}</h3>
-            <p className="max-w-xl text-[15px] leading-7 text-slate-300">
+        <div className="flex flex-col sm:flex-row items-start justify-between gap-4 md:gap-5">
+          <div className="space-y-1 md:space-y-2">
+            <h3 className="text-2xl md:text-[1.9rem] font-semibold tracking-[-0.03em] text-white leading-tight">{room.name}</h3>
+            <p className="max-w-xl text-sm md:text-[15px] leading-relaxed md:leading-7 text-slate-300">
               {narrative.headline}
             </p>
           </div>
-          <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-right">
-            <p className="text-xs uppercase tracking-[0.22em] text-white/45">From</p>
-            <p className="mt-1 text-[1.9rem] font-semibold tracking-[-0.04em] text-cyan-200">{formatPrice(room)}</p>
-            <p className="text-sm text-slate-400">per night</p>
+          <div className="rounded-xl md:rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-left sm:text-right w-full sm:w-auto">
+            <p className="text-[10px] md:text-xs uppercase tracking-[0.22em] text-white/45">From</p>
+            <p className="mt-1 text-2xl md:text-[1.9rem] font-semibold tracking-[-0.04em] text-cyan-200">{formatPrice(room)}</p>
+            <p className="text-xs md:text-sm text-slate-400">per night</p>
           </div>
         </div>
 

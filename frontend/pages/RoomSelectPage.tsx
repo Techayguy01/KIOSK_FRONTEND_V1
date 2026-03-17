@@ -62,9 +62,9 @@ export const RoomSelectPage: React.FC = () => {
   };
 
   return (
-    <div className="h-screen w-full overflow-hidden relative">
+    <div className="min-h-screen w-full relative overflow-x-hidden">
       <AnimatedGradientBackground Breathing={true} />
-      <div className="relative z-10 h-full w-full flex flex-col p-12">
+      <div className="relative z-10 h-full w-full flex flex-col p-6 md:p-10 lg:p-12">
         <ProgressBar
           currentStep={progress.currentStep}
           totalSteps={progress.totalSteps}
@@ -72,10 +72,10 @@ export const RoomSelectPage: React.FC = () => {
         />
 
         <div className="flex-1 flex flex-col max-w-7xl mx-auto w-full relative">
-          <header className="mb-10 text-center">
-            <h2 className="text-5xl font-light tracking-[-0.04em] text-white mb-3">Choose A Room That Feels Right</h2>
-            <p className="text-xl text-slate-300">Explore the rooms, compare the atmosphere, and select the one that suits your guest best.</p>
-            <p className="text-base text-white/60 mt-3">Siya can describe each room using the live room details, images, and amenities.</p>
+          <header className="mb-8 md:mb-10 text-center">
+            <h2 className="text-3xl md:text-5xl font-light tracking-[-0.04em] text-white mb-3">Choose A Room That Feels Right</h2>
+            <p className="text-base md:text-xl text-slate-300">Explore the rooms, compare the atmosphere, and select the one that suits your guest best.</p>
+            <p className="text-sm md:text-base text-white/60 mt-3">Siya can describe each room using the live room details, images, and amenities.</p>
             {roomsError && <p className="text-amber-300 text-base mt-4">{roomsError}</p>}
           </header>
 
@@ -113,14 +113,14 @@ export const RoomSelectPage: React.FC = () => {
             </div>
           )}
 
-          <div className="fixed bottom-0 left-0 w-full p-8 bg-gradient-to-t from-slate-900 to-transparent flex justify-center z-10">
-            <div className="flex w-full max-w-4xl items-center justify-between gap-5 rounded-[2rem] border border-white/10 bg-slate-950/78 px-6 py-5 backdrop-blur-md">
-              <div className="text-left">
-                <p className="text-sm uppercase tracking-[0.22em] text-white/45">Selected Room</p>
-                <p className="mt-2 text-xl text-white">
+          <div className="fixed bottom-0 left-0 w-full p-4 md:p-8 bg-gradient-to-t from-slate-950 via-slate-950/90 to-transparent flex justify-center z-10">
+            <div className="flex w-full max-w-4xl flex-col sm:flex-row items-center justify-between gap-5 rounded-2xl md:rounded-[2rem] border border-white/10 bg-slate-900/80 px-6 py-5 md:px-8 md:py-6 backdrop-blur-xl">
+              <div className="text-center sm:text-left">
+                <p className="text-xs uppercase tracking-[0.22em] text-white/45">Selected Room</p>
+                <p className="mt-1 text-lg md:text-xl text-white">
                   {selectedRoom ? selectedRoom.name : 'Choose a room to continue'}
                 </p>
-                <p className="mt-1 text-sm text-slate-400">
+                <p className="mt-1 text-xs md:text-sm text-slate-400 hidden sm:block">
                   {selectedRoom
                     ? 'Preview the room details before moving into the booking form.'
                     : 'Tap any card to select it, or keep exploring the room details.'}
@@ -129,13 +129,13 @@ export const RoomSelectPage: React.FC = () => {
               <button
                 disabled={!selectedRoomId || loading || isLoadingRooms || Boolean(roomsError) || rooms.length === 0}
                 onClick={handleContinue}
-                className={`flex items-center gap-3 rounded-full px-12 py-5 font-semibold text-xl transition-all duration-300 shadow-2xl ${selectedRoomId && !loading
+                className={`flex items-center gap-3 rounded-full px-8 md:px-12 py-4 md:py-5 font-semibold text-lg md:text-xl transition-all duration-300 shadow-2xl w-full sm:w-auto justify-center ${selectedRoomId && !loading
                   ? 'bg-blue-600 text-white hover:bg-blue-500 hover:-translate-y-1'
                   : 'bg-slate-800 text-slate-500 cursor-not-allowed'
                   }`}
               >
-                {loading && <Loader2 className="animate-spin" size={24} />}
-                <span>{loading ? 'Opening room...' : selectedRoom ? `Continue with ${selectedRoom.name}` : 'Continue to preview'}</span>
+                {loading && <Loader2 className="animate-spin" size={20} />}
+                <span>{loading ? 'Opening...' : selectedRoom ? `Continue` : 'Select a room'}</span>
               </button>
             </div>
           </div>

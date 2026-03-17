@@ -45,19 +45,19 @@ export const PaymentPage: React.FC = () => {
   };
 
   return (
-    <div className="h-screen w-full overflow-hidden relative">
+    <div className="min-h-screen w-full relative overflow-x-hidden">
        <AnimatedGradientBackground Breathing={true} />
-       <div className="relative z-10 h-full w-full flex flex-col p-8">
+       <div className="relative z-10 min-h-screen w-full flex flex-col p-6 md:p-8">
          <ProgressBar 
           currentStep={progress.currentStep} 
           totalSteps={progress.totalSteps} 
           labels={progress.steps} 
          />
 
-         <div className="flex-1 flex items-center justify-center gap-12 max-w-5xl mx-auto w-full">
+         <div className="flex-1 flex flex-col lg:flex-row items-center justify-center gap-8 lg:gap-12 max-w-5xl mx-auto w-full py-8 md:py-12">
          
          {/* Summary Card */}
-         <div className="flex-1 bg-slate-800 rounded-2xl p-8 border border-slate-700 shadow-2xl">
+         <div className="w-full lg:flex-1 bg-slate-800 rounded-2xl p-6 md:p-8 border border-slate-700 shadow-2xl">
             <h3 className="text-slate-400 text-sm font-medium uppercase tracking-wider mb-6">Reservation Summary</h3>
             
             <div className="flex items-start gap-4 mb-6">
@@ -65,7 +65,7 @@ export const PaymentPage: React.FC = () => {
                 <img
                   src={optimizedRoomImage}
                   alt={roomName}
-                  className="w-24 h-24 rounded-lg object-cover bg-slate-700/60"
+                  className="w-16 h-16 md:w-24 md:h-24 rounded-lg object-cover bg-slate-700/60"
                   onError={(event) => {
                     const target = event.currentTarget;
                     if (target.src !== roomImageSrc) {
@@ -81,8 +81,8 @@ export const PaymentPage: React.FC = () => {
                 </div>
               )}
               <div>
-                <h4 className="text-white font-bold text-xl">{roomName}</h4>
-                <p className="text-slate-400 text-sm">{bill.nights} Nights | {guestLabel}</p>
+                <h4 className="text-white font-bold text-lg md:text-xl line-clamp-1">{roomName}</h4>
+                <p className="text-slate-400 text-xs md:text-sm">{bill.nights} Nights | {guestLabel}</p>
               </div>
             </div>
 
@@ -103,7 +103,7 @@ export const PaymentPage: React.FC = () => {
          </div>
 
          {/* Payment Terminal Visual */}
-         <div className="flex-1 flex flex-col items-center">
+         <div className="w-full lg:flex-1 flex flex-col items-center">
             <div className="w-72 h-96 bg-gradient-to-b from-slate-700 to-slate-800 rounded-3xl p-6 shadow-2xl border-t border-slate-600 relative overflow-hidden flex flex-col items-center justify-between">
                {loading && (
                  <div className="absolute inset-0 z-20 bg-slate-900/90 flex flex-col items-center justify-center text-center p-4">
