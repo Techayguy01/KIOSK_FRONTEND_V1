@@ -17,9 +17,14 @@ const STATE_ALIASES: Record<string, UIState> = {
   "CHECK-IN-SUMMARY": "CHECK_IN_SUMMARY",
   CHECKINSUMMARY: "CHECK_IN_SUMMARY",
   ROOMSELECT: "ROOM_SELECT",
+  ROOMPREVIEW: "ROOM_PREVIEW",
   BOOKINGCOLLECT: "BOOKING_COLLECT",
   BOOKINGSUMMARY: "BOOKING_SUMMARY",
   "KEY-DISPENSING": "KEY_DISPENSING",
+};
+
+const FRONTEND_TO_BACKEND_STATE_MAP: Record<string, UIState> = {
+  ROOM_PREVIEW: "ROOM_SELECT",
 };
 
 export function isUiState(value: unknown): value is UIState {
@@ -39,7 +44,10 @@ export function normalizeStateForBackendChat(rawState: string | null | undefined
   if (isUiState(rawState)) return rawState;
 
   const canonical = canonicalizeStateToken(rawState);
+  const frontendMapped = FRONTEND_TO_BACKEND_STATE_MAP[canonical];
+  if (frontendMapped) return frontendMapped;
   const mapped = STATE_ALIASES[canonical] || STATE_ALIASES[canonical.replace(/_/g, "")] || canonical;
+  if (mapped === "ROOM_PREVIEW") return "ROOM_SELECT";
   if (isUiState(mapped)) return mapped;
 
   return BACKEND_STATE_NORMALIZATION_FALLBACK;
@@ -50,12 +58,17 @@ export function normalizeStateForBackendChat(rawState: string | null | undefined
  * Returns null when no valid state can be resolved.
  */
 export function normalizeBackendStateFromResponse(rawState: unknown): UIState | null {
+  if (rawState === "ROOM_PREVIEW") return "ROOM_PREVIEW";
   if (isUiState(rawState)) return rawState;
   if (typeof rawState !== "string") return null;
 
+  const canonical = canonicalizeStateToken(rawState);
+  if (canonical === "ROOM_PREVIEW" || canonical === "ROOMPREVIEW") {
+    return "ROOM_PREVIEW";
+  }
+
   const normalized = normalizeStateForBackendChat(rawState);
   if (normalized === BACKEND_STATE_NORMALIZATION_FALLBACK) {
-    const canonical = canonicalizeStateToken(rawState);
     if (!isUiState(canonical)) {
       return null;
     }

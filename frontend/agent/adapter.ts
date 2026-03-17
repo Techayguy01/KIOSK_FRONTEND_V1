@@ -37,6 +37,7 @@ const VOICE_AUTHORITY_MATRIX: Record<UiState, boolean> = {
     ID_VERIFY: false,
     CHECK_IN_SUMMARY: false,
     ROOM_SELECT: true,
+    ROOM_PREVIEW: true,
     BOOKING_COLLECT: true,
     BOOKING_SUMMARY: true,
     PAYMENT: true,
@@ -50,6 +51,7 @@ const FAQ_CACHE_BLOCKED_STATES = new Set<UiState>([
     "ID_VERIFY",
     "CHECK_IN_SUMMARY",
     "ROOM_SELECT",
+    "ROOM_PREVIEW",
     "BOOKING_COLLECT",
     "BOOKING_SUMMARY",
     "PAYMENT",
@@ -191,16 +193,18 @@ function getBookingProgressRank(state: UiState): number {
     switch (state) {
         case "ROOM_SELECT":
             return 1;
-        case "BOOKING_COLLECT":
+        case "ROOM_PREVIEW":
             return 2;
-        case "BOOKING_SUMMARY":
+        case "BOOKING_COLLECT":
             return 3;
-        case "PAYMENT":
+        case "BOOKING_SUMMARY":
             return 4;
-        case "KEY_DISPENSING":
+        case "PAYMENT":
             return 5;
-        case "COMPLETE":
+        case "KEY_DISPENSING":
             return 6;
+        case "COMPLETE":
+            return 7;
         default:
             return 0;
     }
@@ -460,9 +464,18 @@ class AgentAdapterService {
                 return {
                     delayMs: 6500,
                     prompt: this.pickLocalizedText({
-                        en: "Take your time. Say the room name when you're ready.",
+                        en: "Tell me what matters most for this stay, like guest count, view, balcony, or bathtub, or say a room name directly.",
                         hi: "आराम से चुनिए। तैयार होने पर room का नाम बोलिए।",
                         mr: "निवांत निवडा. तयार झाल्यावर room चे नाव सांगा.",
+                    }),
+                };
+            case "ROOM_PREVIEW":
+                return {
+                    delayMs: 7000,
+                    prompt: this.pickLocalizedText({
+                        en: "You can ask about features, or say yes to continue with this room.",
+                        hi: "Aap features ke baare mein pooch sakte hain, ya yes bolkar is room ke saath aage badh sakte hain.",
+                        mr: "Tumhi features babat vicharu shakta, kiwa yes mhunun ya room sobat pudhe jau shakta.",
                     }),
                 };
             case "BOOKING_COLLECT":
@@ -1088,7 +1101,13 @@ class AgentAdapterService {
         });
     }
 
-    private syncBookingFlowHints(merged: Record<string, any>): void {
+    private syncBookingFlowHints(merged: Record<string, any>, resolvedState: UiState): void {
+        if (!["BOOKING_COLLECT", "BOOKING_SUMMARY", "PAYMENT"].includes(resolvedState)) {
+            merged.missingSlots = [];
+            merged.nextSlotToAsk = null;
+            return;
+        }
+
         const slots = (merged.bookingSlots || {}) as Record<string, unknown>;
         const hasBookingContext = Boolean(merged.selectedRoom) || Object.keys(slots).length > 0;
         if (!hasBookingContext) {
@@ -1113,6 +1132,10 @@ class AgentAdapterService {
     }
 
     private resolveNextBookingSlot(payload?: any): BookingSlotKey | null {
+        if (this.state !== "BOOKING_COLLECT" && this.state !== "BOOKING_SUMMARY" && this.state !== "PAYMENT") {
+            return null;
+        }
+
         const hinted = this.normalizeBookingSlotKey(payload?.nextSlotToAsk ?? this.viewData.nextSlotToAsk ?? this.slotContext.activeSlot);
         if (hinted) return hinted;
 
@@ -1187,11 +1210,43 @@ class AgentAdapterService {
 
         const backendSpeech = String(payload?.speech || "").trim();
         const roomList = Array.isArray(payload?.rooms) ? payload.rooms : [];
-        const prompt = backendSpeech || (roomList.length > 0 ? this.buildRoomSelectionPrompt(roomList) : "");
+        const prompt = backendSpeech || (roomList.length > 0 ? "I can help tailor the best room for you. Tell me your guest count, preferred view, or features like balcony or bathtub, or say a room name directly." : "");
         if (!prompt) return false;
 
         this.hasAnnouncedRoomOptions = true;
         this.setActiveSlot("roomType", "string", prompt);
+        this.speak(prompt);
+        return true;
+    }
+
+    private buildRoomPreviewPrompt(roomLike?: any, backendSpeech?: string): string {
+        const spoken = String(backendSpeech || "").trim();
+        if (spoken) return spoken;
+
+        const room = this.hydrateRoomDetails(roomLike || this.viewData.selectedRoom);
+        const roomName = this.getCanonicalSelectedRoomLabel(room) || "this room";
+        const features = Array.isArray(room?.features)
+            ? room.features.map((feature: unknown) => String(feature || "").trim()).filter(Boolean).slice(0, 4)
+            : [];
+        const featureLine = features.length > 0
+            ? `It includes ${features.join(", ")}.`
+            : "I can describe the room features in detail.";
+        const capacityLine = typeof room?.maxAdults === "number"
+            ? `It is set up for up to ${room.maxAdults} adult${room.maxAdults === 1 ? "" : "s"}.`
+            : "";
+
+        return `This is ${roomName}. ${featureLine} ${capacityLine} Ask me about the bedroom, balcony, bathroom, or say yes to continue with this room.`.replace(/\s+/g, " ").trim();
+    }
+
+    private maybeSpeakRoomPreviewGuidance(payload?: any): boolean {
+        if (this.state !== "ROOM_PREVIEW") return false;
+        if (!this.hasVoiceAuthority()) return false;
+        if (TTSController.isSpeaking()) return false;
+        if (payload?.suppressSpeech) return false;
+
+        const prompt = this.buildRoomPreviewPrompt(payload?.selectedRoom || payload?.room, payload?.speech);
+        if (!prompt) return false;
+
         this.speak(prompt);
         return true;
     }
@@ -1258,7 +1313,7 @@ class AgentAdapterService {
     }
 
     private maybeTrackSlotFromPrompt(text: string): void {
-        if (!text || !["ROOM_SELECT", "BOOKING_COLLECT", "BOOKING_SUMMARY"].includes(this.state)) {
+        if (!text || !["ROOM_SELECT", "ROOM_PREVIEW", "BOOKING_COLLECT", "BOOKING_SUMMARY"].includes(this.state)) {
             return;
         }
 
@@ -1402,6 +1457,25 @@ class AgentAdapterService {
         return null;
     }
 
+    private isExplicitRoomChangeRequest(rawTranscript: string): boolean {
+        const transcript = this.normalizeRoomHintText(rawTranscript);
+        if (!transcript) return false;
+        return /\b(another|different|other|change|switch|instead)\b/.test(transcript) && /\b(room|one|option|preview|show)\b/.test(transcript)
+            || /\bi want to book another room\b/.test(transcript)
+            || /\bshow me another room\b/.test(transcript);
+    }
+
+    private isSameResolvedRoom(roomLike: any): boolean {
+        const currentRoomId = String(this.viewData?.selectedRoom?.id || "").trim();
+        const candidateRoomId = String(roomLike?.id || "").trim();
+        if (currentRoomId && candidateRoomId) {
+            return currentRoomId === candidateRoomId;
+        }
+        const currentLabel = this.getCanonicalSelectedRoomLabel();
+        const nextLabel = this.getCanonicalSelectedRoomLabel(roomLike);
+        return Boolean(currentLabel && nextLabel && currentLabel === nextLabel);
+    }
+
     private hydrateRoomDetails(roomLike: any): any | null {
         if (!roomLike) return null;
 
@@ -1433,6 +1507,41 @@ class AgentAdapterService {
                 ? roomLike.features
                 : matchedRoom?.features,
         };
+    }
+
+    private inferVisualFocusFromTranscript(rawTranscript: string, roomLike?: any): { imageId: string; mode: "expand" } | null {
+        const transcript = String(rawTranscript || "").toLowerCase().trim();
+        if (!transcript) return null;
+
+        const room = this.hydrateRoomDetails(roomLike || this.viewData?.selectedRoom);
+        const images = Array.isArray(room?.images) ? room.images : [];
+        if (images.length === 0) return null;
+
+        const keywordGroups: string[][] = [
+            ["bedroom", "bed", "king bed", "queen bed", "sleeping area"],
+            ["balcony", "terrace", "view", "outdoor", "sea view", "ocean view"],
+            ["bathroom", "bathtub", "washroom", "toilet", "shower"],
+            ["living", "lounge", "sofa", "sitting area"],
+            ["fireplace"],
+            ["wifi", "tv"],
+        ];
+
+        const matchedGroup = keywordGroups.find((group) => group.some((keyword) => transcript.includes(keyword)));
+        if (!matchedGroup) return null;
+
+        const bestMatch = images.find((image: any) => {
+            const haystack = [
+                String(image?.category || ""),
+                String(image?.caption || ""),
+                ...(Array.isArray(image?.tags) ? image.tags.map((tag: unknown) => String(tag || "")) : []),
+            ]
+                .join(" ")
+                .toLowerCase();
+            return matchedGroup.some((keyword) => haystack.includes(keyword));
+        });
+
+        const imageId = String(bestMatch?.id || "").trim();
+        return imageId ? { imageId, mode: "expand" } : null;
     }
 
     private maybeHandleRoomInfoQuery(rawTranscript: string): boolean {
@@ -1472,7 +1581,7 @@ class AgentAdapterService {
             case 'BACK_REQUESTED':
                 return 'BACK_REQUESTED';
             case 'SELECT_ROOM':
-                return this.state === 'ROOM_SELECT' ? 'ROOM_SELECTED' : 'SELECT_ROOM';
+                return this.state === 'ROOM_SELECT' || this.state === 'ROOM_PREVIEW' ? 'ROOM_SELECTED' : 'SELECT_ROOM';
             case 'PROVIDE_GUESTS':
             case 'PROVIDE_DATES':
             case 'PROVIDE_NAME':
@@ -1551,6 +1660,37 @@ class AgentAdapterService {
                 return;
             }
 
+            if (this.state === "ROOM_PREVIEW" && this.viewData?.selectedRoom && this.isAffirmative(transcript)) {
+                this.dispatch("CONFIRM_BOOKING", {
+                    transcript,
+                    selectedRoom: this.viewData.selectedRoom,
+                });
+                return;
+            }
+
+            if (this.state === "ROOM_PREVIEW") {
+                const requestedRoom = this.resolveRoomFromHint(transcript);
+                if (requestedRoom && !this.isSameResolvedRoom(requestedRoom)) {
+                    this.transitionTo("ROOM_PREVIEW", "ROOM_SELECTED", {
+                        transcript,
+                        room: requestedRoom,
+                        selectedRoom: requestedRoom,
+                        visualFocus: null,
+                        speech: this.buildRoomPreviewPrompt(requestedRoom),
+                    });
+                    return;
+                }
+
+                if (this.isExplicitRoomChangeRequest(transcript)) {
+                    this.transitionTo("ROOM_SELECT", "BACK_REQUESTED", {
+                        transcript,
+                        selectedRoom: null,
+                        speech: "Certainly. Let me show you the other room options so we can find a better fit.",
+                    });
+                    return;
+                }
+            }
+
             const fastPathIntent = this.getFastPathIntent(transcript);
             if (fastPathIntent) {
                 if (fastPathIntent === "CANCEL_REQUESTED" || fastPathIntent === "CANCEL_BOOKING") {
@@ -1567,7 +1707,7 @@ class AgentAdapterService {
 
             const requestId = ++this.llmRequestCounter;
             const requestState = this.state;
-            const bookingStates: UiState[] = ['ROOM_SELECT', 'BOOKING_COLLECT', 'BOOKING_SUMMARY'];
+            const bookingStates: UiState[] = ['ROOM_SELECT', 'ROOM_PREVIEW', 'BOOKING_COLLECT', 'BOOKING_SUMMARY'];
             const targetUrl = bookingStates.includes(this.state)
                 ? buildTenantApiUrl("chat/booking")
                 : buildTenantApiUrl("chat");
@@ -1673,20 +1813,34 @@ class AgentAdapterService {
             const backendSelectedRoom = decision?.selectedRoom || null;
             const slotRoomHint = decision?.accumulatedSlots?.roomType || decision?.extractedSlots?.roomType;
             const resolvedRoomHint = this.resolveRoomFromHint(slotRoomHint);
-            const transcriptResolvedRoom = this.state === "ROOM_SELECT"
+            const transcriptResolvedRoom = (this.state === "ROOM_SELECT" || this.state === "ROOM_PREVIEW")
                 && (this.slotContext.activeSlot === "roomType" || this.looksLikeRoomSelectionAttempt(transcript))
                 ? this.resolveRoomFromHint(transcript)
                 : null;
-            let inferredRoom = this.state === "ROOM_SELECT"
+            let inferredRoom = (this.state === "ROOM_SELECT" || this.state === "ROOM_PREVIEW")
                 ? backendSelectedRoom
                 || resolvedRoomHint
                 || transcriptResolvedRoom
                 || null
                 : null;
+            const roomChangedInPreview = requestState === "ROOM_PREVIEW" && inferredRoom && !this.isSameResolvedRoom(inferredRoom);
+            const resolvedVisualFocus = decision.visualFocus
+                || (
+                    (requestState === "ROOM_PREVIEW" || requestState === "BOOKING_COLLECT")
+                        ? this.inferVisualFocusFromTranscript(transcript, inferredRoom || backendSelectedRoom || this.viewData?.selectedRoom)
+                        : null
+                );
 
             if (
                 this.state === "ROOM_SELECT" &&
                 inferredRoom &&
+                (strictEvent === "ROOM_SELECTED" || strictEvent === "BOOK_ROOM_SELECTED" || strictEvent === "GENERAL_QUERY")
+            ) {
+                strictEvent = "ROOM_SELECTED";
+            }
+            if (
+                this.state === "ROOM_PREVIEW" &&
+                roomChangedInPreview &&
                 (strictEvent === "ROOM_SELECTED" || strictEvent === "BOOK_ROOM_SELECTED" || strictEvent === "GENERAL_QUERY")
             ) {
                 strictEvent = "ROOM_SELECTED";
@@ -1696,12 +1850,15 @@ class AgentAdapterService {
                 this.speak("Are you sure you want to cancel? Please say yes or no.");
                 return;
             }
-            if (this.state === "ROOM_SELECT" && strictEvent === "ROOM_SELECTED" && !inferredRoom) {
+            if ((this.state === "ROOM_SELECT" || this.state === "ROOM_PREVIEW") && strictEvent === "ROOM_SELECTED" && !inferredRoom) {
                 // Prevent false-positive jumps when no actual room was identified.
                 strictEvent = "GENERAL_QUERY";
             }
+            if (this.state === "ROOM_PREVIEW" && strictEvent === "ROOM_SELECTED" && !roomChangedInPreview) {
+                strictEvent = "GENERAL_QUERY";
+            }
 
-            const serverState = normalizeBackendStateFromResponse(decision.nextUiScreen);
+            let serverState = normalizeBackendStateFromResponse(decision.nextUiScreen);
             if (decision.nextUiScreen && !serverState) {
                 console.warn(`[AgentAdapter] Ignoring unknown backend nextUiScreen: ${decision.nextUiScreen}`);
             }
@@ -1709,6 +1866,23 @@ class AgentAdapterService {
                 requestState === "ROOM_SELECT" &&
                 serverState === "ROOM_SELECT" &&
                 /could not validate that room|pick a room shown on screen|we don't have/i.test(String(decision?.speech || ""));
+
+            if (
+                requestState === "ROOM_SELECT" &&
+                inferredRoom &&
+                serverState === "BOOKING_COLLECT" &&
+                (strictEvent === "ROOM_SELECTED" || strictEvent === "BOOK_ROOM_SELECTED" || strictEvent === "GENERAL_QUERY")
+            ) {
+                serverState = "ROOM_PREVIEW";
+            }
+
+            if (
+                requestState === "ROOM_PREVIEW" &&
+                serverState === "BOOKING_COLLECT" &&
+                !["CONFIRM_BOOKING", "BOOK_ROOM_SELECTED", "PROVIDE_GUESTS", "PROVIDE_DATES", "PROVIDE_NAME"].includes(strictEvent)
+            ) {
+                serverState = "ROOM_PREVIEW";
+            }
 
             if (
                 requestState === "ROOM_SELECT" &&
@@ -1806,7 +1980,7 @@ class AgentAdapterService {
                     missingSlots: decision.missingSlots,
                     nextSlotToAsk: decision.nextSlotToAsk,
                     error: decision.error,
-                    visualFocus: decision.visualFocus,
+                    visualFocus: resolvedVisualFocus,
                     backendDecision: true,
                     backendSpeechSpoken: false,
                 });
@@ -1824,7 +1998,7 @@ class AgentAdapterService {
                     decision.extractedSlots ||
                     decision.missingSlots ||
                     decision.nextSlotToAsk !== undefined ||
-                    decision.visualFocus
+                    resolvedVisualFocus
                 );
                 const shouldDispatch = strictEvent !== 'GENERAL_QUERY' || hasBookingDelta;
 
@@ -1840,7 +2014,7 @@ class AgentAdapterService {
                         isComplete: decision.isComplete,
                         nextUiScreen: serverState || undefined,
                         error: decision.error,
-                        visualFocus: decision.visualFocus,
+                        visualFocus: resolvedVisualFocus,
                         backendDecision: true,
                         backendSpeechSpoken,
                         speech: decision.speech,
@@ -1949,6 +2123,7 @@ class AgentAdapterService {
             case 'ID_VERIFY': return { currentStep: 2, totalSteps: 4, steps: ['ID Scan', 'Verify', 'Summary', 'Key'] };
             case 'CHECK_IN_SUMMARY': return { currentStep: 3, totalSteps: 4, steps: ['ID Scan', 'Verify', 'Summary', 'Key'] };
             case 'ROOM_SELECT': return { currentStep: 2, totalSteps: 4, steps };
+            case 'ROOM_PREVIEW': return { currentStep: 2, totalSteps: 4, steps };
             case 'PAYMENT': return { currentStep: 3, totalSteps: 4, steps };
             case 'COMPLETE': return { currentStep: 4, totalSteps: 4, steps };
             default: return this.viewData.progress ?? null;
@@ -1960,7 +2135,7 @@ class AgentAdapterService {
         const resolvedState = nextState || this.state;
         const incomingRoom = payload?.selectedRoom ?? payload?.room;
         const resetRoomSelection =
-            resolvedState === "ROOM_SELECT" &&
+            (resolvedState === "ROOM_SELECT" || resolvedState === "ROOM_PREVIEW") &&
             payload &&
             Object.prototype.hasOwnProperty.call(payload, "selectedRoom") &&
             payload.selectedRoom === null;
@@ -1975,7 +2150,7 @@ class AgentAdapterService {
             )
         );
 
-        if (!["ROOM_SELECT", "BOOKING_COLLECT", "BOOKING_SUMMARY", "PAYMENT"].includes(resolvedState)) {
+        if (!["ROOM_SELECT", "ROOM_PREVIEW", "BOOKING_COLLECT", "BOOKING_SUMMARY", "PAYMENT"].includes(resolvedState)) {
             delete merged.manualBookingOverrides;
             delete merged.manualSelectedRoomOverride;
             delete merged.visualFocus;
@@ -2103,20 +2278,24 @@ class AgentAdapterService {
         }
 
         if (payload?.missingSlots !== undefined) {
-            merged.missingSlots = Array.isArray(payload.missingSlots)
-                ? payload.missingSlots.map((slot: unknown) => this.normalizeBookingSlotKey(slot) || slot)
-                : payload.missingSlots;
+            if (resolvedState === "BOOKING_COLLECT" || resolvedState === "BOOKING_SUMMARY" || resolvedState === "PAYMENT") {
+                merged.missingSlots = Array.isArray(payload.missingSlots)
+                    ? payload.missingSlots.map((slot: unknown) => this.normalizeBookingSlotKey(slot) || slot)
+                    : payload.missingSlots;
+            }
         }
 
         if (payload?.nextSlotToAsk !== undefined) {
-            const hintedSlot = this.normalizeBookingSlotKey(payload.nextSlotToAsk);
-            merged.nextSlotToAsk = hintedSlot || payload.nextSlotToAsk;
-            if (hintedSlot && SLOT_EXPECTED_TYPE_MAP[hintedSlot]) {
-                this.slotContext = {
-                    ...this.slotContext,
-                    activeSlot: hintedSlot,
-                    expectedType: SLOT_EXPECTED_TYPE_MAP[hintedSlot],
-                };
+            if (resolvedState === "BOOKING_COLLECT" || resolvedState === "BOOKING_SUMMARY" || resolvedState === "PAYMENT") {
+                const hintedSlot = this.normalizeBookingSlotKey(payload.nextSlotToAsk);
+                merged.nextSlotToAsk = hintedSlot || payload.nextSlotToAsk;
+                if (hintedSlot && SLOT_EXPECTED_TYPE_MAP[hintedSlot]) {
+                    this.slotContext = {
+                        ...this.slotContext,
+                        activeSlot: hintedSlot,
+                        expectedType: SLOT_EXPECTED_TYPE_MAP[hintedSlot],
+                    };
+                }
             }
         }
 
@@ -2161,7 +2340,7 @@ class AgentAdapterService {
         }
 
         this.syncDerivedBookingData(merged);
-        this.syncBookingFlowHints(merged);
+        this.syncBookingFlowHints(merged, resolvedState);
 
         const progressState = resolvedState;
         merged.progress = this.getProgress(progressState);
@@ -2229,6 +2408,12 @@ class AgentAdapterService {
             // Strict page-by-page progression: booking-related intent from ROOM_SELECT
             // enters BOOKING_COLLECT first. No direct jump.
             return "ROOM_SELECT";
+        }
+
+        if (currentState === "ROOM_PREVIEW") {
+            if (intent === "ROOM_SELECTED" || intent === "ASK_ROOM_DETAIL" || intent === "ASK_PRICE" || intent === "COMPARE_ROOMS" || intent === "GENERAL_QUERY" || intent === "HELP_SELECTED" || intent === "MODIFY_BOOKING" || intent === "SELECT_ROOM") {
+                return "ROOM_PREVIEW";
+            }
         }
 
         if (intent === 'BACK_REQUESTED' || intent === 'CANCEL_REQUESTED') {
@@ -2450,7 +2635,7 @@ class AgentAdapterService {
     private transitionTo(nextState: UiState, intent?: string, payload?: any) {
         console.log(`[Mediator] Requesting: ${this.state} -> ${nextState}`);
 
-        if (nextState === "ROOM_SELECT") {
+        if (nextState === "ROOM_SELECT" || nextState === "ROOM_PREVIEW") {
             // Warm room inventory so ROOM_SELECT can render without waiting on a cold request.
             if (typeof RoomService.prefetchAvailableRooms === "function") {
                 void RoomService.prefetchAvailableRooms();
@@ -2532,7 +2717,7 @@ class AgentAdapterService {
         console.log(`[AgentAdapter] State Transition: ${previousState} -> ${this.state}`);
 
         // [V2] Adaptive Timeouts (UX Enhancement) - Give more time on complex screens
-        if (["ROOM_SELECT", "BOOKING_COLLECT", "PAYMENT"].includes(nextState)) {
+        if (["ROOM_SELECT", "ROOM_PREVIEW", "BOOKING_COLLECT", "PAYMENT"].includes(nextState)) {
             VoiceRuntime.updateTimeouts(10000, 15000); // 10s no-speech, 15s no-result
         } else {
             // Defaults are restored in VoiceRuntime.setMode("idle") when session ends,
@@ -2551,6 +2736,9 @@ class AgentAdapterService {
         const spokeRoomGuidance = this.state === "ROOM_SELECT"
             ? this.maybeSpeakRoomSelectionGuidance(payload)
             : false;
+        const spokeRoomPreviewGuidance = this.state === "ROOM_PREVIEW"
+            ? this.maybeSpeakRoomPreviewGuidance(payload)
+            : false;
         const spokeBookingGuidance = this.state === "BOOKING_COLLECT"
             ? this.maybeSpeakBookingCollectGuidance(payload, { preferBackendSpeech: true })
             : false;
@@ -2568,7 +2756,7 @@ class AgentAdapterService {
                 });
                 this.speak(greeting);
                 // VoiceRuntime will start listening automatically after TTS ends (via TTS_ENDED handler)
-            } else if (!spokeRoomGuidance && !spokeBookingGuidance) {
+            } else if (!spokeRoomGuidance && !spokeRoomPreviewGuidance && !spokeBookingGuidance) {
                 // No guided prompt was spoken on this transition, so bootstrap listening directly.
                 // If TTS is in-flight, TTS lifecycle owns the restart path.
                 this.scheduleListeningRestart(500, "state_transition");

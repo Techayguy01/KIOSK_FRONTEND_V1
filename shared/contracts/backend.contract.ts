@@ -9,6 +9,7 @@ export type UIState =
   | 'ID_VERIFY'
   | 'CHECK_IN_SUMMARY'
   | 'ROOM_SELECT'
+  | 'ROOM_PREVIEW'
   | 'BOOKING_COLLECT'
   | 'BOOKING_SUMMARY'
   | 'PAYMENT'
@@ -44,6 +45,7 @@ export const BACKEND_CHAT_ACCEPTED_STATES: readonly UIState[] = [
 export const FRONTEND_PRESENTATION_STATES: readonly UIState[] = [
   'AI_CHAT',
   'MANUAL_MENU',
+  'ROOM_PREVIEW',
 ] as const;
 
 /** Safe fallback when an unknown state arrives at a chat boundary. */

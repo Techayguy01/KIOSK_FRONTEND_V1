@@ -82,7 +82,7 @@ class MockBackendService {
     const nextData = { ...this._data };
 
     // Load Rooms
-    if (nextState === 'ROOM_SELECT' && this._state !== 'ROOM_SELECT') {
+    if ((nextState === 'ROOM_SELECT' || nextState === 'ROOM_PREVIEW') && this._state !== 'ROOM_SELECT' && this._state !== 'ROOM_PREVIEW') {
       nextData.rooms = roomsMock.available_rooms;
     }
 
@@ -180,6 +180,7 @@ class MockBackendService {
     switch (state) {
       case 'SCAN_ID': return { currentStep: 1, totalSteps: 4, steps };
       case 'ROOM_SELECT': return { currentStep: 2, totalSteps: 4, steps };
+      case 'ROOM_PREVIEW': return { currentStep: 2, totalSteps: 4, steps };
       case 'PAYMENT': return { currentStep: 3, totalSteps: 4, steps };
       case 'COMPLETE': return { currentStep: 4, totalSteps: 4, steps };
       default: return null;

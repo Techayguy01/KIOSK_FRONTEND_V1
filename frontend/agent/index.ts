@@ -10,6 +10,7 @@ export type UiState =
     | "ID_VERIFY"
     | "CHECK_IN_SUMMARY"
     | "ROOM_SELECT"
+    | "ROOM_PREVIEW"
     | "BOOKING_COLLECT"
     | "BOOKING_SUMMARY"
     | "PAYMENT"
@@ -32,7 +33,8 @@ export const STATE_SPEECH_MAP: Partial<Record<UiState, string>> = {
     SCAN_ID: "Please scan your ID or passport.",
     ID_VERIFY: "Please verify your identity details.",
     CHECK_IN_SUMMARY: "Here is your check in summary.",
-    ROOM_SELECT: "Please select your preferred room.",
+    ROOM_SELECT: "Let me help you find the room that fits you best.",
+    ROOM_PREVIEW: "Here is a closer look at the room you selected.",
     BOOKING_COLLECT: "Let me help you book a room. I'll need a few details.",
     BOOKING_SUMMARY: "Let me confirm your booking details.",
     PAYMENT: "Please complete your payment.",
@@ -56,6 +58,7 @@ export const STATE_INPUT_MODES: Record<UiState, InputMode[]> = {
     ID_VERIFY: ["TOUCH"],
     CHECK_IN_SUMMARY: ["TOUCH"],
     ROOM_SELECT: ["VOICE", "TOUCH"], // Voice allowed for nav commands
+    ROOM_PREVIEW: ["VOICE", "TOUCH"],
     BOOKING_COLLECT: ["VOICE", "TOUCH"], // Conversational booking - Voice primary
     BOOKING_SUMMARY: ["VOICE", "TOUCH"], // Confirmation - Both allowed
     PAYMENT: ["VOICE", "TOUCH"],
@@ -89,6 +92,13 @@ export const VOICE_COMMAND_MAP: Record<UiState, Partial<Record<string, Intent>>>
     ROOM_SELECT: {
         "go back": "BACK_REQUESTED",
         "cancel": "CANCEL_REQUESTED",
+    },
+    ROOM_PREVIEW: {
+        "go back": "BACK_REQUESTED",
+        "cancel": "CANCEL_BOOKING",
+        "yes": "CONFIRM_BOOKING",
+        "confirm": "CONFIRM_BOOKING",
+        "book this room": "CONFIRM_BOOKING",
     },
     BOOKING_COLLECT: {
         "go back": "BACK_REQUESTED",
@@ -197,9 +207,26 @@ const TRANSITION_TABLE: Record<UiState, Partial<Record<Intent, UiState>>> = {
         CANCEL_REQUESTED: "WELCOME",
     },
     ROOM_SELECT: {
-        ROOM_SELECTED: "BOOKING_COLLECT",
+        ROOM_SELECTED: "ROOM_PREVIEW",
         BACK_REQUESTED: "MANUAL_MENU", // Logical previous for both flows (or effectively restart)
         CANCEL_REQUESTED: "WELCOME",
+    },
+    ROOM_PREVIEW: {
+        ROOM_SELECTED: "ROOM_PREVIEW",
+        ASK_ROOM_DETAIL: "ROOM_PREVIEW",
+        ASK_PRICE: "ROOM_PREVIEW",
+        COMPARE_ROOMS: "ROOM_PREVIEW",
+        GENERAL_QUERY: "ROOM_PREVIEW",
+        HELP_SELECTED: "ROOM_PREVIEW",
+        MODIFY_BOOKING: "ROOM_PREVIEW",
+        SELECT_ROOM: "ROOM_PREVIEW",
+        PROVIDE_GUESTS: "BOOKING_COLLECT",
+        PROVIDE_DATES: "BOOKING_COLLECT",
+        PROVIDE_NAME: "BOOKING_COLLECT",
+        CONFIRM_BOOKING: "BOOKING_COLLECT",
+        BOOK_ROOM_SELECTED: "BOOKING_COLLECT",
+        CANCEL_BOOKING: "ROOM_SELECT",
+        BACK_REQUESTED: "ROOM_SELECT",
     },
     BOOKING_COLLECT: {
         // Booking intents (keep user in BOOKING_COLLECT while collecting)

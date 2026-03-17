@@ -12,6 +12,7 @@ import { ScanIdPage } from '../pages/ScanIdPage';
 import { IdVerifyPage } from '../pages/IdVerifyPage';
 import { CheckInSummaryPage } from '../pages/CheckInSummaryPage';
 import { RoomSelectPage } from '../pages/RoomSelectPage';
+import { RoomPreviewPage } from '../pages/RoomPreviewPage';
 import { BookingCollectPage } from '../pages/BookingCollectPage';
 import { BookingSummaryPage } from '../pages/BookingSummaryPage';
 import { PaymentPage } from '../pages/PaymentPage';
@@ -38,6 +39,7 @@ const STATE_TO_ROUTE: Record<UiState, string> = {
   ID_VERIFY: 'id-verify',
   CHECK_IN_SUMMARY: 'check-in-summary',
   ROOM_SELECT: 'room-select',
+  ROOM_PREVIEW: 'room-preview',
   BOOKING_COLLECT: 'booking-collect',
   BOOKING_SUMMARY: 'booking-summary',
   PAYMENT: 'payment',
@@ -51,6 +53,7 @@ const VOICE_RELEVANT_STATES = new Set<UiState>([
   'AI_CHAT',
   'MANUAL_MENU',
   'ROOM_SELECT',
+  'ROOM_PREVIEW',
   'BOOKING_COLLECT',
   'BOOKING_SUMMARY',
   'PAYMENT',
@@ -60,6 +63,7 @@ const MINI_SIYA_ORB_STATES = new Set<UiState>([
   'ID_VERIFY',
   'CHECK_IN_SUMMARY',
   'ROOM_SELECT',
+  'ROOM_PREVIEW',
   'BOOKING_COLLECT',
   'BOOKING_SUMMARY',
   'COMPLETE',
@@ -193,7 +197,7 @@ const TenantKioskApp: React.FC = () => {
       // Voice command from WELCOME can route directly into SCAN_ID/ROOM_SELECT.
       if (
         previousState === 'WELCOME' &&
-        (effectiveState === 'SCAN_ID' || effectiveState === 'ROOM_SELECT')
+        (effectiveState === 'SCAN_ID' || effectiveState === 'ROOM_SELECT' || effectiveState === 'ROOM_PREVIEW')
       ) {
         return 'voice';
       }
@@ -201,7 +205,7 @@ const TenantKioskApp: React.FC = () => {
       // Manual menu actions continue as manual flow.
       if (
         previousState === 'MANUAL_MENU' &&
-        (effectiveState === 'SCAN_ID' || effectiveState === 'ROOM_SELECT')
+        (effectiveState === 'SCAN_ID' || effectiveState === 'ROOM_SELECT' || effectiveState === 'ROOM_PREVIEW')
       ) {
         return 'manual';
       }
@@ -258,6 +262,7 @@ const TenantKioskApp: React.FC = () => {
       case 'ID_VERIFY': return <IdVerifyPage />;
       case 'CHECK_IN_SUMMARY': return <CheckInSummaryPage />;
       case 'ROOM_SELECT': return <RoomSelectPage />;
+      case 'ROOM_PREVIEW': return <RoomPreviewPage />;
       case 'BOOKING_COLLECT': return <BookingCollectPage />;
       case 'BOOKING_SUMMARY': return <BookingSummaryPage />;
       case 'PAYMENT': return <PaymentPage />;

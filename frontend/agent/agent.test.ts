@@ -34,8 +34,13 @@ const validTransitions: { start: UiState; intent: Intent; expected: UiState }[] 
     { start: "SCAN_ID", intent: "CANCEL_REQUESTED", expected: "WELCOME" }, // Timeout also maps here
 
     // ROOM_SELECT -> ...
+    { start: "ROOM_SELECT", intent: "ROOM_SELECTED", expected: "ROOM_PREVIEW" },
     { start: "ROOM_SELECT", intent: "BACK_REQUESTED", expected: "MANUAL_MENU" },
     { start: "ROOM_SELECT", intent: "CANCEL_REQUESTED", expected: "WELCOME" },
+
+    // ROOM_PREVIEW -> ...
+    { start: "ROOM_PREVIEW", intent: "CONFIRM_BOOKING", expected: "BOOKING_COLLECT" },
+    { start: "ROOM_PREVIEW", intent: "BACK_REQUESTED", expected: "ROOM_SELECT" },
 
     // PAYMENT -> ...
     { start: "PAYMENT", intent: "BACK_REQUESTED", expected: "ROOM_SELECT" },

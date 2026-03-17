@@ -72,9 +72,9 @@ export const RoomSelectPage: React.FC = () => {
 
         <div className="flex-1 flex flex-col max-w-7xl mx-auto w-full relative">
           <header className="mb-10 text-center">
-            <h2 className="text-5xl font-light text-white mb-3">Select Your Room</h2>
-            <p className="text-xl text-slate-300">We have prepared a selection based on your preferences.</p>
-            <p className="text-base text-white/60 mt-3">This kiosk currently supports one room per booking.</p>
+            <h2 className="text-5xl font-light text-white mb-3">Find the Right Room</h2>
+            <p className="text-xl text-slate-300">Start with a room preview, then confirm before the booking form opens.</p>
+            <p className="text-base text-white/60 mt-3">Ask Siya to help tailor the best option for the guest.</p>
             {roomsError && <p className="text-amber-300 text-base mt-4">{roomsError}</p>}
           </header>
 
@@ -122,7 +122,7 @@ export const RoomSelectPage: React.FC = () => {
                 }`}
             >
               {loading && <Loader2 className="animate-spin" size={26} />}
-              <span>{loading ? 'Confirming...' : 'Confirm Selection'}</span>
+              <span>{loading ? 'Opening preview...' : 'Preview Room'}</span>
             </button>
           </div>
         </div>

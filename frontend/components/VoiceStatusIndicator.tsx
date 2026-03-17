@@ -26,6 +26,7 @@ const VOICE_RELEVANT_STATES = new Set<UiState>([
     "AI_CHAT",
     "MANUAL_MENU",
     "ROOM_SELECT",
+    "ROOM_PREVIEW",
     "BOOKING_COLLECT",
     "BOOKING_SUMMARY",
     "PAYMENT",
