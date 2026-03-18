@@ -1051,6 +1051,16 @@ def _should_attempt_faq(transcript: str, normalized_ui_screen: UIScreen) -> bool
             "allowed=False reason=transactional_checkin"
         )
         return False
+    # Room browsing / virtual tour phrases are transactional (trigger BOOK_ROOM),
+    # not informational.  They must reach the LangGraph agent, not the FAQ pipeline.
+    from agent.nodes import _looks_like_room_browsing_request
+    if _looks_like_room_browsing_request(cleaned):
+        print(
+            "[ChatAPI][FAQ] candidate "
+            f"screen={normalized_ui_screen} "
+            "allowed=False reason=transactional_room_browsing"
+        )
+        return False
 
     is_candidate = is_faq_candidate_query(cleaned)
     print(

@@ -69,18 +69,29 @@ def get_llm_response(messages: list[dict], temperature: float = 0.4) -> str:
     raise RuntimeError(f"[LLM] All models failed. Last error: {last_error}")
 
 
+_embedding_model = None
+
+
+def _get_embedding_model():
+    """Lazy-load the local sentence-transformers model (cached after first call)."""
+    global _embedding_model
+    if _embedding_model is None:
+        from sentence_transformers import SentenceTransformer
+        print("[LLM][Embedding] Loading local model: all-MiniLM-L6-v2 ...")
+        _embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+        print("[LLM][Embedding] Model loaded (384-dim, CPU, no API key needed)")
+    return _embedding_model
+
+
 def get_embedding(text: str) -> list[float]:
     """
-    Generates an embedding for the given text using OpenAI's text-embedding-3-small.
+    Generates a 384-dim embedding using the local all-MiniLM-L6-v2 model.
+    Runs on CPU, no API key required.
     """
     try:
-        litellm, _ = _get_litellm()
-        response = litellm.embedding(
-            model="text-embedding-3-small",
-            input=[text],
-        )
-        embedding = response.data[0]["embedding"]
-        return embedding
+        model = _get_embedding_model()
+        vector = model.encode(text, normalize_embeddings=True)
+        return vector.tolist()
     except Exception as e:
         print(f"[LLM][Embedding] Error generating embedding: {e}")
         raise

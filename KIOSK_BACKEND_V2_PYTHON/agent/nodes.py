@@ -495,12 +495,49 @@ def _looks_like_check_in_request(transcript: str) -> bool:
     )
 
 
+def _looks_like_room_browsing_request(transcript: str) -> bool:
+    """Deterministic check for room exploration/browsing intent."""
+    text = (transcript or "").strip().lower()
+    if not text:
+        return False
+    # Guard: if the user is asking an informational question about rooms
+    # (e.g. "what time can I check into my room"), that is NOT a browsing request.
+    info_question = bool(
+        re.search(r"\b(room)\b", text)
+        and re.search(r"\b(what|when|time|timing|hours?|policy|policies|rules?)\b", text)
+        and not re.search(r"\b(show|see|view|explore|tour|browse|available|options?)\b", text)
+    )
+    if info_question:
+        return False
+    return bool(
+        re.search(
+            r"\b("
+            r"show\s+(?:me\s+)?(?:the\s+)?rooms|"
+            r"see\s+(?:the\s+)?rooms|"
+            r"view\s+(?:the\s+)?rooms|"
+            r"virtual\s+tour|"
+            r"explore\s+(?:the\s+)?rooms|"
+            r"room\s+options|"
+            r"available\s+rooms|"
+            r"what\s+rooms|"
+            r"browse\s+(?:the\s+)?rooms|"
+            r"let\s+me\s+(?:see|explore|view|browse)\s+(?:the\s+)?rooms|"
+            r"room\s+tour|"
+            r"give\s+me\s+(?:a\s+)?(?:virtual\s+)?tour|"
+            r"show\s+(?:me\s+)?(?:the\s+)?room\s+options|"
+            r"i\s+want\s+to\s+(?:see|explore|view|browse)\s+(?:the\s+)?rooms"
+            r")\b",
+            text,
+        )
+    )
+
+
 ROUTER_SYSTEM_PROMPT = """
 You are a highly critical intent classifier for a luxury hotel kiosk AI named "Siya".
 The user's text may contain mixed intentions, conversational filler, or mid-sentence corrections (e.g., "Wait, no, I mean check in").
 Your job is to read the ENTIRE message carefully before deciding the final intent.
 
-- BOOK_ROOM: User explicitly wants to start a NEW reservation.
+- BOOK_ROOM: User wants to start a NEW reservation, explore rooms, see room options, take a virtual tour, view available rooms, or browse what's available. Any expression of interest in seeing, exploring, or choosing rooms counts as BOOK_ROOM.
 - CHECK_IN: User is at the kiosk to get their room key for an EXISTING booking.
 - GENERAL_QUERY: User is asking about amenities (pool, gym, etc.), prices, or just greeting.
 - PROVIDE_GUESTS: User is giving the number of people staying.
@@ -525,19 +562,86 @@ Respond ONLY with a JSON object:
 async def route_intent(state: KioskState) -> dict:
     """Node 1: Classify the user's intent."""
     print(f"[Router] Classifying: '{state.latest_transcript}'")
+    semantic_hint: Optional[str] = None
 
     if _looks_like_check_in_request(state.latest_transcript):
-        return {"resolved_intent": "CHECK_IN", "confidence": 0.97}
+        return {
+            "resolved_intent": "CHECK_IN",
+            "confidence": 0.97,
+            "speech_override": None,
+            "consecutive_failures": 0,
+            "last_failed_screen": None,
+        }
+    if _looks_like_room_browsing_request(state.latest_transcript):
+        print(f"[Router] Deterministic room browsing match: '{state.latest_transcript}'")
+        return {
+            "resolved_intent": "BOOK_ROOM",
+            "confidence": 0.95,
+            "speech_override": None,
+            "consecutive_failures": 0,
+            "last_failed_screen": None,
+        }
 
     # Deterministic summary control avoids LLM drift on "confirm and pay"/"it's correct"/"card".
     if state.current_ui_screen == "BOOKING_SUMMARY":
         if _is_summary_modify_transcript(state.latest_transcript):
-            return {"resolved_intent": "MODIFY_BOOKING", "confidence": 0.96}
+            return {
+                "resolved_intent": "MODIFY_BOOKING",
+                "confidence": 0.96,
+                "speech_override": None,
+                "consecutive_failures": 0,
+                "last_failed_screen": None,
+            }
         if state.booking_slots.is_complete() and _is_summary_confirmation_transcript(state.latest_transcript):
-            return {"resolved_intent": "CONFIRM_BOOKING", "confidence": 0.97}
+            return {
+                "resolved_intent": "CONFIRM_BOOKING",
+                "confidence": 0.97,
+                "speech_override": None,
+                "consecutive_failures": 0,
+                "last_failed_screen": None,
+            }
 
+    # Layer 2: semantic classifier
+    try:
+        from agent.semantic_classifier import classify_intent_semantically
+
+        semantic_result = await classify_intent_semantically(
+            transcript=state.latest_transcript,
+            current_screen=state.current_ui_screen,
+        )
+        if semantic_result is not None:
+            if semantic_result.is_out_of_domain:
+                print(
+                    f"[Router][L2] Out-of-domain (score={semantic_result.confidence}), escalating to LLM"
+                )
+            elif not semantic_result.should_escalate_to_llm:
+                print(
+                    f"[Router][L2] HIGH confidence: intent={semantic_result.intent} "
+                    f"score={semantic_result.confidence} phrase='{semantic_result.matched_phrase}'"
+                )
+                return {
+                    "resolved_intent": semantic_result.intent,
+                    "confidence": semantic_result.confidence,
+                    "speech_override": None,
+                    "consecutive_failures": 0,
+                    "last_failed_screen": None,
+                }
+            else:
+                print(
+                    f"[Router][L2] MEDIUM confidence: intent={semantic_result.intent} "
+                    f"score={semantic_result.confidence} - hinting to LLM"
+                )
+                semantic_hint = semantic_result.intent
+    except Exception as exc:
+        print(f"[Router][L2] Semantic classifier error (non-fatal): {exc}")
+
+    hint_text = (
+        f"\n\nSemantic pre-classifier suggests this might be: {semantic_hint}. "
+        f"Confirm or override based on the full context."
+    ) if semantic_hint else ""
+    full_prompt = ROUTER_SYSTEM_PROMPT + hint_text
     messages = [
-        {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
+        {"role": "system", "content": full_prompt},
         {"role": "system", "content": f"Current UI screen: {state.current_ui_screen}"},
         {"role": "system", "content": f"Guest language preference: {state.language}"},
         {"role": "user", "content": state.latest_transcript},
@@ -554,8 +658,62 @@ async def route_intent(state: KioskState) -> dict:
         intent = "GENERAL_QUERY"
         confidence = 0.5
 
+    # Low-confidence fallback: if LLM classified as GENERAL_QUERY but transcript
+    # matches room browsing patterns, override to BOOK_ROOM.
+    if intent == "GENERAL_QUERY" and confidence < 0.80:
+        if _looks_like_room_browsing_request(state.latest_transcript):
+            print(f"[Router] Low-confidence fallback: GENERAL_QUERY({confidence}) -> BOOK_ROOM")
+            intent = "BOOK_ROOM"
+            confidence = 0.85
+
+    is_failure = intent in {"IDLE", "GENERAL_QUERY"} and confidence < 0.60
+    current_screen = state.current_ui_screen
+    if is_failure:
+        if state.last_failed_screen == current_screen:
+            consecutive_failures = (state.consecutive_failures or 0) + 1
+        else:
+            consecutive_failures = 1
+        last_failed_screen = current_screen
+    else:
+        consecutive_failures = 0
+        last_failed_screen = None
+
+    escalation_threshold = 2
+    if is_failure and consecutive_failures >= escalation_threshold:
+        print(f"[Router][L4] {consecutive_failures} consecutive failures -> escalating")
+        return {
+            "resolved_intent": "IDLE",
+            "confidence": 1.0,
+            "speech_override": (
+                "I'm sorry, I'm having trouble understanding. "
+                "A staff member can assist you right away - "
+                "please approach the front desk or press the call button on this screen."
+            ),
+            "consecutive_failures": consecutive_failures,
+            "last_failed_screen": last_failed_screen,
+        }
+
+    if is_failure and consecutive_failures == 1:
+        print("[Router][L4] First failure -> retry guidance")
+        return {
+            "resolved_intent": "IDLE",
+            "confidence": 1.0,
+            "speech_override": (
+                "I didn't quite catch that. "
+                "You can tap the screen buttons, or try saying it again in a different way."
+            ),
+            "consecutive_failures": consecutive_failures,
+            "last_failed_screen": last_failed_screen,
+        }
+
     print(f"[Router] -> Intent: {intent} (confidence: {confidence})")
-    return {"resolved_intent": intent, "confidence": confidence}
+    return {
+        "resolved_intent": intent,
+        "confidence": confidence,
+        "speech_override": None,
+        "consecutive_failures": consecutive_failures,
+        "last_failed_screen": last_failed_screen,
+    }
 
 
 GENERAL_CHAT_SYSTEM_PROMPT = """
@@ -607,6 +765,19 @@ async def general_chat(state: KioskState) -> dict:
     """Node 2: Handle general hotel questions and greetings."""
     print("[GeneralChat] Handling general query...")
 
+    if state.speech_override:
+        response = state.speech_override
+        updated_history = state.history + [
+            ConversationTurn(role="user", content=state.latest_transcript),
+            ConversationTurn(role="assistant", content=response),
+        ]
+        return {
+            "speech_response": response,
+            "speech_override": None,
+            "history": updated_history,
+            "next_ui_screen": state.current_ui_screen,
+        }
+
     if state.resolved_intent == "CHECK_IN":
         response = "Sure. Let's begin check in. Please scan your ID to continue."
         updated_history = state.history + [
@@ -615,6 +786,7 @@ async def general_chat(state: KioskState) -> dict:
         ]
         return {
             "speech_response": response,
+            "speech_override": None,
             "history": updated_history,
             "next_ui_screen": "SCAN_ID",
         }
@@ -639,6 +811,7 @@ async def general_chat(state: KioskState) -> dict:
 
     return {
         "speech_response": response,
+        "speech_override": None,
         "history": updated_history,
         "next_ui_screen": state.current_ui_screen,
     }
@@ -735,6 +908,22 @@ def _transcript_explicitly_identifies_room(
 async def booking_logic(state: KioskState) -> dict:
     """Node 3: Collect booking details slot by slot."""
     print("[BookingLogic] Running slot collection...")
+
+    if state.speech_override:
+        speech = state.speech_override
+        updated_history = state.history + [
+            ConversationTurn(role="user", content=state.latest_transcript),
+            ConversationTurn(role="assistant", content=speech),
+        ]
+        return {
+            "speech_response": speech,
+            "speech_override": None,
+            "booking_slots": state.booking_slots,
+            "active_slot": state.active_slot,
+            "selected_room": state.selected_room,
+            "history": updated_history,
+            "next_ui_screen": state.current_ui_screen,
+        }
 
     # Backend-authoritative confirmation path:
     # If the guest confirms on BOOKING_SUMMARY and all required slots are present,

@@ -450,22 +450,22 @@ export function RoomPreviewStoryCarousel({
       </div>
 
       {isExpanded && activeVisual && (
-        <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-950/94 p-6 lg:p-10">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/92 p-6 backdrop-blur-2xl lg:p-10">
           <div className="grid h-full w-full max-w-7xl gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
-            <div className="overflow-hidden rounded-[36px] border border-white/10 bg-slate-900">
+            <div className="overflow-hidden rounded-[36px] border border-white/8 bg-black shadow-2xl shadow-black/50">
               <img
                 src={optimizeCloudinaryUrl(activeVisual.src)}
                 alt={activeVisual.title}
                 className="h-full w-full object-cover"
               />
             </div>
-            <div className="flex flex-col rounded-[36px] border border-white/10 bg-slate-900/88 p-6">
+            <div className="flex flex-col rounded-[36px] border border-white/10 bg-slate-950 p-6 shadow-2xl shadow-black/40">
               <div className="flex items-center justify-between gap-4">
                 <p className="text-xs uppercase tracking-[0.3em] text-cyan-100/74">{activeVisual.category}</p>
                 <button
                   type="button"
                   onClick={() => setIsExpanded(false)}
-                  className="rounded-full border border-white/12 bg-white/[0.05] px-4 py-2 text-sm text-white/82 transition hover:bg-white/[0.1]"
+                  className="rounded-full border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-white/20"
                 >
                   Close
                 </button>
@@ -480,10 +480,7 @@ export function RoomPreviewStoryCarousel({
                     <button
                       key={visual.id}
                       type="button"
-                      onClick={() => {
-                        setStep(index);
-                        setIsExpanded(false);
-                      }}
+                      onClick={() => setStep(index)}
                       className={cn(
                         "overflow-hidden rounded-[20px] border transition",
                         index === currentIndex
@@ -491,7 +488,7 @@ export function RoomPreviewStoryCarousel({
                           : "border-white/10 hover:border-white/30"
                       )}
                     >
-                      <div className="aspect-[4/3] overflow-hidden bg-slate-950">
+                      <div className="aspect-[4/3] overflow-hidden bg-black">
                         <img
                           src={optimizeCloudinaryUrl(visual.src)}
                           alt={visual.title}

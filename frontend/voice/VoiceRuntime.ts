@@ -570,7 +570,10 @@ class VoiceRuntimeService {
         }
 
         this.setMode("speaking");
-        this.startWatchdog();  // Phase 10: Monitor TTS too
+        // NOTE: Do NOT start watchdog here. The system is actively responding
+        // via TTS, not stalled. Long room descriptions can exceed 30s playback.
+        // The TTS subscription (line ~240) clears the watchdog when TTS ends.
+        this.clearWatchdog();
 
         try {
             await TTSController.speak(text, language);

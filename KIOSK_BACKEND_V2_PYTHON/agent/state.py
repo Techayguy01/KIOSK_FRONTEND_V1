@@ -135,9 +135,14 @@ class KioskState(BaseModel):
 
     # What the AI will say back to the user (TTS input)
     speech_response: str = ""
+    speech_override: Optional[str] = None
 
     # The UI screen the frontend should transition to after this turn
     next_ui_screen: Optional[UIScreen] = None
+
+    # Tracks consecutive failed intents per session for graceful escalation
+    consecutive_failures: int = 0
+    last_failed_screen: Optional[str] = None
 
     # Error tracking
     error: Optional[str] = None
