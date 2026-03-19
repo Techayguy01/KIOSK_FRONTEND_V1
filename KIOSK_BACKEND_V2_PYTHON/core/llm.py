@@ -45,7 +45,7 @@ def _get_litellm():
     return _litellm_module, _litellm_completion
 
 
-def get_llm_response(messages: list[dict], temperature: float = 0.4) -> str:
+def get_llm_response(messages: list[dict], temperature: float = 0.4, max_tokens: int = 200) -> str:
     """
     Calls the LLM with automatic fallback.
     """
@@ -57,7 +57,7 @@ def get_llm_response(messages: list[dict], temperature: float = 0.4) -> str:
                 model=model,
                 messages=messages,
                 temperature=temperature,
-                max_tokens=1024,
+                max_tokens=max_tokens,
             )
             content = response.choices[0].message.content
             print(f"[LLM] Model responded: {model}")

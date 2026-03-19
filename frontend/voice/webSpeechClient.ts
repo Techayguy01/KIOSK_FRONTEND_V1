@@ -57,6 +57,7 @@ function normalizeSpeechRecognitionLanguage(lang: string): string {
 
 class BrowserWebSpeechClient {
     private recognition: SpeechRecognitionLike | null = null;
+    private prewarmRecognition: SpeechRecognitionLike | null = null;
     private interimCallback: InterimCallback | null = null;
     private endOfTurnCallback: EndOfTurnCallback | null = null;
     private speechStartedCallback: SpeechStartedCallback | null = null;
@@ -121,9 +122,75 @@ class BrowserWebSpeechClient {
         }
 
         console.log("[WebSpeech] Connecting...");
+        this.cancelPrewarm();
         this.shouldBeActive = true;
         this.intentionalStop = false;
         this.beginSession();
+    }
+
+    public prewarm(lang?: string): void {
+        if (!this.isSupported()) {
+            return;
+        }
+        if (this.prewarmRecognition || this.recognition || this.isStarting || this.nativeRunning || this.shouldBeActive) {
+            return;
+        }
+
+        const RecognitionCtor = this.getRecognitionCtor();
+        if (!RecognitionCtor) {
+            return;
+        }
+
+        const recognition = new RecognitionCtor();
+        const targetLang = normalizeSpeechRecognitionLanguage(lang || this.preferredLanguage);
+        this.prewarmRecognition = recognition;
+
+        recognition.continuous = false;
+        recognition.interimResults = false;
+        recognition.lang = targetLang;
+        recognition.maxAlternatives = 1;
+
+        const cleanup = (abortNative: boolean) => {
+            if (this.prewarmRecognition !== recognition) {
+                return;
+            }
+            this.prewarmRecognition = null;
+            recognition.onstart = null;
+            recognition.onresult = null;
+            recognition.onspeechstart = null;
+            recognition.onerror = null;
+            recognition.onend = null;
+
+            if (abortNative) {
+                try {
+                    recognition.abort();
+                } catch (error) {
+                    console.debug("[WebSpeech] Prewarm abort failed (safe to ignore):", error);
+                }
+            }
+        };
+
+        recognition.onstart = () => {
+            console.debug(`[WebSpeech] Prewarm connected (${targetLang})`);
+            cleanup(true);
+        };
+
+        recognition.onerror = (event: any) => {
+            console.debug(`[WebSpeech] Prewarm skipped (${String(event?.error || "unknown_error")})`);
+            cleanup(false);
+        };
+
+        recognition.onend = () => {
+            cleanup(false);
+        };
+
+        try {
+            console.debug(`[WebSpeech] Prewarming (${targetLang})`);
+            recognition.start();
+        } catch (error) {
+            console.debug("[WebSpeech] Prewarm start failed (safe to ignore):", error);
+            cleanup(false);
+        }
     }
 
     public send(_audioChunk: Int16Array): void {
@@ -137,6 +204,7 @@ class BrowserWebSpeechClient {
         this.intentionalStop = true;
         this.clearFinalCommitTimer();
         this.clearReconnectTimer();
+        this.cancelPrewarm();
 
         this.destroyRecognition({ stopNative: true });
 
@@ -421,6 +489,24 @@ class BrowserWebSpeechClient {
 
     private isStaleSession(sessionId: number): boolean {
         return sessionId !== this.activeSessionId;
+    }
+
+    private cancelPrewarm(): void {
+        if (!this.prewarmRecognition) return;
+
+        const recognition = this.prewarmRecognition;
+        this.prewarmRecognition = null;
+        recognition.onstart = null;
+        recognition.onresult = null;
+        recognition.onspeechstart = null;
+        recognition.onerror = null;
+        recognition.onend = null;
+
+        try {
+            recognition.abort();
+        } catch (error) {
+            console.debug("[WebSpeech] Cancel prewarm failed (safe to ignore):", error);
+        }
     }
 
     private destroyRecognition(options: { stopNative: boolean }): void {

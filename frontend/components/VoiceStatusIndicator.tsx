@@ -6,8 +6,9 @@ import { VoiceRuntime, VoiceMode } from "../voice/VoiceRuntime";
 import { VoiceSessionErrorReason } from "../voice/voice.types";
 import { TTSController } from "../voice/TTSController";
 
-type VoiceStatusKind = "listening" | "speaking" | "processing" | "paused" | "ready" | "unavailable";
+type VoiceStatusKind = "listening" | "speaking" | "processing" | "paused" | "ready" | "reconnecting" | "unavailable";
 type InteractionMode = "manual" | "voice";
+const RECOVERY_BADGE_MS = 3000;
 
 type VoiceStatusIndicatorProps = {
     currentState: UiState;
@@ -46,8 +47,10 @@ export const VoiceStatusIndicator: React.FC<VoiceStatusIndicatorProps> = ({
     const [mode, setMode] = useState<VoiceMode>(VoiceRuntime.getMode());
     const [isProcessing, setIsProcessing] = useState(false);
     const [isPaused, setIsPaused] = useState(false);
+    const [isRecovering, setIsRecovering] = useState(false);
     const [unavailableReason, setUnavailableReason] = useState<VoiceSessionErrorReason | null>(null);
     const processingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const recoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     const clearProcessingTimer = () => {
         if (!processingTimerRef.current) return;
@@ -65,6 +68,26 @@ export const VoiceStatusIndicator: React.FC<VoiceStatusIndicatorProps> = ({
         }, 5000);
     };
 
+    const clearRecoveryTimer = () => {
+        if (!recoveryTimerRef.current) return;
+        clearTimeout(recoveryTimerRef.current);
+        recoveryTimerRef.current = null;
+    };
+
+    const showRecoveryWindow = () => {
+        clearRecoveryTimer();
+        setIsRecovering(true);
+        recoveryTimerRef.current = setTimeout(() => {
+            setIsRecovering(false);
+            recoveryTimerRef.current = null;
+        }, RECOVERY_BADGE_MS);
+    };
+
+    const clearRecoveryWindow = () => {
+        clearRecoveryTimer();
+        setIsRecovering(false);
+    };
+
     useEffect(() => {
         const unsubVoice = VoiceRuntime.subscribe((event) => {
             switch (event.type) {
@@ -73,12 +96,14 @@ export const VoiceStatusIndicator: React.FC<VoiceStatusIndicatorProps> = ({
                     break;
                 case "VOICE_SESSION_STARTED":
                     clearProcessingTimer();
+                    clearRecoveryWindow();
                     setIsProcessing(false);
                     setIsPaused(false);
                     setUnavailableReason(null);
                     break;
                 case "VOICE_SESSION_ENDED":
                     clearProcessingTimer();
+                    clearRecoveryWindow();
                     setIsProcessing(false);
                     setIsPaused(event.reason === "pause");
                     if (event.reason === "permission_denied") {
@@ -87,12 +112,18 @@ export const VoiceStatusIndicator: React.FC<VoiceStatusIndicatorProps> = ({
                     break;
                 case "VOICE_SESSION_ABORTED":
                     clearProcessingTimer();
+                    clearRecoveryWindow();
                     setIsProcessing(false);
                     setIsPaused(false);
                     break;
                 case "VOICE_SESSION_ERROR":
                     clearProcessingTimer();
                     setIsProcessing(false);
+                    if (event.reason === "stt_recoverable" && !event.fatal) {
+                        showRecoveryWindow();
+                        break;
+                    }
+                    clearRecoveryWindow();
                     if (
                         event.reason === "stt_permission_denied" ||
                         event.reason === "stt_fatal" ||
@@ -110,6 +141,7 @@ export const VoiceStatusIndicator: React.FC<VoiceStatusIndicatorProps> = ({
             setMode(nextMode);
             if (nextMode === "listening" || nextMode === "speaking") {
                 clearProcessingTimer();
+                clearRecoveryWindow();
                 setIsProcessing(false);
                 setIsPaused(false);
             }
@@ -118,6 +150,7 @@ export const VoiceStatusIndicator: React.FC<VoiceStatusIndicatorProps> = ({
         const unsubTTS = TTSController.subscribe((event) => {
             if (event.type === "TTS_STARTED") {
                 clearProcessingTimer();
+                clearRecoveryWindow();
                 setIsProcessing(false);
                 setIsPaused(false);
             }
@@ -128,6 +161,7 @@ export const VoiceStatusIndicator: React.FC<VoiceStatusIndicatorProps> = ({
             unsubMode();
             unsubTTS();
             clearProcessingTimer();
+            clearRecoveryTimer();
         };
     }, []);
 
@@ -152,6 +186,9 @@ export const VoiceStatusIndicator: React.FC<VoiceStatusIndicatorProps> = ({
         if (voiceLocked) {
             return { kind: "paused", label: "Voice locked" };
         }
+        if (isRecovering) {
+            return { kind: "reconnecting", label: "Reconnecting..." };
+        }
         if (mode === "speaking") {
             return { kind: "speaking", label: "Speaking" };
         }
@@ -165,7 +202,7 @@ export const VoiceStatusIndicator: React.FC<VoiceStatusIndicatorProps> = ({
             return { kind: "listening", label: "Listening" };
         }
         return { kind: "ready", label: "Tap mic to speak" };
-    }, [interactionMode, isPaused, isProcessing, mode, pendingVoiceConfirm, unavailableReason, voiceEnabled, voiceLocked]);
+    }, [interactionMode, isPaused, isProcessing, isRecovering, mode, pendingVoiceConfirm, unavailableReason, voiceEnabled, voiceLocked]);
 
     const badgeClassByKind: Record<VoiceStatusKind, string> = {
         listening: "border-emerald-400/60 bg-emerald-500/15 text-emerald-100",
@@ -173,6 +210,7 @@ export const VoiceStatusIndicator: React.FC<VoiceStatusIndicatorProps> = ({
         processing: "border-amber-400/60 bg-amber-500/15 text-amber-100",
         paused: "border-slate-400/60 bg-slate-500/15 text-slate-100",
         ready: "border-blue-400/60 bg-blue-500/15 text-blue-100",
+        reconnecting: "border-sky-300/70 bg-sky-400/15 text-sky-50",
         unavailable: "border-rose-400/60 bg-rose-500/15 text-rose-100",
     };
 
@@ -181,6 +219,8 @@ export const VoiceStatusIndicator: React.FC<VoiceStatusIndicatorProps> = ({
             case "speaking":
                 return <Volume2 size={14} />;
             case "processing":
+                return <Loader2 size={14} className="animate-spin" />;
+            case "reconnecting":
                 return <Loader2 size={14} className="animate-spin" />;
             case "paused":
                 return <PauseCircle size={14} />;
@@ -218,7 +258,7 @@ export const VoiceStatusIndicator: React.FC<VoiceStatusIndicatorProps> = ({
                 type="button"
                 onClick={handleClick}
                 disabled={!canTapToToggle}
-                className={`flex w-[188px] items-center justify-center rounded-full border px-3 py-2 text-xs font-medium shadow-lg backdrop-blur-md transition-colors ${badgeClassByKind[status.kind]} ${canTapToToggle ? "hover:brightness-110" : "cursor-not-allowed opacity-85"}`}
+                className={`flex w-[188px] items-center justify-center rounded-full border px-3 py-2 text-xs font-medium shadow-lg backdrop-blur-md transition-colors ${badgeClassByKind[status.kind]} ${status.kind === "reconnecting" ? "animate-pulse" : ""} ${canTapToToggle ? "hover:brightness-110" : "cursor-not-allowed opacity-85"}`}
                 aria-live="polite"
                 aria-label={`Voice status: ${status.label}`}
                 title={`Voice status: ${status.label}`}

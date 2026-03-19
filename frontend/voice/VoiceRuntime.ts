@@ -105,6 +105,7 @@ class VoiceRuntimeService {
 
     // Phase 10: Network retry
     private isRetrying: boolean = false;
+    private hasAttemptedSttPrewarm: boolean = false;
 
     // Phase 10: Debug metrics (dev only)
     private metrics: SessionMetrics = this.createEmptyMetrics();
@@ -399,7 +400,8 @@ class VoiceRuntimeService {
 
     private setMode(newMode: VoiceMode): void {
         if (this.mode === newMode) return;
-        console.log(`[VoiceRuntime] Mode: ${this.mode} → ${newMode}`);
+        const previousMode = this.mode;
+        console.log(`[VoiceRuntime] Mode: ${previousMode} → ${newMode}`);
         this.mode = newMode;
 
         // Reset timeouts to defaults when returning to idle
@@ -408,7 +410,24 @@ class VoiceRuntimeService {
             this.noResultTimeoutMs = CONFIG.NO_RESULT_TIMEOUT_MS;
         }
 
+        this.maybePrewarmStt(previousMode, newMode);
         this.modeListeners.forEach(cb => cb(newMode));
+    }
+
+    private maybePrewarmStt(previousMode: VoiceMode, newMode: VoiceMode): void {
+        // One-shot warm-up on the first idle -> speaking transition, which is typically
+        // the welcome TTS. This primes the browser STT network path without changing flow.
+        if (this.hasAttemptedSttPrewarm) return;
+        if (previousMode !== "idle" || newMode !== "speaking") return;
+        if (!WebSpeechClient.isSupported()) return;
+        if (Date.now() < this.permissionDeniedCooldownUntil) return;
+
+        this.hasAttemptedSttPrewarm = true;
+        try {
+            WebSpeechClient.prewarm(getCurrentTenantLanguage());
+        } catch (error) {
+            console.debug("[VoiceRuntime] STT prewarm failed silently:", error);
+        }
     }
 
     public getMode(): VoiceMode {

@@ -2201,6 +2201,23 @@ class AgentAdapterService {
                 !this.isRoomInfoQuery(transcript) &&
                 (strictEvent === "GENERAL_QUERY" || strictEvent === "BOOK_ROOM_SELECTED" || strictEvent === "ROOM_SELECTED")
             ) {
+                // If the backend stayed on ROOM_SELECT and provided speech, trust it.
+                // The backend may be responding to a feature query (e.g. "room with jacuzzi")
+                // or giving a helpful fallback — don't replace that with a generic error.
+                const backendStayedOnRoomSelect = !serverState || serverState === requestState;
+                const backendProvidedSpeech = Boolean(decision?.speech);
+                if (backendStayedOnRoomSelect && backendProvidedSpeech) {
+                    console.log("[AgentAdapter] Backend stayed on ROOM_SELECT with speech — trusting backend response");
+                    this.speak(decision.speech);
+                    this.applyPayloadData("GENERAL_QUERY", {
+                        ...decision,
+                        nextUiScreen: "ROOM_SELECT",
+                        backendDecision: true,
+                        selectedRoom: null,
+                    }, "ROOM_SELECT");
+                    this.notifyListeners();
+                    return;
+                }
                 console.warn("[AgentAdapter] Overriding ambiguous ROOM_SELECT speech with deterministic room prompt");
                 this.applyPayloadData("GENERAL_QUERY", {
                     ...decision,
