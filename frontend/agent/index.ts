@@ -13,6 +13,7 @@ export type UiState =
     | "ROOM_PREVIEW"
     | "BOOKING_COLLECT"
     | "BOOKING_SUMMARY"
+    | "HELP"
     | "PAYMENT"
     | "KEY_DISPENSING"
     | "COMPLETE"
@@ -37,6 +38,7 @@ export const STATE_SPEECH_MAP: Partial<Record<UiState, string>> = {
     ROOM_PREVIEW: "Here is a closer look at the room you selected.",
     BOOKING_COLLECT: "Let me help you book a room. I'll need a few details.",
     BOOKING_SUMMARY: "Let me confirm your booking details.",
+    HELP: "Certainly. Here are the support details for immediate assistance.",
     PAYMENT: "Please complete your payment.",
     KEY_DISPENSING: "Please wait while I prepare your key.",
     COMPLETE: "Thank you for choosing {{TENANT_NAME}}. Enjoy your stay.",
@@ -61,6 +63,7 @@ export const STATE_INPUT_MODES: Record<UiState, InputMode[]> = {
     ROOM_PREVIEW: ["VOICE", "TOUCH"],
     BOOKING_COLLECT: ["VOICE", "TOUCH"], // Conversational booking - Voice primary
     BOOKING_SUMMARY: ["VOICE", "TOUCH"], // Confirmation - Both allowed
+    HELP: ["TOUCH"],
     PAYMENT: ["VOICE", "TOUCH"],
     KEY_DISPENSING: [], // Hardware lock - No input
     COMPLETE: ["TOUCH"], // Tap to finish/restart
@@ -108,6 +111,10 @@ export const VOICE_COMMAND_MAP: Record<UiState, Partial<Record<string, Intent>>>
         "confirm": "CONFIRM_PAYMENT",
         "go back": "BACK_REQUESTED",
         "cancel": "CANCEL_BOOKING",
+    },
+    HELP: {
+        "go back": "BACK_REQUESTED",
+        "cancel": "CANCEL_REQUESTED",
     },
     // States where Voice is ignored (Redundant but explicit)
     SCAN_ID: {},
@@ -181,16 +188,19 @@ const TRANSITION_TABLE: Record<UiState, Partial<Record<Intent, UiState>>> = {
         TOUCH_SELECTED: "MANUAL_MENU",
         VOICE_STARTED: "AI_CHAT",
         BOOK_ROOM_SELECTED: "ROOM_SELECT",
+        HELP_SELECTED: "HELP",
     },
     AI_CHAT: {
         CHECK_IN_SELECTED: "SCAN_ID",
         BOOK_ROOM_SELECTED: "ROOM_SELECT",
+        HELP_SELECTED: "HELP",
         BACK_REQUESTED: "WELCOME",
         CANCEL_REQUESTED: "WELCOME",
     },
     MANUAL_MENU: {
         CHECK_IN_SELECTED: "SCAN_ID",
         BOOK_ROOM_SELECTED: "ROOM_SELECT",
+        HELP_SELECTED: "HELP",
         BACK_REQUESTED: "WELCOME",
         CANCEL_REQUESTED: "WELCOME",
     },
@@ -208,6 +218,7 @@ const TRANSITION_TABLE: Record<UiState, Partial<Record<Intent, UiState>>> = {
     },
     ROOM_SELECT: {
         ROOM_SELECTED: "ROOM_PREVIEW",
+        HELP_SELECTED: "HELP",
         BACK_REQUESTED: "MANUAL_MENU", // Logical previous for both flows (or effectively restart)
         CANCEL_REQUESTED: "WELCOME",
     },
@@ -217,7 +228,7 @@ const TRANSITION_TABLE: Record<UiState, Partial<Record<Intent, UiState>>> = {
         ASK_PRICE: "ROOM_PREVIEW",
         COMPARE_ROOMS: "ROOM_PREVIEW",
         GENERAL_QUERY: "ROOM_PREVIEW",
-        HELP_SELECTED: "ROOM_PREVIEW",
+        HELP_SELECTED: "HELP",
         MODIFY_BOOKING: "ROOM_PREVIEW",
         SELECT_ROOM: "ROOM_PREVIEW",
         PROVIDE_GUESTS: "BOOKING_COLLECT",
@@ -243,7 +254,7 @@ const TRANSITION_TABLE: Record<UiState, Partial<Record<Intent, UiState>>> = {
         // Escape hatches
         CANCEL_BOOKING: "ROOM_SELECT",
         BACK_REQUESTED: "ROOM_SELECT",
-        HELP_SELECTED: "BOOKING_COLLECT",
+        HELP_SELECTED: "HELP",
         RESET: "IDLE",
     },
     BOOKING_SUMMARY: {
@@ -251,8 +262,14 @@ const TRANSITION_TABLE: Record<UiState, Partial<Record<Intent, UiState>>> = {
         CONFIRM_PAYMENT: "PAYMENT",
         // User wants to change something → back to collection
         MODIFY_BOOKING: "BOOKING_COLLECT",
+        HELP_SELECTED: "HELP",
         BACK_REQUESTED: "BOOKING_COLLECT",
         CANCEL_BOOKING: "WELCOME",
+        RESET: "IDLE",
+    },
+    HELP: {
+        BACK_REQUESTED: "WELCOME",
+        CANCEL_REQUESTED: "WELCOME",
         RESET: "IDLE",
     },
     PAYMENT: {

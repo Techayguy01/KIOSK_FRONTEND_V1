@@ -13,7 +13,7 @@ const MACHINE_CONFIG: StateConfig = {
     on: {
       CHECK_IN_SELECTED: 'SCAN_ID',
       BOOK_ROOM_SELECTED: 'ROOM_SELECT',
-      HELP_SELECTED: 'WELCOME', // Stay on page, show notification
+      HELP_SELECTED: 'HELP',
       TOUCH_SELECTED: 'MANUAL_MENU',
       EXPLAIN_CAPABILITIES: 'WELCOME',
       GENERAL_QUERY: 'WELCOME'
@@ -24,7 +24,7 @@ const MACHINE_CONFIG: StateConfig = {
     on: {
       CHECK_IN_SELECTED: 'SCAN_ID',
       BOOK_ROOM_SELECTED: 'ROOM_SELECT',
-      HELP_SELECTED: 'IDLE' // or HELP state if exists
+      HELP_SELECTED: 'HELP'
     },
     canGoBack: true
   },
@@ -32,7 +32,7 @@ const MACHINE_CONFIG: StateConfig = {
     on: {
       CHECK_IN_SELECTED: 'SCAN_ID',
       BOOK_ROOM_SELECTED: 'ROOM_SELECT',
-      HELP_SELECTED: 'IDLE'
+      HELP_SELECTED: 'HELP'
     },
     canGoBack: true
   },
@@ -70,6 +70,7 @@ const MACHINE_CONFIG: StateConfig = {
   ROOM_SELECT: {
     on: {
       ROOM_SELECTED: 'ROOM_PREVIEW',
+      HELP_SELECTED: 'HELP',
       BACK_REQUESTED: 'MANUAL_MENU',
       CANCEL_REQUESTED: 'WELCOME'
     },
@@ -82,7 +83,7 @@ const MACHINE_CONFIG: StateConfig = {
       ASK_PRICE: 'ROOM_PREVIEW',
       COMPARE_ROOMS: 'ROOM_PREVIEW',
       GENERAL_QUERY: 'ROOM_PREVIEW',
-      HELP_SELECTED: 'ROOM_PREVIEW',
+      HELP_SELECTED: 'HELP',
       MODIFY_BOOKING: 'ROOM_PREVIEW',
       SELECT_ROOM: 'ROOM_PREVIEW',
       PROVIDE_GUESTS: 'BOOKING_COLLECT',
@@ -108,7 +109,7 @@ const MACHINE_CONFIG: StateConfig = {
       CONFIRM_BOOKING: 'BOOKING_SUMMARY',
       CANCEL_BOOKING: 'ROOM_SELECT',
       BACK_REQUESTED: 'ROOM_SELECT',
-      HELP_SELECTED: 'BOOKING_COLLECT',
+      HELP_SELECTED: 'HELP',
       RESET: 'IDLE'
     },
     canGoBack: true
@@ -117,8 +118,17 @@ const MACHINE_CONFIG: StateConfig = {
     on: {
       CONFIRM_PAYMENT: 'PAYMENT',
       MODIFY_BOOKING: 'BOOKING_COLLECT',
+      HELP_SELECTED: 'HELP',
       BACK_REQUESTED: 'BOOKING_COLLECT',
       CANCEL_BOOKING: 'WELCOME',
+      RESET: 'IDLE'
+    },
+    canGoBack: true
+  },
+  HELP: {
+    on: {
+      BACK_REQUESTED: 'WELCOME',
+      CANCEL_REQUESTED: 'WELCOME',
       RESET: 'IDLE'
     },
     canGoBack: true
@@ -180,6 +190,7 @@ export const StateMachine = {
       ROOM_PREVIEW: 'ROOM_SELECT',
       BOOKING_COLLECT: 'ROOM_PREVIEW',
       BOOKING_SUMMARY: 'BOOKING_COLLECT',
+      HELP: 'WELCOME',
       PAYMENT: 'BOOKING_SUMMARY',
       KEY_DISPENSING: 'PAYMENT',
       COMPLETE: 'WELCOME',

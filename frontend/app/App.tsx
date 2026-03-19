@@ -15,6 +15,7 @@ import { RoomSelectPage } from '../pages/RoomSelectPage';
 import { RoomPreviewPage } from '../pages/RoomPreviewPage';
 import { BookingCollectPage } from '../pages/BookingCollectPage';
 import { BookingSummaryPage } from '../pages/BookingSummaryPage';
+import { HelpPage } from '../pages/HelpPage';
 import { PaymentPage } from '../pages/PaymentPage';
 import { CompletePage } from '../pages/CompletePage';
 
@@ -42,6 +43,7 @@ const STATE_TO_ROUTE: Record<UiState, string> = {
   ROOM_PREVIEW: 'room-preview',
   BOOKING_COLLECT: 'booking-collect',
   BOOKING_SUMMARY: 'booking-summary',
+  HELP: 'help',
   PAYMENT: 'payment',
   KEY_DISPENSING: 'key-dispensing',
   COMPLETE: 'complete',
@@ -265,6 +267,7 @@ const TenantKioskApp: React.FC = () => {
       case 'ROOM_PREVIEW': return <RoomPreviewPage />;
       case 'BOOKING_COLLECT': return <BookingCollectPage />;
       case 'BOOKING_SUMMARY': return <BookingSummaryPage />;
+      case 'HELP': return <HelpPage />;
       case 'PAYMENT': return <PaymentPage />;
 
       case 'KEY_DISPENSING': return (

@@ -20,6 +20,7 @@ export type Intent =
     | "CANCEL_REQUESTED"
     | "EXPLAIN_CAPABILITIES"
     | "GENERAL_QUERY"
+    | "REQUEST_HELP"
     // NEW: Booking flow intents
     | "SELECT_ROOM"
     | "PROVIDE_GUESTS"

@@ -40,6 +40,7 @@ const VOICE_AUTHORITY_MATRIX: Record<UiState, boolean> = {
     ROOM_PREVIEW: true,
     BOOKING_COLLECT: true,
     BOOKING_SUMMARY: true,
+    HELP: false,
     PAYMENT: true,
     KEY_DISPENSING: false,
     COMPLETE: false,
@@ -1838,6 +1839,7 @@ class AgentAdapterService {
                 // Room data selection remains a separate concern.
                 return 'ROOM_SELECTED';
             case 'HELP':
+            case 'REQUEST_HELP':
                 return 'HELP_SELECTED';
             case 'SCAN_ID':
                 return 'SCAN_COMPLETED';
@@ -2677,8 +2679,11 @@ class AgentAdapterService {
     private resolveNextStateFromIntent(currentState: UiState, intent: string): UiState {
         // ROOM_SELECT must not auto-advance on generic queries/amenity questions.
         if (currentState === "ROOM_SELECT") {
-            if (intent === "ASK_ROOM_DETAIL" || intent === "ASK_PRICE" || intent === "COMPARE_ROOMS" || intent === "GENERAL_QUERY" || intent === "HELP_SELECTED") {
+            if (intent === "ASK_ROOM_DETAIL" || intent === "ASK_PRICE" || intent === "COMPARE_ROOMS" || intent === "GENERAL_QUERY") {
                 return "ROOM_SELECT";
+            }
+            if (intent === "HELP_SELECTED") {
+                return "HELP";
             }
             if (intent === "PROVIDE_GUESTS" || intent === "PROVIDE_DATES" || intent === "PROVIDE_NAME" || intent === "CONFIRM_BOOKING" || intent === "MODIFY_BOOKING") {
                 return "ROOM_SELECT";
@@ -2697,7 +2702,6 @@ class AgentAdapterService {
             "ASK_PRICE",
             "COMPARE_ROOMS",
             "GENERAL_QUERY",
-            "HELP_SELECTED",
         ]);
 
         if (currentState === "ROOM_SELECT" && bookingIntents.has(intent)) {
@@ -2707,8 +2711,11 @@ class AgentAdapterService {
         }
 
         if (currentState === "ROOM_PREVIEW") {
-            if (intent === "ROOM_SELECTED" || intent === "ASK_ROOM_DETAIL" || intent === "ASK_PRICE" || intent === "COMPARE_ROOMS" || intent === "GENERAL_QUERY" || intent === "HELP_SELECTED" || intent === "MODIFY_BOOKING" || intent === "SELECT_ROOM") {
+            if (intent === "ROOM_SELECTED" || intent === "ASK_ROOM_DETAIL" || intent === "ASK_PRICE" || intent === "COMPARE_ROOMS" || intent === "GENERAL_QUERY" || intent === "MODIFY_BOOKING" || intent === "SELECT_ROOM") {
                 return "ROOM_PREVIEW";
+            }
+            if (intent === "HELP_SELECTED") {
+                return "HELP";
             }
         }
 

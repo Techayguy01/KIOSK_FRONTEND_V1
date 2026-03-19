@@ -52,6 +52,8 @@ async def initialize_semantic_classifier() -> None:
         "[SemanticClassifier] Initializing - embedding %d intents...",
         len(INTENT_EXAMPLES),
     )
+    # If embeddings are unavailable (missing deps / disabled), it's better to
+    # disable this classifier entirely than to log a warning per phrase.
     results: dict[str, list[tuple[str, list[float]]]] = {}
     for intent_name, phrases in INTENT_EXAMPLES.items():
         embedded_phrases: list[tuple[str, list[float]]] = []
@@ -64,11 +66,12 @@ async def initialize_semantic_classifier() -> None:
                     embedded_phrases.append((phrase, vector))
             except Exception as exc:
                 logger.warning(
-                    "[SemanticClassifier] Failed to embed '%s' for intent %s: %s",
-                    phrase,
-                    intent_name,
+                    "[SemanticClassifier] Semantic embeddings unavailable; disabling classifier. Reason: %s",
                     exc,
                 )
+                _is_ready = False
+                _intent_embeddings = {}
+                return
         results[intent_name] = embedded_phrases
         logger.info(
             "[SemanticClassifier] Intent %s: %d phrases embedded",

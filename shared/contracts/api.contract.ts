@@ -12,12 +12,16 @@ export interface ApiErrorBody {
 export interface TenantConfigDTO {
   timezone: string;
   supportPhone?: string | null;
+  support_phone?: string | null;
   checkInTime: string;
   checkOutTime?: string;
   defaultLang?: string;
   availableLang?: string[];
   welcomeMessage?: string | null;
   supportEmail?: string | null;
+  support_email?: string | null;
+  address?: string | null;
+  extra?: Record<string, any>;
   logoUrl?: string | null;
 }
 
@@ -26,6 +30,10 @@ export interface TenantDTO {
   name: string;
   slug: string;
   plan: string;
+  support_phone?: string | null;
+  support_email?: string | null;
+  address?: string | null;
+  extra?: Record<string, any>;
   hotelConfig?: TenantConfigDTO | null;
 }
 

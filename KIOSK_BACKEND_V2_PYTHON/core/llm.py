@@ -70,16 +70,48 @@ def get_llm_response(messages: list[dict], temperature: float = 0.4) -> str:
 
 
 _embedding_model = None
+_embedding_init_error = None  # Cache first failure so we don't spam logs / retry endlessly.
+_embedding_backend = (os.getenv("KIOSK_EMBEDDINGS_BACKEND") or "local").strip().lower()
 
 
 def _get_embedding_model():
     """Lazy-load the local sentence-transformers model (cached after first call)."""
-    global _embedding_model
+    global _embedding_model, _embedding_init_error
+
+    if _embedding_backend in ("off", "none", "disabled", "false", "0"):
+        raise RuntimeError(
+            "Embeddings are disabled via KIOSK_EMBEDDINGS_BACKEND. "
+            "Set it to 'local' (default) to use sentence-transformers."
+        )
+
+    # If we already tried and failed, do not retry on every call.
+    if _embedding_init_error is not None:
+        raise _embedding_init_error
+
     if _embedding_model is None:
-        from sentence_transformers import SentenceTransformer
-        print("[LLM][Embedding] Loading local model: all-MiniLM-L6-v2 ...")
-        _embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
-        print("[LLM][Embedding] Model loaded (384-dim, CPU, no API key needed)")
+        try:
+            from sentence_transformers import SentenceTransformer
+        except Exception as exc:
+            _embedding_init_error = RuntimeError(
+                "Local embeddings require the Python package 'sentence-transformers'. "
+                "Install it (and its deps) in the backend environment, or set "
+                "KIOSK_EMBEDDINGS_BACKEND=disabled to skip semantic embeddings."
+            )
+            _embedding_init_error.__cause__ = exc
+            raise _embedding_init_error
+
+        try:
+            print("[LLM][Embedding] Loading local model: all-MiniLM-L6-v2 ...")
+            _embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+            print("[LLM][Embedding] Model loaded (384-dim, CPU, no API key needed)")
+        except Exception as exc:
+            _embedding_init_error = RuntimeError(
+                "Failed to load the local embedding model (all-MiniLM-L6-v2). "
+                "Install required deps (often torch) or disable embeddings."
+            )
+            _embedding_init_error.__cause__ = exc
+            raise _embedding_init_error
+
     return _embedding_model
 
 
@@ -88,13 +120,9 @@ def get_embedding(text: str) -> list[float]:
     Generates a 384-dim embedding using the local all-MiniLM-L6-v2 model.
     Runs on CPU, no API key required.
     """
-    try:
-        model = _get_embedding_model()
-        vector = model.encode(text, normalize_embeddings=True)
-        return vector.tolist()
-    except Exception as e:
-        print(f"[LLM][Embedding] Error generating embedding: {e}")
-        raise
+    model = _get_embedding_model()
+    vector = model.encode(text, normalize_embeddings=True)
+    return vector.tolist()
 
 
 def translate_to_english(text: str) -> str:

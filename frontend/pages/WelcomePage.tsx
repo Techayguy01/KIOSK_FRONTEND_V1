@@ -325,8 +325,7 @@ export const WelcomePage: React.FC<WelcomePageProps> = ({ visualMode = 'voice' }
             subtitle: 'Call staff member',
             icon: <HelpCircle size={40} />,
             accentColor: 'emerald',
-            // onClick: () => emit('HELP_SELECTED'), // Not in contract, ignoring or mapping to Cancel/Voice
-            onClick: () => console.warn("Help not implemented in Agent"),
+            onClick: () => emit('HELP_SELECTED'),
           },
         ]}
       />

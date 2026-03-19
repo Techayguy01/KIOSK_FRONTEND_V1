@@ -12,11 +12,11 @@ HOW TO ADD NEW EXAMPLES:
 # Only these intents will be considered on each screen.
 # This prevents "yes" on WELCOME from triggering CONFIRM_BOOKING.
 VALID_INTENTS_PER_SCREEN: dict[str, list[str]] = {
-    "IDLE": ["BOOK_ROOM", "CHECK_IN", "GENERAL_QUERY"],
-    "WELCOME": ["BOOK_ROOM", "CHECK_IN", "GENERAL_QUERY", "IDLE"],
-    "AI_CHAT": ["BOOK_ROOM", "CHECK_IN", "GENERAL_QUERY", "CANCEL_BOOKING"],
+    "IDLE": ["BOOK_ROOM", "CHECK_IN", "GENERAL_QUERY", "REQUEST_HELP"],
+    "WELCOME": ["BOOK_ROOM", "CHECK_IN", "GENERAL_QUERY", "IDLE", "REQUEST_HELP"],
+    "AI_CHAT": ["BOOK_ROOM", "CHECK_IN", "GENERAL_QUERY", "CANCEL_BOOKING", "REQUEST_HELP"],
     "MANUAL_MENU": ["BOOK_ROOM", "CHECK_IN", "GENERAL_QUERY"],
-    "ROOM_SELECT": ["BOOK_ROOM", "GENERAL_QUERY", "CANCEL_BOOKING"],
+    "ROOM_SELECT": ["BOOK_ROOM", "GENERAL_QUERY", "CANCEL_BOOKING", "REQUEST_HELP"],
     "ROOM_PREVIEW": ["BOOK_ROOM", "CONFIRM_BOOKING", "CANCEL_BOOKING", "MODIFY_BOOKING", "GENERAL_QUERY"],
     "BOOKING_COLLECT": [
         "PROVIDE_GUESTS",
@@ -25,8 +25,9 @@ VALID_INTENTS_PER_SCREEN: dict[str, list[str]] = {
         "MODIFY_BOOKING",
         "CANCEL_BOOKING",
         "GENERAL_QUERY",
+        "REQUEST_HELP",
     ],
-    "BOOKING_SUMMARY": ["CONFIRM_BOOKING", "MODIFY_BOOKING", "CANCEL_BOOKING"],
+    "BOOKING_SUMMARY": ["CONFIRM_BOOKING", "MODIFY_BOOKING", "CANCEL_BOOKING", "REQUEST_HELP"],
     "PAYMENT": ["CONFIRM_BOOKING", "CANCEL_BOOKING"],
     "SCAN_ID": ["CANCEL_BOOKING", "GENERAL_QUERY"],
     "ID_VERIFY": ["CONFIRM_BOOKING", "CANCEL_BOOKING", "GENERAL_QUERY"],
@@ -101,6 +102,18 @@ INTENT_EXAMPLES: dict[str, list[str]] = {
         "I have a question",
         "can you help me",
         "what are the facilities",
+    ],
+    "REQUEST_HELP": [
+        "I need help",
+        "Call the manager",
+        "Talk to a human",
+        "Where is the staff",
+        "Support",
+        "assist me please",
+        "I need staff assistance",
+        "can someone help me here",
+        "connect me to support",
+        "call someone from the front desk",
     ],
     "CONFIRM_BOOKING": [
         "yes",

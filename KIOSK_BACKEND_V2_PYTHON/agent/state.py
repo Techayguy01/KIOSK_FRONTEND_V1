@@ -24,6 +24,7 @@ UIScreen = Literal[
     "ROOM_PREVIEW",
     "BOOKING_COLLECT",
     "BOOKING_SUMMARY",
+    "HELP",
     "PAYMENT",
     "KEY_DISPENSING",
     "COMPLETE",
@@ -48,6 +49,7 @@ IntentType = Literal[
     "CONFIRM_BOOKING",
     "CANCEL_BOOKING",
     "MODIFY_BOOKING",
+    "REQUEST_HELP",
     "IDLE",
     "RESET",
 ]

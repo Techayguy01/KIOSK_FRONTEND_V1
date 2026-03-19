@@ -539,6 +539,7 @@ Your job is to read the ENTIRE message carefully before deciding the final inten
 
 - BOOK_ROOM: User wants to start a NEW reservation, explore rooms, see room options, take a virtual tour, view available rooms, or browse what's available. Any expression of interest in seeing, exploring, or choosing rooms counts as BOOK_ROOM.
 - CHECK_IN: User is at the kiosk to get their room key for an EXISTING booking.
+- REQUEST_HELP: User is asking for staff assistance, a human, a manager, or general support contact info.
 - GENERAL_QUERY: User is asking about amenities (pool, gym, etc.), prices, or just greeting.
 - PROVIDE_GUESTS: User is giving the number of people staying.
 - PROVIDE_DATES: User is giving check-in or check-out dates.
@@ -789,6 +790,19 @@ async def general_chat(state: KioskState) -> dict:
             "speech_override": None,
             "history": updated_history,
             "next_ui_screen": "SCAN_ID",
+        }
+
+    if state.resolved_intent == "REQUEST_HELP":
+        response = "Certainly, I will pull up the support contact details for you now."
+        updated_history = state.history + [
+            ConversationTurn(role="user", content=state.latest_transcript),
+            ConversationTurn(role="assistant", content=response),
+        ]
+        return {
+            "speech_response": response,
+            "speech_override": None,
+            "history": updated_history,
+            "next_ui_screen": "HELP",
         }
 
     history_messages = [
