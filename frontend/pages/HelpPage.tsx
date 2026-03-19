@@ -1,7 +1,8 @@
-import React from "react";
-import { Mail, MapPin, PhoneCall } from "lucide-react";
+import React, { useEffect, useState } from "react";
+import { ChevronDown, Mail, MapPin, PhoneCall } from "lucide-react";
 import { BackButton } from "../components/BackButton";
 import AnimatedGradientBackground from "../components/ui/animated-gradient-background";
+import { FaqItem, getTenantFaqs } from "../services/faq.service";
 import { useUIState } from "../state/uiContext";
 
 type HelpItemProps = {
@@ -24,6 +25,10 @@ const HelpItem: React.FC<HelpItemProps> = ({ icon, label, value }) => (
 
 export const HelpPage: React.FC = () => {
   const { tenant } = useUIState();
+  const [faqs, setFaqs] = useState<FaqItem[]>([]);
+  const [loadingFaqs, setLoadingFaqs] = useState(false);
+  const [faqError, setFaqError] = useState<string | null>(null);
+  const [expandedFaqId, setExpandedFaqId] = useState<string | null>(null);
   const supportPhone =
     tenant?.hotelConfig?.support_phone ||
     tenant?.hotelConfig?.supportPhone ||
@@ -36,6 +41,42 @@ export const HelpPage: React.FC = () => {
     null;
   const address = tenant?.hotelConfig?.address || tenant?.address || null;
   const hasDetails = Boolean(supportPhone || supportEmail || address);
+  const tenantId = String(tenant?.id || "").trim();
+  const tenantSlug = String(tenant?.slug || "").trim();
+
+  useEffect(() => {
+    let active = true;
+    if (!tenantId && !tenantSlug) {
+      setFaqs([]);
+      setFaqError(null);
+      setExpandedFaqId(null);
+      return;
+    }
+
+    setLoadingFaqs(true);
+    setFaqError(null);
+    getTenantFaqs(tenantId, tenantSlug)
+      .then((rows) => {
+        if (!active) return;
+        setFaqs(rows);
+        setExpandedFaqId((current) => (rows.some((faq) => faq.id === current) ? current : null));
+      })
+      .catch((error) => {
+        console.warn("[HelpPage] Failed to load tenant FAQs", error);
+        if (!active) return;
+        setFaqs([]);
+        setFaqError("Unable to load FAQs right now.");
+        setExpandedFaqId(null);
+      })
+      .finally(() => {
+        if (!active) return;
+        setLoadingFaqs(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [tenantId, tenantSlug]);
 
   return (
     <div className="min-h-screen w-full relative overflow-x-hidden text-white">
@@ -65,6 +106,63 @@ export const HelpPage: React.FC = () => {
             </div>
           )}
         </div>
+
+        {loadingFaqs && (
+          <div className="mt-8 rounded-3xl border border-white/10 bg-slate-900/50 px-6 py-5 text-base md:text-lg text-slate-200">
+            Loading FAQs...
+          </div>
+        )}
+
+        {!loadingFaqs && faqError && (
+          <div className="mt-8 rounded-3xl border border-amber-300/30 bg-amber-500/10 px-6 py-5 text-base md:text-lg text-amber-100">
+            {faqError}
+          </div>
+        )}
+
+        {!loadingFaqs && !faqError && (tenantId || tenantSlug) && faqs.length === 0 && (
+          <div className="mt-8 rounded-3xl border border-white/10 bg-slate-900/50 px-6 py-5 text-base md:text-lg text-slate-200">
+            No FAQs are currently published for this hotel.
+          </div>
+        )}
+
+        {!loadingFaqs && faqs.length > 0 && (
+          <section className="mt-8 md:mt-10">
+            <h2 className="mb-4 text-2xl md:text-3xl font-light text-white">Frequently Asked Questions</h2>
+            <div className="max-h-[42vh] space-y-3 overflow-y-auto pr-1">
+              {faqs.map((faq) => {
+                const isExpanded = expandedFaqId === faq.id;
+                return (
+                  <div
+                    key={faq.id}
+                    className="rounded-2xl border border-white/15 bg-slate-900/65 backdrop-blur-md"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setExpandedFaqId(isExpanded ? null : faq.id)}
+                      className="flex min-h-14 w-full items-center justify-between gap-3 px-4 py-4 text-left text-lg text-white md:text-xl"
+                      aria-expanded={isExpanded}
+                    >
+                      <span className="font-medium">{faq.question}</span>
+                      <ChevronDown
+                        size={20}
+                        className={`shrink-0 text-cyan-200 transition-transform duration-300 ${isExpanded ? "rotate-180" : ""}`}
+                      />
+                    </button>
+                    <div
+                      className={`overflow-hidden transition-all duration-300 ease-out ${
+                        isExpanded ? "max-h-72 opacity-100" : "max-h-0 opacity-0"
+                      }`}
+                    >
+                      <div className="border-t border-white/10 px-4 py-4 text-base leading-relaxed text-slate-200 md:text-lg">
+                        {faq.answer}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
       </div>
     </div>
   );

@@ -6,6 +6,7 @@ Tenant-isolated FAQ listing endpoint for frontend IndexedDB prewarm.
 
 from __future__ import annotations
 
+import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Query
@@ -26,17 +27,39 @@ router = APIRouter()
 @router.get("/faqs")
 async def list_faqs(
     slug: Optional[str] = Query(default=None, description="Tenant slug"),
+    tenant_id: Optional[str] = Query(default=None, description="Tenant UUID"),
     x_tenant_slug: Optional[str] = Header(default=None, alias="x-tenant-slug"),
     session: AsyncSession = Depends(get_session),
 ):
     tenant_slug = (slug or x_tenant_slug or "").strip()
-    if not tenant_slug:
-        raise HTTPException(status_code=400, detail="tenant slug is required")
+    requested_tenant_id = (tenant_id or "").strip()
 
-    tenant_result = await session.exec(select(Tenant).where(Tenant.slug == tenant_slug))
-    tenant = tenant_result.first()
+    if not tenant_slug and not requested_tenant_id:
+        raise HTTPException(status_code=400, detail="tenant slug or tenant_id is required")
+
+    tenant = None
+    if requested_tenant_id:
+        try:
+            tenant_uuid = uuid.UUID(requested_tenant_id)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="tenant_id must be a valid UUID") from exc
+
+        tenant_id_result = await session.exec(select(Tenant).where(Tenant.id == tenant_uuid))
+        tenant = tenant_id_result.first()
+        if not tenant:
+            raise HTTPException(status_code=404, detail=f"Tenant '{requested_tenant_id}' not found")
+
+    if tenant_slug:
+        tenant_slug_result = await session.exec(select(Tenant).where(Tenant.slug == tenant_slug))
+        tenant_from_slug = tenant_slug_result.first()
+        if not tenant_from_slug:
+            raise HTTPException(status_code=404, detail=f"Tenant '{tenant_slug}' not found")
+        if tenant and tenant.id != tenant_from_slug.id:
+            raise HTTPException(status_code=400, detail="tenant_id and slug refer to different tenants")
+        tenant = tenant_from_slug
+
     if not tenant:
-        raise HTTPException(status_code=404, detail=f"Tenant '{tenant_slug}' not found")
+        raise HTTPException(status_code=404, detail="Tenant not found")
 
     tenant_config_result = await session.exec(
         select(TenantConfig).where(TenantConfig.tenant_id == tenant.id)
