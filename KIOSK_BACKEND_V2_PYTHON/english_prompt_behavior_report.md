@@ -1,22 +1,22 @@
 # English Prompt Behavior Report
 
-- Generated at: 2026-03-20T10:54:57
+- Generated at: 2026-03-20T14:31:54
 - Base URL: `http://localhost:8000`
 - Health payload: `{"status": "ok", "version": "2.0.0", "model": "LangGraph + LiteLLM"}`
+- Tenant tested: `Nagpur Premium Hotel` (`nagpur-premium-hotel-3b832f1b`)
+- Tenant ID: `f4992258-e692-4306-bf62-3142858f85a6`
+- Live room inventory: `Ocean One View, Luxurious Suite, Budget Deluxe Room, Grand Luxury Suite`
 
 ## Summary
 
 - Total scenarios: 17
-- Pass: 9
-- Warn: 8
+- Pass: 17
+- Warn: 0
 - Fail: 0
 
 ## Key Findings
 
-- Room-preview detail questions are not consistently staying in ROOM_PREVIEW, which can break the sense of a focused room tour.
-- Combined booking-detail turns are not reliably treated as slot-filling inputs, which risks pushing customers back into room discovery.
-- Summary confirmation is not reliably advancing to PAYMENT, so the final conversion step is still unstable.
-- Selecting a named room from ROOM_SELECT can jump straight into BOOKING_COLLECT, skipping the preview experience.
+- No major behavior regressions were observed in this run.
 
 ## Scenario Results
 
@@ -25,20 +25,20 @@
 | PASS | single_turn | Check-in | WELCOME | Hi, I already have a reservation and I want to check in. | SCAN_ID | CHECK_IN | screen=SCAN_ID intent=CHECK_IN |
 | PASS | single_turn | Room discovery | WELCOME | Can you show me your available rooms? I need something affordable for two adults. | ROOM_SELECT | BOOK_ROOM | screen=ROOM_SELECT intent=BOOK_ROOM |
 | PASS | single_turn | Hotel FAQ | WELCOME | What time is breakfast and do you offer free Wi-Fi? | WELCOME | GENERAL_QUERY | screen=WELCOME intent=GENERAL_QUERY |
-| WARN | single_turn | Room discovery | WELCOME | We are a family of four. Which room should we look at? | WELCOME | GENERAL_QUERY | expected_screens=['ROOM_SELECT'] expected_intents=['BOOK_ROOM', 'BOOK_ROOM_SELECTED', 'GEN... |
+| PASS | single_turn | Room discovery | WELCOME | We are a family of four. Which room should we look at? | ROOM_SELECT | BOOK_ROOM | screen=ROOM_SELECT intent=BOOK_ROOM |
 | PASS | single_turn | Pricing | ROOM_SELECT | What is your cheapest room tonight? | ROOM_SELECT | BOOK_ROOM | screen=ROOM_SELECT intent=BOOK_ROOM |
-| PASS | single_turn | Comparison | ROOM_SELECT | Can you compare the Deluxe King and the Family Suite for me? | ROOM_SELECT | GENERAL_QUERY | screen=ROOM_SELECT intent=GENERAL_QUERY |
-| WARN | single_turn | Room preview | ROOM_PREVIEW | Does this room have a balcony or a city view? | ROOM_SELECT | GENERAL_QUERY | expected_screens=['ROOM_PREVIEW', 'BOOKING_COLLECT'] expected_intents=['ASK_ROOM_DETAIL', ... |
+| PASS | single_turn | Comparison | ROOM_SELECT | Can you compare the Budget Deluxe Room and the Grand Luxury Suite for me? | ROOM_SELECT | BOOK_ROOM | screen=ROOM_SELECT intent=BOOK_ROOM |
+| PASS | single_turn | Room preview | ROOM_PREVIEW | Does this room have a balcony or a city view? | ROOM_PREVIEW | GENERAL_QUERY | screen=ROOM_PREVIEW intent=GENERAL_QUERY |
 | PASS | single_turn | Room preview | ROOM_PREVIEW | Show me a different room option instead. | ROOM_SELECT | MODIFY_BOOKING | screen=ROOM_SELECT intent=MODIFY_BOOKING |
-| WARN | single_turn | Booking collection | BOOKING_COLLECT | My name is John Carter. There will be two adults and one child. We want to check in tomorr... | ROOM_SELECT | CHECK_IN | expected_screens=['BOOKING_COLLECT', 'BOOKING_SUMMARY'] expected_intents=['PROVIDE_NAME', ... |
-| WARN | single_turn | Booking collection | BOOKING_COLLECT | Actually change the stay to next Friday for three nights. | ROOM_SELECT | PROVIDE_DATES | expected_screens=['BOOKING_COLLECT', 'BOOKING_SUMMARY'] expected_intents=['MODIFY_BOOKING'... |
-| WARN | single_turn | Booking summary | BOOKING_SUMMARY | Yes, those details are correct. Please proceed to payment. | BOOKING_COLLECT | CONFIRM_BOOKING | expected_screens=['PAYMENT', 'BOOKING_SUMMARY'] expected_intents=['CONFIRM_BOOKING', 'CONF... |
-| WARN | single_turn | Booking summary | BOOKING_SUMMARY | I need to change the guest name before paying. | ROOM_SELECT | MODIFY_BOOKING | expected_screens=['BOOKING_COLLECT', 'BOOKING_SUMMARY'] expected_intents=['MODIFY_BOOKING'... |
-| PASS | multi_turn_flow | Flow booking journey | WELCOME | I would like to book a room for my family. | ROOM_SELECT | BOOK_ROOM | screen=ROOM_SELECT intent=BOOK_ROOM |
-| WARN | multi_turn_flow | Flow booking journey | ROOM_SELECT | Please show me the Family Suite. | BOOKING_COLLECT | BOOK_ROOM | expected_screens=['ROOM_PREVIEW', 'ROOM_SELECT'] expected_intents=['ROOM_SELECTED', 'BOOK_... |
-| PASS | multi_turn_flow | Flow booking journey | BOOKING_COLLECT | This looks good. I want to book this room. | BOOKING_COLLECT | BOOK_ROOM | screen=BOOKING_COLLECT intent=BOOK_ROOM |
-| PASS | multi_turn_flow | Flow booking journey | BOOKING_COLLECT | The booking is for John Carter, two adults and two children, checking in tomorrow for two ... | BOOKING_SUMMARY | PROVIDE_NAME | screen=BOOKING_SUMMARY intent=PROVIDE_NAME |
-| WARN | multi_turn_flow | Flow booking journey | BOOKING_SUMMARY | Yes, everything is correct. Proceed to payment. | BOOKING_COLLECT | CONFIRM_BOOKING | expected_screens=['PAYMENT', 'BOOKING_SUMMARY'] expected_intents=['CONFIRM_BOOKING', 'CONF... |
+| PASS | single_turn | Booking collection | BOOKING_COLLECT | My name is John Carter. There will be 2 adults and 1 child. We want to check in on May 9 2... | BOOKING_SUMMARY | PROVIDE_NAME | screen=BOOKING_SUMMARY intent=PROVIDE_NAME |
+| PASS | single_turn | Booking collection | BOOKING_COLLECT | Actually change the stay to May 24 2032 for 3 nights. | BOOKING_SUMMARY | MODIFY_BOOKING | screen=BOOKING_SUMMARY intent=MODIFY_BOOKING |
+| PASS | single_turn | Booking summary | BOOKING_SUMMARY | Yes, those details are correct. Please proceed to payment. | PAYMENT | CONFIRM_BOOKING | screen=PAYMENT intent=CONFIRM_BOOKING |
+| PASS | single_turn | Booking summary | BOOKING_SUMMARY | I need to change the guest name before paying. | BOOKING_COLLECT | MODIFY_BOOKING | screen=BOOKING_COLLECT intent=MODIFY_BOOKING |
+| PASS | multi_turn_flow | Flow booking journey | WELCOME | We are 4 adults. Which room should we look at? | ROOM_SELECT | BOOK_ROOM | screen=ROOM_SELECT intent=BOOK_ROOM |
+| PASS | multi_turn_flow | Flow booking journey | ROOM_SELECT | Please show me the Grand Luxury Suite. | ROOM_PREVIEW | BOOK_ROOM | screen=ROOM_PREVIEW intent=BOOK_ROOM |
+| PASS | multi_turn_flow | Flow booking journey | ROOM_PREVIEW | This looks good. I want to book this room. | BOOKING_COLLECT | BOOK_ROOM | screen=BOOKING_COLLECT intent=BOOK_ROOM |
+| PASS | multi_turn_flow | Flow booking journey | BOOKING_COLLECT | My name is John Carter. There will be 4 adults. We want to check in on July 8 2032 for 2 n... | BOOKING_SUMMARY | PROVIDE_NAME | screen=BOOKING_SUMMARY intent=PROVIDE_NAME |
+| PASS | multi_turn_flow | Flow booking journey | BOOKING_SUMMARY | Yes, everything is correct. Proceed to payment. | PAYMENT | CONFIRM_BOOKING | screen=PAYMENT intent=CONFIRM_BOOKING |
 
 ## Detailed Responses
 
@@ -65,7 +65,7 @@
 - Route: `ROOM_SELECT`
 - Intent: `BOOK_ROOM`
 - Confidence: `0.95`
-- Speech: "We have 3 room options: the Deluxe King at INR 6499 for up to 2 guests, the Family Suite at INR 8999 for up to 4 guests, and the Premium Twin at INR 7299 for up to 2 guests. Which one interests you?"
+- Speech: "We have 4 room options: the Ocean One View at INR 4000 for up to 2 guests, the Luxurious Suite at INR 5000 for up to 4 guests, and the Budget Deluxe Room at INR 999 for up to 2 guests. Which one interests you?"
 - Note: screen=ROOM_SELECT intent=BOOK_ROOM
 
 ### welcome_hotel_faq
@@ -83,16 +83,16 @@
 
 ### welcome_family_room_request
 
-- Verdict: WARN
+- Verdict: PASS
 - Mode: single_turn
 - Category: Room discovery
 - Input state: `WELCOME`
 - Prompt: "We are a family of four. Which room should we look at?"
-- Route: `WELCOME`
-- Intent: `GENERAL_QUERY`
-- Confidence: `1.0`
-- Speech: "I'm sorry, I don't have that hotel detail right now, but I'm happy to help with your booking or another question."
-- Note: expected_screens=['ROOM_SELECT'] expected_intents=['BOOK_ROOM', 'BOOK_ROOM_SELECTED', 'GENERAL_QUERY'] actual_screen=WELCOME actual_intent=GENERAL_QUERY
+- Route: `ROOM_SELECT`
+- Intent: `BOOK_ROOM`
+- Confidence: `0.95`
+- Speech: "We have 4 room options: the Ocean One View at INR 4000 for up to 2 guests, the Luxurious Suite at INR 5000 for up to 4 guests, and the Budget Deluxe Room at INR 999 for up to 2 guests. Which one interests you?"
+- Note: screen=ROOM_SELECT intent=BOOK_ROOM
 
 ### room_select_cheapest_room
 
@@ -103,8 +103,8 @@
 - Prompt: "What is your cheapest room tonight?"
 - Route: `ROOM_SELECT`
 - Intent: `BOOK_ROOM`
-- Confidence: `0.9`
-- Speech: "We have 3 room options: the Deluxe King at INR 6499 for up to 2 guests, the Family Suite at INR 8999 for up to 4 guests, and the Premium Twin at INR 7299 for up to 2 guests. Which one interests you?"
+- Confidence: `0.896`
+- Speech: "We have 4 room options: the Ocean One View at INR 4000 for up to 2 guests, the Luxurious Suite at INR 5000 for up to 4 guests, and the Budget Deluxe Room at INR 999 for up to 2 guests. Which one interests you?"
 - Note: screen=ROOM_SELECT intent=BOOK_ROOM
 
 ### room_select_compare_rooms
@@ -113,25 +113,25 @@
 - Mode: single_turn
 - Category: Comparison
 - Input state: `ROOM_SELECT`
-- Prompt: "Can you compare the Deluxe King and the Family Suite for me?"
+- Prompt: "Can you compare the Budget Deluxe Room and the Grand Luxury Suite for me?"
 - Route: `ROOM_SELECT`
-- Intent: `GENERAL_QUERY`
-- Confidence: `0.9`
-- Speech: "The Deluxe King is a room for up to 2 adults, priced at 6499 INR, while the Family Suite can accommodate up to 4 adults and costs 8999 INR. We have 3 room options available. Which one of these suits your needs or would you like to know more about another room?"
-- Note: screen=ROOM_SELECT intent=GENERAL_QUERY
+- Intent: `BOOK_ROOM`
+- Confidence: `0.95`
+- Speech: "Budget Deluxe Room is available for INR 999 and suits up to 2 adults. Grand Luxury Suite is available for INR 10000 and suits up to 4 adults. Which one would you like to explore in more detail?"
+- Note: screen=ROOM_SELECT intent=BOOK_ROOM
 
 ### room_preview_amenity_question
 
-- Verdict: WARN
+- Verdict: PASS
 - Mode: single_turn
 - Category: Room preview
 - Input state: `ROOM_PREVIEW`
 - Prompt: "Does this room have a balcony or a city view?"
-- Route: `ROOM_SELECT`
+- Route: `ROOM_PREVIEW`
 - Intent: `GENERAL_QUERY`
-- Confidence: `1.0`
-- Speech: "We have 3 room options available. Our Deluxe King and Premium Twin rooms are priced at 6499 and 7299 INR respectively, and can accommodate up to 2 adults. Would you like to know more about one of these rooms or see all options?"
-- Note: expected_screens=['ROOM_PREVIEW', 'BOOKING_COLLECT'] expected_intents=['ASK_ROOM_DETAIL', 'GENERAL_QUERY', 'ROOM_SELECTED'] actual_screen=ROOM_SELECT actual_intent=GENERAL_QUERY
+- Confidence: `0.97`
+- Speech: "Absolutely. Let me show you the balcony view in Grand Luxury Suite on screen. Private balcony with comfortable seating and panoramic city and hillside views, perfect for a relaxing stay.. If you'd like, I can continue with your booking whenever you're ready."
+- Note: screen=ROOM_PREVIEW intent=GENERAL_QUERY
 
 ### room_preview_change_room
 
@@ -148,55 +148,55 @@
 
 ### booking_collect_full_details
 
-- Verdict: WARN
+- Verdict: PASS
 - Mode: single_turn
 - Category: Booking collection
 - Input state: `BOOKING_COLLECT`
-- Prompt: "My name is John Carter. There will be two adults and one child. We want to check in tomorrow for two nights."
-- Route: `ROOM_SELECT`
-- Intent: `CHECK_IN`
-- Confidence: `0.97`
-- Speech: "Hello John Carter, I have you checking in tomorrow for two nights with two adults and one child. We have three room options available, including the Deluxe King for 6499 INR per night for up to two adults. Which room type would you prefer?"
-- Note: expected_screens=['BOOKING_COLLECT', 'BOOKING_SUMMARY'] expected_intents=['PROVIDE_NAME', 'PROVIDE_DATES', 'PROVIDE_GUESTS', 'CONFIRM_BOOKING'] actual_screen=ROOM_SELECT actual_intent=CHECK_IN
+- Prompt: "My name is John Carter. There will be 2 adults and 1 child. We want to check in on May 9 2032 for 2 nights."
+- Route: `BOOKING_SUMMARY`
+- Intent: `PROVIDE_NAME`
+- Confidence: `1.0`
+- Speech: "Thank you, John Carter. Let me pull up your booking summary."
+- Note: screen=BOOKING_SUMMARY intent=PROVIDE_NAME
 
 ### booking_collect_change_dates
 
-- Verdict: WARN
+- Verdict: PASS
 - Mode: single_turn
 - Category: Booking collection
 - Input state: `BOOKING_COLLECT`
-- Prompt: "Actually change the stay to next Friday for three nights."
-- Route: `ROOM_SELECT`
-- Intent: `PROVIDE_DATES`
-- Confidence: `0.482`
-- Speech: "You'd like to stay from next Friday for three nights. We have 3 room options available, including the Deluxe King for 6499 INR per night for up to 2 adults. Which room type would you prefer?"
-- Note: expected_screens=['BOOKING_COLLECT', 'BOOKING_SUMMARY'] expected_intents=['MODIFY_BOOKING', 'PROVIDE_DATES'] actual_screen=ROOM_SELECT actual_intent=PROVIDE_DATES
+- Prompt: "Actually change the stay to May 24 2032 for 3 nights."
+- Route: `BOOKING_SUMMARY`
+- Intent: `MODIFY_BOOKING`
+- Confidence: `0.9`
+- Speech: "Thank you, John Carter. Let me pull up your booking summary."
+- Note: screen=BOOKING_SUMMARY intent=MODIFY_BOOKING
 
 ### booking_summary_confirm_payment
 
-- Verdict: WARN
+- Verdict: PASS
 - Mode: single_turn
 - Category: Booking summary
 - Input state: `BOOKING_SUMMARY`
 - Prompt: "Yes, those details are correct. Please proceed to payment."
-- Route: `BOOKING_COLLECT`
+- Route: `PAYMENT`
 - Intent: `CONFIRM_BOOKING`
-- Confidence: `0.9`
-- Speech: "Certainly. We currently have 3 room options available, each with different amenities and room details. Deluxe King is available for INR 6499 and is suited for up to 2 adults. Family Suite is available for INR 8999 and is suited for up to 4 adults. I also have 1 more option available if you'd like to..."
-- Note: expected_screens=['PAYMENT', 'BOOKING_SUMMARY'] expected_intents=['CONFIRM_BOOKING', 'CONFIRM_PAYMENT'] actual_screen=BOOKING_COLLECT actual_intent=CONFIRM_BOOKING
+- Confidence: `0.97`
+- Speech: "Perfect. Your booking details are confirmed. Taking you to payment now."
+- Note: screen=PAYMENT intent=CONFIRM_BOOKING
 
 ### booking_summary_modify_request
 
-- Verdict: WARN
+- Verdict: PASS
 - Mode: single_turn
 - Category: Booking summary
 - Input state: `BOOKING_SUMMARY`
 - Prompt: "I need to change the guest name before paying."
-- Route: `ROOM_SELECT`
+- Route: `BOOKING_COLLECT`
 - Intent: `MODIFY_BOOKING`
 - Confidence: `0.96`
-- Speech: "You haven't chosen a room yet. We have 3 room options available. The Deluxe King is 6499 INR and can accommodate 2 adults. Which room would you like to book?"
-- Note: expected_screens=['BOOKING_COLLECT', 'BOOKING_SUMMARY'] expected_intents=['MODIFY_BOOKING'] actual_screen=ROOM_SELECT actual_intent=MODIFY_BOOKING
+- Speech: "May I have the name for this booking?"
+- Note: screen=BOOKING_COLLECT intent=MODIFY_BOOKING
 
 ### flow_step_1_browse_rooms
 
@@ -204,37 +204,37 @@
 - Mode: multi_turn_flow
 - Category: Flow booking journey
 - Input state: `WELCOME`
-- Prompt: "I would like to book a room for my family."
+- Prompt: "We are 4 adults. Which room should we look at?"
 - Route: `ROOM_SELECT`
 - Intent: `BOOK_ROOM`
-- Confidence: `0.855`
-- Speech: "We have 3 room options: the Deluxe King at INR 6499 for up to 2 guests, the Family Suite at INR 8999 for up to 4 guests, and the Premium Twin at INR 7299 for up to 2 guests. Which one interests you?"
+- Confidence: `0.95`
+- Speech: "We have 4 room options: the Ocean One View at INR 4000 for up to 2 guests, the Luxurious Suite at INR 5000 for up to 4 guests, and the Budget Deluxe Room at INR 999 for up to 2 guests. Which one interests you?"
 - Note: screen=ROOM_SELECT intent=BOOK_ROOM
 
 ### flow_step_2_select_family_suite
 
-- Verdict: WARN
+- Verdict: PASS
 - Mode: multi_turn_flow
 - Category: Flow booking journey
 - Input state: `ROOM_SELECT`
-- Prompt: "Please show me the Family Suite."
-- Route: `BOOKING_COLLECT`
+- Prompt: "Please show me the Grand Luxury Suite."
+- Route: `ROOM_PREVIEW`
 - Intent: `BOOK_ROOM`
-- Confidence: `0.485`
-- Speech: "Great choice. Family Suite is available at INR 8999 per night for up to 4 adults. How many adults will be staying?"
-- Note: expected_screens=['ROOM_PREVIEW', 'ROOM_SELECT'] expected_intents=['ROOM_SELECTED', 'BOOK_ROOM', 'SELECT_ROOM'] actual_screen=BOOKING_COLLECT actual_intent=BOOK_ROOM
+- Confidence: `0.512`
+- Speech: "Here is the Grand Luxury Suite, available at INR 10000 per night for up to 4 adults. Take a look and let me know if you'd like to book it or see another option."
+- Note: screen=ROOM_PREVIEW intent=BOOK_ROOM
 
 ### flow_step_3_start_booking
 
 - Verdict: PASS
 - Mode: multi_turn_flow
 - Category: Flow booking journey
-- Input state: `BOOKING_COLLECT`
+- Input state: `ROOM_PREVIEW`
 - Prompt: "This looks good. I want to book this room."
 - Route: `BOOKING_COLLECT`
 - Intent: `BOOK_ROOM`
 - Confidence: `1.0`
-- Speech: "Great choice. Family Suite is available at INR 8999 per night for up to 4 adults. How many adults will be staying?"
+- Speech: "Great choice. Grand Luxury Suite is available at INR 10000 per night for up to 4 adults. How many adults will be staying?"
 - Note: screen=BOOKING_COLLECT intent=BOOK_ROOM
 
 ### flow_step_4_fill_details
@@ -243,22 +243,22 @@
 - Mode: multi_turn_flow
 - Category: Flow booking journey
 - Input state: `BOOKING_COLLECT`
-- Prompt: "The booking is for John Carter, two adults and two children, checking in tomorrow for two nights."
+- Prompt: "My name is John Carter. There will be 4 adults. We want to check in on July 8 2032 for 2 nights."
 - Route: `BOOKING_SUMMARY`
 - Intent: `PROVIDE_NAME`
-- Confidence: `0.8`
-- Speech: "Thank you, The Booking Is For John Carter, Two Adults And Two Children, Checking In Tomorrow For Two Nights. Let me pull up your booking summary."
+- Confidence: `1.0`
+- Speech: "Thank you, John Carter. Let me pull up your booking summary."
 - Note: screen=BOOKING_SUMMARY intent=PROVIDE_NAME
 
 ### flow_step_5_confirm_summary
 
-- Verdict: WARN
+- Verdict: PASS
 - Mode: multi_turn_flow
 - Category: Flow booking journey
 - Input state: `BOOKING_SUMMARY`
 - Prompt: "Yes, everything is correct. Proceed to payment."
-- Route: `BOOKING_COLLECT`
+- Route: `PAYMENT`
 - Intent: `CONFIRM_BOOKING`
-- Confidence: `0.9`
-- Speech: "Certainly. Family Suite is a lovely choice. How many adults will be staying?"
-- Note: expected_screens=['PAYMENT', 'BOOKING_SUMMARY'] expected_intents=['CONFIRM_BOOKING', 'CONFIRM_PAYMENT'] actual_screen=BOOKING_COLLECT actual_intent=CONFIRM_BOOKING
+- Confidence: `0.97`
+- Speech: "Perfect. Your booking details are confirmed. Taking you to payment now."
+- Note: screen=PAYMENT intent=CONFIRM_BOOKING

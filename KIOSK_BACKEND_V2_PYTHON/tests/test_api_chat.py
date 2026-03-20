@@ -264,6 +264,194 @@ class TestChatEndpointWithMocks:
         mock_faq_lookup.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_chat_room_comparison_from_welcome_does_not_jump_into_preview(self, override_session):
+        comparison_catalog = [
+            {
+                "id": "room-budget-deluxe",
+                "name": "Budget Deluxe Room",
+                "code": "BDR",
+                "price": 999,
+                "currency": "INR",
+                "maxAdults": 2,
+                "maxChildren": 1,
+                "maxTotalGuests": 3,
+            },
+            {
+                "id": "room-grand-luxury",
+                "name": "Grand Luxury Suite",
+                "code": "GLS",
+                "price": 10000,
+                "currency": "INR",
+                "maxAdults": 4,
+                "maxChildren": 1,
+                "maxTotalGuests": 5,
+            },
+        ]
+        transport = ASGITransport(app=app)
+        with patch("agent.nodes.get_llm_response") as mock_llm, patch(
+            "api.chat.find_best_faq_match",
+            new_callable=AsyncMock,
+        ) as mock_faq_lookup:
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    "/api/chat",
+                    json={
+                        "sessionId": "welcome-room-comparison",
+                        "transcript": "Can you compare the Budget Deluxe Room and the Grand Luxury Suite?",
+                        "currentState": "WELCOME",
+                        "roomCatalog": comparison_catalog,
+                    },
+                )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["nextUiScreen"] == "ROOM_SELECT"
+        assert data["intent"] == "BOOK_ROOM"
+        assert not data.get("selectedRoom")
+        mock_llm.assert_not_called()
+        mock_faq_lookup.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_chat_room_difference_from_welcome_stays_in_room_select(self, override_session):
+        comparison_catalog = [
+            {
+                "id": "room-budget-deluxe",
+                "name": "Budget Deluxe Room",
+                "code": "BDR",
+                "price": 999,
+                "currency": "INR",
+                "maxAdults": 2,
+                "maxChildren": 1,
+                "maxTotalGuests": 3,
+            },
+            {
+                "id": "room-grand-luxury",
+                "name": "Grand Luxury Suite",
+                "code": "GLS",
+                "price": 10000,
+                "currency": "INR",
+                "maxAdults": 4,
+                "maxChildren": 1,
+                "maxTotalGuests": 5,
+            },
+        ]
+        transport = ASGITransport(app=app)
+        with patch("agent.nodes.get_llm_response") as mock_llm, patch(
+            "api.chat.find_best_faq_match",
+            new_callable=AsyncMock,
+        ) as mock_faq_lookup:
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    "/api/chat",
+                    json={
+                        "sessionId": "welcome-room-difference",
+                        "transcript": "What is the difference between Budget Deluxe Room and Grand Luxury Suite?",
+                        "currentState": "WELCOME",
+                        "roomCatalog": comparison_catalog,
+                    },
+                )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["nextUiScreen"] == "ROOM_SELECT"
+        assert data["intent"] == "BOOK_ROOM"
+        assert not data.get("selectedRoom")
+        mock_llm.assert_not_called()
+        mock_faq_lookup.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_chat_room_which_is_better_from_welcome_stays_in_room_select(self, override_session):
+        comparison_catalog = [
+            {
+                "id": "room-budget-deluxe",
+                "name": "Budget Deluxe Room",
+                "code": "BDR",
+                "price": 999,
+                "currency": "INR",
+                "maxAdults": 2,
+                "maxChildren": 1,
+                "maxTotalGuests": 3,
+            },
+            {
+                "id": "room-grand-luxury",
+                "name": "Grand Luxury Suite",
+                "code": "GLS",
+                "price": 10000,
+                "currency": "INR",
+                "maxAdults": 4,
+                "maxChildren": 1,
+                "maxTotalGuests": 5,
+            },
+        ]
+        transport = ASGITransport(app=app)
+        with patch("agent.nodes.get_llm_response") as mock_llm, patch(
+            "api.chat.find_best_faq_match",
+            new_callable=AsyncMock,
+        ) as mock_faq_lookup:
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    "/api/chat",
+                    json={
+                        "sessionId": "welcome-room-which-is-better",
+                        "transcript": "Which is better, Budget Deluxe Room or Grand Luxury Suite?",
+                        "currentState": "WELCOME",
+                        "roomCatalog": comparison_catalog,
+                    },
+                )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["nextUiScreen"] == "ROOM_SELECT"
+        assert data["intent"] == "BOOK_ROOM"
+        assert not data.get("selectedRoom")
+        mock_llm.assert_not_called()
+        mock_faq_lookup.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_chat_room_better_comparison_from_room_select_stays_in_room_select(self, override_session):
+        comparison_catalog = [
+            {
+                "id": "room-budget-deluxe",
+                "name": "Budget Deluxe Room",
+                "code": "BDR",
+                "price": 999,
+                "currency": "INR",
+                "maxAdults": 2,
+                "maxChildren": 1,
+                "maxTotalGuests": 3,
+            },
+            {
+                "id": "room-grand-luxury",
+                "name": "Grand Luxury Suite",
+                "code": "GLS",
+                "price": 10000,
+                "currency": "INR",
+                "maxAdults": 4,
+                "maxChildren": 1,
+                "maxTotalGuests": 5,
+            },
+        ]
+        transport = ASGITransport(app=app)
+        with patch("agent.nodes.get_llm_response") as mock_llm:
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    "/api/chat",
+                    json={
+                        "sessionId": "room-select-better-comparison",
+                        "transcript": "Which one is better for four adults, Budget Deluxe Room or Grand Luxury Suite?",
+                        "currentState": "ROOM_SELECT",
+                        "roomCatalog": comparison_catalog,
+                    },
+                )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["nextUiScreen"] == "ROOM_SELECT"
+        assert data["intent"] == "BOOK_ROOM"
+        assert not data.get("selectedRoom")
+        mock_llm.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_chat_summary_confirm_runs_through_agent_not_api_short_circuit(self, override_session):
         captured_payload = {}
 
@@ -349,6 +537,231 @@ class TestChatEndpointWithMocks:
         assert captured_payload["current_ui_screen"] == "BOOKING_COLLECT"
         assert captured_payload["selected_room"]["name"] == "Family Suite"
         mock_ainvoke.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_chat_preview_detail_question_stays_in_room_preview_context(
+        self,
+        override_session,
+        booking_flow_payload_factory,
+    ):
+        with patch(
+            "agent.nodes.get_llm_response",
+            return_value=json.dumps(
+                {
+                    "extracted_slots": {},
+                    "speech": "This room keeps you on the preview, and I can show another option if you like.",
+                    "is_complete": False,
+                    "next_slot_to_ask": None,
+                }
+            ),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    "/api/chat",
+                    json=booking_flow_payload_factory(
+                        "preview-detail",
+                        "ROOM_PREVIEW",
+                        "Does this room have a balcony or a city view?",
+                        filled_slots={"roomType": "Family Suite"},
+                    ),
+                )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["nextUiScreen"] == "ROOM_PREVIEW"
+        assert data["intent"] == "GENERAL_QUERY"
+        assert data["selectedRoom"]["name"] == "Family Suite"
+
+    @pytest.mark.asyncio
+    async def test_chat_booking_collect_compound_turn_moves_to_booking_summary(
+        self,
+        override_session,
+        booking_flow_payload_factory,
+    ):
+        with patch(
+            "agent.semantic_classifier.classify_intent_semantically",
+            new=AsyncMock(return_value=None),
+        ), patch(
+            "agent.nodes.get_llm_response",
+            side_effect=[
+                json.dumps({"intent": "GENERAL_QUERY", "confidence": 0.65}),
+                json.dumps({"intent": "BOOK_ROOM", "confidence": 0.95}),
+                json.dumps({"intent": "GENERAL_QUERY", "confidence": 0.65}),
+            ],
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    "/api/chat",
+                    json=booking_flow_payload_factory(
+                        "compound-booking-details",
+                        "BOOKING_COLLECT",
+                        "My name is John Carter. There will be two adults and one child. We want to check in tomorrow for two nights.",
+                        filled_slots={"roomType": "Family Suite"},
+                    ),
+                )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["nextUiScreen"] == "BOOKING_SUMMARY"
+        assert data["selectedRoom"]["name"] == "Family Suite"
+        assert data["accumulatedSlots"]["guestName"] == "John Carter"
+        assert data["accumulatedSlots"]["adults"] == 2
+        assert data["accumulatedSlots"]["children"] == 1
+        assert data["accumulatedSlots"]["checkInDate"] == "2026-03-21"
+        assert data["accumulatedSlots"]["checkOutDate"] == "2026-03-23"
+
+    @pytest.mark.asyncio
+    async def test_chat_booking_summary_confirm_routes_to_payment(
+        self,
+        override_session,
+        booking_flow_payload_factory,
+        booking_summary_filled_slots,
+    ):
+        chat_api._persisted_booking_by_session["summary-to-payment"] = "existing-booking-id"
+        with patch("agent.nodes.get_llm_response") as mock_llm:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    "/api/chat",
+                    json=booking_flow_payload_factory(
+                        "summary-to-payment",
+                        "BOOKING_SUMMARY",
+                        "Yes, those details are correct. Please proceed to payment.",
+                        filled_slots=booking_summary_filled_slots,
+                    ),
+                )
+
+        mock_llm.assert_not_called()
+        assert response.status_code == 200
+        data = response.json()
+        assert data["intent"] == "CONFIRM_BOOKING"
+        assert data["nextUiScreen"] == "PAYMENT"
+        assert data["selectedRoom"]["name"] == "Family Suite"
+
+    @pytest.mark.asyncio
+    async def test_chat_booking_summary_modify_routes_to_booking_collect(
+        self,
+        override_session,
+        booking_flow_payload_factory,
+        booking_summary_filled_slots,
+    ):
+        with patch("agent.nodes.get_llm_response") as mock_llm:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    "/api/chat",
+                    json=booking_flow_payload_factory(
+                        "summary-to-edit",
+                        "BOOKING_SUMMARY",
+                        "I need to change the guest name before paying.",
+                        filled_slots=booking_summary_filled_slots,
+                    ),
+                )
+
+        mock_llm.assert_not_called()
+        assert response.status_code == 200
+        data = response.json()
+        assert data["intent"] == "MODIFY_BOOKING"
+        assert data["nextUiScreen"] == "BOOKING_COLLECT"
+        assert data["nextSlotToAsk"] == "guestName"
+        assert data["selectedRoom"]["name"] == "Family Suite"
+
+    @pytest.mark.asyncio
+    async def test_chat_family_booking_journey_reaches_payment(
+        self,
+        override_session,
+        booking_flow_payload_factory,
+        booking_flow_context_factory,
+    ):
+        flow_context = booking_flow_context_factory("family-booking-journey")
+        session_id = flow_context["session_id"]
+        filled_slots = None
+
+        def fake_llm(messages, temperature=0.0):
+            user_text = str(messages[-1]["content"]).lower()
+            if "please show me the family suite" in user_text:
+                return json.dumps({"intent": "BOOK_ROOM", "confidence": 0.95})
+            if "this looks good. i want to book this room" in user_text:
+                return json.dumps({"intent": "BOOK_ROOM", "confidence": 0.95})
+            return json.dumps({"intent": "GENERAL_QUERY", "confidence": 0.65})
+
+        with patch(
+            "agent.semantic_classifier.classify_intent_semantically",
+            new=AsyncMock(return_value=None),
+        ), patch(
+            "agent.nodes.get_llm_response",
+            side_effect=fake_llm,
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                step_one = await client.post(
+                    "/api/chat",
+                    json=booking_flow_payload_factory(
+                        session_id,
+                        "WELCOME",
+                        "We are a family of four. Which room should we look at?",
+                        filled_slots=filled_slots,
+                    ),
+                )
+                assert step_one.status_code == 200
+                assert step_one.json()["nextUiScreen"] == "ROOM_SELECT"
+                filled_slots = step_one.json()["accumulatedSlots"]
+
+                step_two = await client.post(
+                    "/api/chat",
+                    json=booking_flow_payload_factory(
+                        session_id,
+                        "ROOM_SELECT",
+                        "Please show me the Family Suite.",
+                        filled_slots=filled_slots,
+                    ),
+                )
+                assert step_two.status_code == 200
+                assert step_two.json()["nextUiScreen"] == "ROOM_PREVIEW"
+                filled_slots = step_two.json()["accumulatedSlots"]
+
+                step_three = await client.post(
+                    "/api/chat",
+                    json=booking_flow_payload_factory(
+                        session_id,
+                        "ROOM_PREVIEW",
+                        "This looks good. I want to book this room.",
+                        filled_slots=filled_slots,
+                    ),
+                )
+                assert step_three.status_code == 200
+                assert step_three.json()["nextUiScreen"] == "BOOKING_COLLECT"
+                filled_slots = step_three.json()["accumulatedSlots"]
+
+                step_four = await client.post(
+                    "/api/chat",
+                    json=booking_flow_payload_factory(
+                        session_id,
+                        "BOOKING_COLLECT",
+                        "My name is John Carter. There will be two adults and two children. We want to check in tomorrow for two nights.",
+                        filled_slots=filled_slots,
+                    ),
+                )
+                assert step_four.status_code == 200
+                assert step_four.json()["nextUiScreen"] == "BOOKING_SUMMARY"
+                filled_slots = step_four.json()["accumulatedSlots"]
+                chat_api._persisted_booking_by_session[session_id] = "existing-booking-id"
+
+                step_five = await client.post(
+                    "/api/chat",
+                    json=booking_flow_payload_factory(
+                        session_id,
+                        "BOOKING_SUMMARY",
+                        "Yes, everything is correct. Proceed to payment.",
+                        filled_slots=filled_slots,
+                    ),
+                )
+
+        assert step_five.status_code == 200
+        assert step_five.json()["nextUiScreen"] == "PAYMENT"
+        assert step_five.json()["selectedRoom"]["name"] == "Family Suite"
 
 
 class TestAPIRobustness:

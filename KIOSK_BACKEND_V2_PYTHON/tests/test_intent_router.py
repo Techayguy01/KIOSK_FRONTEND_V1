@@ -3,6 +3,8 @@ Tests for deterministic intent pre-checks in agent/nodes.py.
 These tests do NOT call the LLM - they test the regex-based functions only.
 """
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
 from agent.nodes import (
@@ -10,7 +12,9 @@ from agent.nodes import (
     _is_summary_confirmation_transcript,
     _is_summary_modify_transcript,
     _looks_like_check_in_request,
+    route_intent,
 )
+from agent.state import BookingSlots, KioskState
 
 try:
     from agent.nodes import _looks_like_room_browsing_request
@@ -326,3 +330,132 @@ class TestRoomChangeEdgeCases:
     )
     def test_no_room_change(self, transcript):
         assert _is_room_change_request(transcript) is False
+
+
+class TestRouteIntentModule4:
+    @pytest.mark.asyncio
+    async def test_family_recommendation_routes_to_book_room(self):
+        state = KioskState(
+            session_id="router-family-room",
+            tenant_id="default",
+            current_ui_screen="WELCOME",
+            latest_transcript="We are a family of four. Which room should we look at?",
+        )
+
+        result = await route_intent(state)
+
+        assert result["resolved_intent"] == "BOOK_ROOM"
+        assert result["confidence"] >= 0.9
+
+    @pytest.mark.asyncio
+    async def test_welcome_room_difference_routes_to_book_room(self):
+        state = KioskState(
+            session_id="router-room-difference",
+            tenant_id="default",
+            current_ui_screen="WELCOME",
+            latest_transcript="What is the difference between Budget Deluxe Room and Grand Luxury Suite?",
+        )
+
+        result = await route_intent(state)
+
+        assert result["resolved_intent"] == "BOOK_ROOM"
+        assert result["confidence"] >= 0.9
+
+    @pytest.mark.asyncio
+    async def test_welcome_which_is_better_routes_to_book_room(self):
+        state = KioskState(
+            session_id="router-which-is-better",
+            tenant_id="default",
+            current_ui_screen="WELCOME",
+            latest_transcript="Which is better, Budget Deluxe Room or Grand Luxury Suite?",
+        )
+
+        result = await route_intent(state)
+
+        assert result["resolved_intent"] == "BOOK_ROOM"
+        assert result["confidence"] >= 0.9
+
+    @pytest.mark.asyncio
+    async def test_room_select_better_comparison_routes_to_book_room(self):
+        state = KioskState(
+            session_id="router-room-better-comparison",
+            tenant_id="default",
+            current_ui_screen="ROOM_SELECT",
+            latest_transcript="Which one is better for four adults, Budget Deluxe Room or Grand Luxury Suite?",
+        )
+
+        result = await route_intent(state)
+
+        assert result["resolved_intent"] == "BOOK_ROOM"
+        assert result["confidence"] >= 0.9
+
+    @pytest.mark.asyncio
+    async def test_room_preview_detail_routes_to_general_query(self):
+        state = KioskState(
+            session_id="router-preview-detail",
+            tenant_id="default",
+            current_ui_screen="ROOM_PREVIEW",
+            latest_transcript="Does this room have a balcony or a city view?",
+        )
+
+        result = await route_intent(state)
+
+        assert result["resolved_intent"] == "GENERAL_QUERY"
+        assert result["confidence"] >= 0.9
+
+    @pytest.mark.asyncio
+    async def test_booking_summary_confirm_routes_to_confirm_booking(self):
+        state = KioskState(
+            session_id="router-summary-confirm",
+            tenant_id="default",
+            current_ui_screen="BOOKING_SUMMARY",
+            latest_transcript="Yes, those details are correct. Please proceed to payment.",
+            booking_slots=BookingSlots(
+                roomType="Family Suite",
+                adults=2,
+                checkInDate="2026-03-21",
+                checkOutDate="2026-03-23",
+                guestName="John Carter",
+            ),
+        )
+
+        result = await route_intent(state)
+
+        assert result["resolved_intent"] == "CONFIRM_BOOKING"
+        assert result["confidence"] >= 0.95
+
+    @pytest.mark.asyncio
+    async def test_booking_summary_modify_routes_to_modify_booking(self):
+        state = KioskState(
+            session_id="router-summary-modify",
+            tenant_id="default",
+            current_ui_screen="BOOKING_SUMMARY",
+            latest_transcript="I need to change the guest name before paying.",
+        )
+
+        result = await route_intent(state)
+
+        assert result["resolved_intent"] == "MODIFY_BOOKING"
+        assert result["confidence"] >= 0.95
+
+    @pytest.mark.asyncio
+    async def test_booking_collect_suppresses_generic_check_in_takeover(self):
+        state = KioskState(
+            session_id="router-booking-check-in-suppression",
+            tenant_id="default",
+            current_ui_screen="BOOKING_COLLECT",
+            latest_transcript="My name is John Carter, two adults, check in tomorrow for two nights.",
+            booking_slots=BookingSlots(roomType="Family Suite"),
+        )
+
+        with patch(
+            "agent.semantic_classifier.classify_intent_semantically",
+            new=AsyncMock(return_value=None),
+        ), patch(
+            "agent.nodes.get_llm_response",
+            return_value='{"intent":"CHECK_IN","confidence":0.94}',
+        ):
+            result = await route_intent(state)
+
+        assert result["resolved_intent"] == "GENERAL_QUERY"
+        assert result["resolved_intent"] != "CHECK_IN"

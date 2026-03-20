@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 from datetime import date, datetime
 import re
 from agent.graph import kiosk_agent
+from agent.nodes import _is_room_change_request, log_decision_trace
 from agent.state import KioskState, ConversationTurn, RoomInventoryItem, UIScreen
 from core.voice import normalize_language_code, normalize_language_list
 from core.database import get_session
@@ -121,7 +122,11 @@ ROOM_RECOMMENDATION_RE = re.compile(
     r"best\s+(?:room|suite)\s+for|"
     r"(?:affordable|budget|cheapest|lowest\s+price)\s+(?:room|suite)|"
     r"compare\s+(?:rooms?|the\s+.+)|"
-    r"which\s+(?:room|suite)\s+(?:is|would\s+be)\s+best"
+    r"difference\s+between\s+.+\s+and\s+.+|"
+    r"which\s+is\s+better|"
+    r"which\s+one\s+is\s+better|"
+    r"which\s+(?:room|suite)\s+(?:is|would\s+be)\s+best|"
+    r"which\s+(?:room|suite)\s+is\s+better"
     r")\b",
     re.IGNORECASE,
 )
@@ -138,7 +143,8 @@ ROOM_DISCOVERY_CONTEXT_RE = re.compile(
     r"room|suite|rooms|suites|"
     r"fit|fits|good\s+for|best\s+for|suitable|"
     r"recommend|suggest|choose|look\s+at|look\s+for|"
-    r"compare|affordable|budget|cheapest|lowest\s+price"
+    r"compare|difference|better|vs|versus|"
+    r"affordable|budget|cheapest|lowest\s+price"
     r")\b",
     re.IGNORECASE,
 )
@@ -1246,6 +1252,67 @@ def _resolve_effective_language(requested_language: Optional[str], tenant_config
     return default_language
 
 
+def _enforce_response_state_invariants(
+    updated_state: KioskState,
+    response_next_screen: str,
+    selected_room_payload: Optional[dict],
+    room_inventory: list[dict],
+    transcript: str,
+) -> tuple[KioskState, str, dict, Optional[dict]]:
+    if selected_room_payload:
+        try:
+            updated_state.selected_room = RoomInventoryItem(**selected_room_payload)
+        except Exception:
+            pass
+
+    slots_dict = updated_state.booking_slots.model_dump()
+    selected_room_name = str(
+        (selected_room_payload or {}).get("name")
+        or (selected_room_payload or {}).get("displayName")
+        or ""
+    ).strip()
+
+    if selected_room_name and slots_dict.get("room_type") != selected_room_name:
+        updated_state.booking_slots = updated_state.booking_slots.model_copy(
+            update={"room_type": selected_room_name}
+        )
+        slots_dict = updated_state.booking_slots.model_dump()
+        print(
+            "[ChatAPI][Invariant] synced room_type from selected room "
+            f"session={updated_state.session_id} room={selected_room_name}"
+        )
+
+    if not selected_room_payload and slots_dict.get("room_type"):
+        selected_room_payload = resolve_effective_room_payload(
+            None,
+            slots_dict,
+            room_inventory,
+        )
+        if selected_room_payload:
+            try:
+                updated_state.selected_room = RoomInventoryItem(**selected_room_payload)
+            except Exception:
+                pass
+
+    room_change_requested = (
+        updated_state.current_ui_screen == "BOOKING_SUMMARY"
+        and updated_state.resolved_intent == "MODIFY_BOOKING"
+        and _is_room_change_request(transcript)
+    )
+    if (
+        updated_state.current_ui_screen == "BOOKING_SUMMARY"
+        and response_next_screen == "ROOM_SELECT"
+        and not room_change_requested
+    ):
+        print(
+            "[ChatAPI][Invariant] preventing BOOKING_SUMMARY -> ROOM_SELECT "
+            f"session={updated_state.session_id}"
+        )
+        response_next_screen = "BOOKING_COLLECT"
+
+    return updated_state, response_next_screen, slots_dict, selected_room_payload
+
+
 class ChatRequest(BaseModel):
     """
     Accepts the frontend adapter's camelCase payload via aliases.
@@ -1763,6 +1830,32 @@ async def chat(
                 f"session={req.session_id} from={response_next_screen} -> ROOM_PREVIEW"
             )
             response_next_screen = "ROOM_PREVIEW"
+
+        updated_state, response_next_screen, slots_dict, selected_room_payload = _enforce_response_state_invariants(
+            updated_state,
+            response_next_screen,
+            selected_room_payload,
+            room_inventory,
+            req.transcript,
+        )
+        _sessions[req.session_id] = updated_state
+        is_complete = updated_state.booking_slots.is_complete()
+        missing_slots = [
+            _to_contract_slot_name(slot_name)
+            for slot_name in updated_state.booking_slots.missing_required_slots()
+        ]
+        next_slot_to_ask = _to_contract_slot_name(updated_state.active_slot)
+        if selected_room_payload and selected_room_payload.get("name"):
+            selected_room_payload["displayName"] = selected_room_payload.get("name")
+
+        log_decision_trace(
+            "chat_api",
+            intent=updated_state.resolved_intent,
+            intent_source="api_response",
+            extracted_slots=slots_dict,
+            selected_room=selected_room_payload or updated_state.booking_slots.room_type,
+            next_screen=response_next_screen,
+        )
 
         return ChatResponse(
             speech=response_speech,
