@@ -14,7 +14,8 @@ from urllib.parse import urlparse
 from datetime import date, datetime
 import re
 from agent.graph import kiosk_agent
-from agent.nodes import _is_summary_confirmation_transcript
+from agent.nodes import _is_room_change_request, log_decision_trace, _is_summary_confirmation_transcript
+
 from agent.state import KioskState, ConversationTurn, RoomInventoryItem, UIScreen, KioskUiAction
 from core.voice import normalize_language_code, normalize_language_list
 from core.database import get_session
@@ -34,6 +35,8 @@ from services.booking_guards import (
     resolve_effective_room_payload,
     sanitize_booking_constraints,
 )
+from services.query_classifier import QueryType, classify_query_type
+from services.transcript_understanding import repair_transcript_for_routing
 from models.booking import Booking
 from models.room_instance import RoomInstance
 
@@ -110,6 +113,41 @@ TRANSACTIONAL_CHECKIN_RE = re.compile(
     r"i\s+have\s+a\s+booking|"
     r"existing\s+booking|"
     r"my\s+reservation"
+    r")\b",
+    re.IGNORECASE,
+)
+
+ROOM_RECOMMENDATION_RE = re.compile(
+    r"\b("
+    r"(?:which|what)\s+room\s+(?:should|would|is)|"
+    r"recommend(?:\s+me)?\s+(?:a\s+)?(?:room|suite)|"
+    r"suggest(?:\s+me)?\s+(?:a\s+)?(?:room|suite)|"
+    r"best\s+(?:room|suite)\s+for|"
+    r"(?:affordable|budget|cheapest|lowest\s+price)\s+(?:room|suite)|"
+    r"compare\s+(?:rooms?|the\s+.+)|"
+    r"difference\s+between\s+.+\s+and\s+.+|"
+    r"which\s+is\s+better|"
+    r"which\s+one\s+is\s+better|"
+    r"which\s+(?:room|suite)\s+(?:is|would\s+be)\s+best|"
+    r"which\s+(?:room|suite)\s+is\s+better"
+    r")\b",
+    re.IGNORECASE,
+)
+ROOM_GUEST_FIT_RE = re.compile(
+    r"\b("
+    r"family\s+of\s+(?:\d+|one|two|three|four|five|six|seven|eight)|"
+    r"(?:\d+|one|two|three|four|five|six|seven|eight)\s+adults?"
+    r"(?:\s+and\s+(?:\d+|one|two|three|four|five|six|seven|eight)\s+children?)?"
+    r")\b",
+    re.IGNORECASE,
+)
+ROOM_DISCOVERY_CONTEXT_RE = re.compile(
+    r"\b("
+    r"room|suite|rooms|suites|"
+    r"fit|fits|good\s+for|best\s+for|suitable|"
+    r"recommend|suggest|choose|look\s+at|look\s+for|"
+    r"compare|difference|better|vs|versus|"
+    r"affordable|budget|cheapest|lowest\s+price"
     r")\b",
     re.IGNORECASE,
 )
@@ -763,6 +801,7 @@ def _merge_filled_slots(state: KioskState, filled_slots: dict, room_inventory: l
         "guestName": "guest_name",
         "nights": "nights"
     }
+    explicit_room_type = filled_slots.get("roomType")
 
     current_slots = state.booking_slots.model_dump()
     has_updates = False
@@ -792,7 +831,12 @@ def _merge_filled_slots(state: KioskState, filled_slots: dict, room_inventory: l
     target_room_name = current_slots.get("room_type")
     if target_room_name:
         normalized_target = target_room_name.strip().lower()
-        if not state.selected_room or (state.selected_room.name or "").lower() != normalized_target:
+        should_refresh_selected_room = (
+            explicit_room_type is not None and str(explicit_room_type).strip() != ""
+        ) or state.selected_room is None
+        if should_refresh_selected_room and (
+            not state.selected_room or (state.selected_room.name or "").lower() != normalized_target
+        ):
             import difflib
             # Find the best match in the inventory
             for room in room_inventory:
@@ -999,8 +1043,8 @@ def _coerce_booking_context_screen(requested_screen: UIScreen, state: KioskState
         )
         return "ROOM_SELECT"
 
-    if previous_screen in {"ROOM_PREVIEW", "BOOKING_COLLECT", "BOOKING_SUMMARY"} and has_selected_room:
-        preserved_screen = "ROOM_PREVIEW" if not state.booking_slots.is_complete() else previous_screen
+    if previous_screen in {"ROOM_PREVIEW", "BOOKING_COLLECT", "BOOKING_SUMMARY"}:
+        preserved_screen = previous_screen
         print(
             "[ChatAPI] Preserving booking context "
             f"from={previous_screen} requested={requested_screen} -> {preserved_screen}"
@@ -1017,7 +1061,25 @@ def _coerce_booking_context_screen(requested_screen: UIScreen, state: KioskState
     return requested_screen
 
 
-def _should_attempt_faq(transcript: str, normalized_ui_screen: UIScreen) -> bool:
+def _looks_like_room_recommendation_prompt(transcript: str) -> bool:
+    cleaned = (transcript or "").strip()
+    if not cleaned:
+        return False
+
+    normalized = normalize_faq_query(cleaned)
+    if ROOM_RECOMMENDATION_RE.search(cleaned) or ROOM_RECOMMENDATION_RE.search(normalized):
+        return True
+
+    if ROOM_GUEST_FIT_RE.search(cleaned) and ROOM_DISCOVERY_CONTEXT_RE.search(cleaned):
+        return True
+
+    if ROOM_GUEST_FIT_RE.search(normalized) and ROOM_DISCOVERY_CONTEXT_RE.search(normalized):
+        return True
+
+    return False
+
+
+def _should_attempt_faq(transcript: str, normalized_ui_screen: UIScreen, query_type: QueryType) -> bool:
     if normalized_ui_screen in FAQ_BLOCKED_SCREENS:
         print(
             "[ChatAPI][FAQ] candidate "
@@ -1031,6 +1093,13 @@ def _should_attempt_faq(transcript: str, normalized_ui_screen: UIScreen) -> bool
     cleaned = (transcript or "").strip()
     if not cleaned:
         return False
+    if query_type != "FAQ_INFO":
+        print(
+            "[ChatAPI][FAQ] candidate "
+            f"screen={normalized_ui_screen} "
+            f"allowed=False reason=query_type_{query_type.lower()}"
+        )
+        return False
     # Avoid running FAQ retrieval on very long turns (likely conversational/transactional).
     if len(cleaned) > 240:
         return False
@@ -1042,36 +1111,11 @@ def _should_attempt_faq(transcript: str, normalized_ui_screen: UIScreen) -> bool
             "allowed=False reason=too_vague"
         )
         return False
-    if TRANSACTIONAL_BOOKING_RE.search(cleaned) or TRANSACTIONAL_BOOKING_RE.search(normalized):
-        print(
-            "[ChatAPI][FAQ] candidate "
-            f"screen={normalized_ui_screen} "
-            "allowed=False reason=transactional_booking"
-        )
-        return False
-    if TRANSACTIONAL_CHECKIN_RE.search(cleaned) or TRANSACTIONAL_CHECKIN_RE.search(normalized):
-        print(
-            "[ChatAPI][FAQ] candidate "
-            f"screen={normalized_ui_screen} "
-            "allowed=False reason=transactional_checkin"
-        )
-        return False
-    # Room browsing / virtual tour phrases are transactional (trigger BOOK_ROOM),
-    # not informational.  They must reach the LangGraph agent, not the FAQ pipeline.
-    from agent.nodes import _looks_like_room_browsing_request
-    if _looks_like_room_browsing_request(cleaned):
-        print(
-            "[ChatAPI][FAQ] candidate "
-            f"screen={normalized_ui_screen} "
-            "allowed=False reason=transactional_room_browsing"
-        )
-        return False
-
     is_candidate = is_faq_candidate_query(cleaned)
     print(
         "[ChatAPI][FAQ] candidate "
         f"screen={normalized_ui_screen} "
-        f"allowed={is_candidate}"
+        f"allowed={is_candidate} query_type={query_type}"
     )
     return is_candidate
 
@@ -1184,6 +1228,67 @@ def _resolve_effective_language(requested_language: Optional[str], tenant_config
     return default_language
 
 
+def _enforce_response_state_invariants(
+    updated_state: KioskState,
+    response_next_screen: str,
+    selected_room_payload: Optional[dict],
+    room_inventory: list[dict],
+    transcript: str,
+) -> tuple[KioskState, str, dict, Optional[dict]]:
+    if selected_room_payload:
+        try:
+            updated_state.selected_room = RoomInventoryItem(**selected_room_payload)
+        except Exception:
+            pass
+
+    slots_dict = updated_state.booking_slots.model_dump()
+    selected_room_name = str(
+        (selected_room_payload or {}).get("name")
+        or (selected_room_payload or {}).get("displayName")
+        or ""
+    ).strip()
+
+    if selected_room_name and slots_dict.get("room_type") != selected_room_name:
+        updated_state.booking_slots = updated_state.booking_slots.model_copy(
+            update={"room_type": selected_room_name}
+        )
+        slots_dict = updated_state.booking_slots.model_dump()
+        print(
+            "[ChatAPI][Invariant] synced room_type from selected room "
+            f"session={updated_state.session_id} room={selected_room_name}"
+        )
+
+    if not selected_room_payload and slots_dict.get("room_type"):
+        selected_room_payload = resolve_effective_room_payload(
+            None,
+            slots_dict,
+            room_inventory,
+        )
+        if selected_room_payload:
+            try:
+                updated_state.selected_room = RoomInventoryItem(**selected_room_payload)
+            except Exception:
+                pass
+
+    room_change_requested = (
+        updated_state.current_ui_screen == "BOOKING_SUMMARY"
+        and updated_state.resolved_intent == "MODIFY_BOOKING"
+        and _is_room_change_request(transcript)
+    )
+    if (
+        updated_state.current_ui_screen == "BOOKING_SUMMARY"
+        and response_next_screen == "ROOM_SELECT"
+        and not room_change_requested
+    ):
+        print(
+            "[ChatAPI][Invariant] preventing BOOKING_SUMMARY -> ROOM_SELECT "
+            f"session={updated_state.session_id}"
+        )
+        response_next_screen = "BOOKING_COLLECT"
+
+    return updated_state, response_next_screen, slots_dict, selected_room_payload
+
+
 class ChatRequest(BaseModel):
     """
     Accepts the frontend adapter's camelCase payload via aliases.
@@ -1260,6 +1365,7 @@ async def chat(
         resolved_tenant_id = await _resolve_tenant_id(session, req.tenant_id, requested_tenant_slug)
         tenant_config = await _load_tenant_config(session, resolved_tenant_id)
         effective_language = _resolve_effective_language(req.language, tenant_config)
+        routing_transcript = repair_transcript_for_routing(req.transcript)
         room_inventory = await _load_room_inventory(session, resolved_tenant_id)
         if not room_inventory and req.room_catalog:
             room_inventory = [
@@ -1299,8 +1405,7 @@ async def chat(
         previous_state = state.model_copy(deep=True)
 
         # Update state with current request data
-        state.latest_transcript = req.transcript
-        state.current_ui_screen = normalized_ui_screen
+        state.latest_transcript = routing_transcript
         state.language = effective_language
         state.is_gallery_fullscreen = bool(req.is_gallery_fullscreen)
         state.tenant_id = resolved_tenant_id or state.tenant_id
@@ -1313,6 +1418,11 @@ async def chat(
 
         normalized_ui_screen = _coerce_booking_context_screen(normalized_ui_screen, state)
         state.current_ui_screen = normalized_ui_screen
+        query_type = classify_query_type(
+            req.transcript,
+            normalized_ui_screen,
+            repaired_transcript=routing_transcript,
+        )
         print(
             "[ChatAPI] request "
             f"session={req.session_id} "
@@ -1320,37 +1430,20 @@ async def chat(
             f"tenant={resolved_tenant_id or req.tenant_id} "
             f"language={effective_language} "
             f"rooms={len(room_inventory)} "
-            f"db={_database_target_hint()}"
+            f"db={_database_target_hint()} "
+            f"query_type={query_type}"
         )
-
-        summary_confirm_short_circuit = (
-            normalized_ui_screen == "BOOKING_SUMMARY"
-            and state.booking_slots.is_complete()
-            and _is_summary_confirmation_transcript(req.transcript)
-        )
+        if routing_transcript != (req.transcript or "").strip():
+            print(
+                "[ChatAPI] repaired transcript "
+                f"session={req.session_id} raw='{req.transcript}' routed='{routing_transcript}'"
+            )
 
         updated_state: Optional[KioskState] = None
 
-        if summary_confirm_short_circuit:
-            speech = "Perfect. Your booking details are confirmed. Taking you to payment now."
-            updated_history = state.history + [
-                ConversationTurn(role="user", content=req.transcript),
-                ConversationTurn(role="assistant", content=speech),
-            ]
-            updated_state = state.model_copy(
-                update={
-                    "resolved_intent": "CONFIRM_BOOKING",
-                    "speech_response": speech,
-                    "active_slot": None,
-                    "history": updated_history,
-                    "next_ui_screen": "PAYMENT",
-                }
-            )
-            _sessions[req.session_id] = updated_state
-
         # Deterministic FAQ retrieval layer (tenant-scoped), only for non-transactional turns.
-        if not updated_state and _should_attempt_faq(req.transcript, normalized_ui_screen):
-            normalized_transcript = normalize_faq_query(req.transcript)
+        if not updated_state and _should_attempt_faq(routing_transcript, normalized_ui_screen, query_type):
+            normalized_transcript = normalize_faq_query(routing_transcript)
             print(
                 "[ChatAPI][FAQ] attempt "
                 f"session={req.session_id} "
@@ -1360,7 +1453,7 @@ async def chat(
             faq_lookup = await find_best_faq_match(
                 session=session,
                 tenant_id=resolved_tenant_id or req.tenant_id,
-                user_query=req.transcript,
+                user_query=routing_transcript,
                 language=state.language,
             )
             if faq_lookup.localizations_synced:
@@ -1394,6 +1487,16 @@ async def chat(
                     "[ChatAPI][FAQ] respond "
                     f"session={req.session_id} "
                     f"answerSource=FAQ_DB faq_id={faq_match.faq_id}"
+                )
+                log_decision_trace(
+                    "chat_api",
+                    intent="GENERAL_QUERY",
+                    intent_source="faq_db",
+                    selected_room=state.selected_room.model_dump(by_alias=True) if state.selected_room else None,
+                    next_screen=normalized_ui_screen,
+                    transcript=routing_transcript,
+                    raw_transcript=req.transcript,
+                    query_type=query_type,
                 )
 
                 return ChatResponse(
@@ -1439,6 +1542,16 @@ async def chat(
                 f"session={req.session_id} "
                 f"reason={'no_match' if not faq_match else f'low_confidence:{faq_match.confidence:.3f}'} "
                 f"faq_count={faq_lookup.faq_count}"
+            )
+            log_decision_trace(
+                "chat_api",
+                intent="GENERAL_QUERY",
+                intent_source="faq_fallback",
+                selected_room=state.selected_room.model_dump(by_alias=True) if state.selected_room else None,
+                next_screen=normalized_ui_screen,
+                transcript=routing_transcript,
+                raw_transcript=req.transcript,
+                query_type=query_type,
             )
             return ChatResponse(
                 speech=fallback_text,
@@ -1741,8 +1854,36 @@ async def chat(
             )
             response_next_screen = "ROOM_PREVIEW"
 
-        updated_state.ui_action = None
+        updated_state, response_next_screen, slots_dict, selected_room_payload = _enforce_response_state_invariants(
+            updated_state,
+            response_next_screen,
+            selected_room_payload,
+            room_inventory,
+            req.transcript,
+        )
         _sessions[req.session_id] = updated_state
+        is_complete = updated_state.booking_slots.is_complete()
+        missing_slots = [
+            _to_contract_slot_name(slot_name)
+            for slot_name in updated_state.booking_slots.missing_required_slots()
+        ]
+        next_slot_to_ask = _to_contract_slot_name(updated_state.active_slot)
+        if selected_room_payload and selected_room_payload.get("name"):
+            selected_room_payload["displayName"] = selected_room_payload.get("name")
+
+        log_decision_trace(
+            "chat_api",
+            intent=updated_state.resolved_intent,
+            intent_source="api_response",
+            extracted_slots=slots_dict,
+            selected_room=selected_room_payload or updated_state.booking_slots.room_type,
+            next_screen=response_next_screen,
+            transcript=routing_transcript,
+            raw_transcript=req.transcript,
+            query_type=query_type,
+        )
+        updated_state.ui_action = None
+      
 
         return ChatResponse(
             speech=response_speech,

@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 from agent.state import KioskState, BookingSlots, ConversationTurn, RoomInventoryItem
 from core.llm import get_llm_response
+from services.transcript_understanding import looks_like_room_discovery_repairable
 
 
 LANGUAGE_DISPLAY_NAMES = {
@@ -193,6 +194,17 @@ def _build_room_confirmation(room: RoomInventoryItem) -> str:
     return ". ".join(parts)
 
 
+def _build_room_preview_intro(room: RoomInventoryItem) -> str:
+    parts = [f"Here is the {room.name}"]
+    price_text = _format_price_for_speech(room.price, room.currency)
+    if price_text:
+        parts[-1] += f", available at {price_text} per night"
+    if room.max_adults:
+        parts[-1] += f" for up to {room.max_adults} adult{'s' if room.max_adults != 1 else ''}"
+    parts.append("Take a look and let me know if you'd like to book it or see another option.")
+    return ". ".join(parts)
+
+
 def _build_room_recommendation_prompt(room_inventory: list[RoomInventoryItem]) -> str:
     if not room_inventory:
         return (
@@ -234,6 +246,67 @@ def _build_room_recommendation_prompt(room_inventory: list[RoomInventoryItem]) -
             follow_up,
         ]
     ).strip()
+
+
+def _rooms_mentioned_in_transcript(
+    transcript: str,
+    room_inventory: list[RoomInventoryItem],
+) -> list[RoomInventoryItem]:
+    normalized_transcript = _normalize_text(transcript)
+    if not normalized_transcript or not room_inventory:
+        return []
+
+    matches: list[tuple[int, RoomInventoryItem]] = []
+    seen_ids: set[str] = set()
+
+    for room in room_inventory:
+        aliases = [
+            _normalize_text(room.name or ""),
+            _normalize_text(room.code or ""),
+        ]
+        best_index: Optional[int] = None
+        for alias in aliases:
+            if not alias:
+                continue
+            idx = normalized_transcript.find(alias)
+            if idx >= 0 and (best_index is None or idx < best_index):
+                best_index = idx
+        if best_index is None:
+            continue
+        room_key = str(room.id or room.name or room.code or "")
+        if room_key in seen_ids:
+            continue
+        seen_ids.add(room_key)
+        matches.append((best_index, room))
+
+    matches.sort(key=lambda item: item[0])
+    return [room for _, room in matches]
+
+
+def _build_room_comparison_prompt(compared_rooms: list[RoomInventoryItem]) -> str:
+    if len(compared_rooms) < 2:
+        return _build_room_recommendation_prompt(compared_rooms)
+
+    described_rooms: list[str] = []
+    for room in compared_rooms[:2]:
+        room_name = room.name or "This room"
+        price_text = _format_price_for_speech(room.price, room.currency)
+        occupancy_text = (
+            f"up to {room.max_adults} adult{'s' if room.max_adults != 1 else ''}"
+            if room.max_adults
+            else "a comfortable stay"
+        )
+        if price_text:
+            described_rooms.append(
+                f"{room_name} is available for {price_text} and suits {occupancy_text}"
+            )
+        else:
+            described_rooms.append(f"{room_name} suits {occupancy_text}")
+
+    return (
+        f"{described_rooms[0]}. {described_rooms[1]}. "
+        "Which one would you like to explore in more detail?"
+    )
 
 
 def _normalize_text(value: str) -> str:
@@ -630,6 +703,54 @@ def _build_room_options_text(room_inventory: list[RoomInventoryItem]) -> str:
     return _join_spoken_list(names)
 
 
+def log_decision_trace(
+    scope: str,
+    *,
+    intent: Optional[str],
+    intent_source: str,
+    extracted_slots: Optional[dict] = None,
+    selected_room: Optional[object] = None,
+    next_screen: Optional[str] = None,
+    transcript: Optional[str] = None,
+    raw_transcript: Optional[str] = None,
+    query_type: Optional[str] = None,
+) -> None:
+    compact_slots = {key: value for key, value in (extracted_slots or {}).items() if value is not None}
+    try:
+        slot_text = json.dumps(compact_slots, sort_keys=True, default=str)
+    except Exception:
+        slot_text = str(compact_slots)
+
+    selected_room_name = "-"
+    if isinstance(selected_room, RoomInventoryItem):
+        selected_room_name = selected_room.name or "-"
+    elif isinstance(selected_room, dict):
+        selected_room_name = str(
+            selected_room.get("name")
+            or selected_room.get("displayName")
+            or selected_room.get("room_type")
+            or selected_room.get("roomType")
+            or "-"
+        )
+    elif selected_room:
+        selected_room_name = str(selected_room)
+
+    transcript_text = str(transcript or "-").replace("\n", " ").strip() or "-"
+    raw_transcript_text = str(raw_transcript or "-").replace("\n", " ").strip() or "-"
+
+    print(
+        f"[DecisionTrace][{scope}] "
+        f"intent={intent or '-'} "
+        f"source={intent_source} "
+        f"query_type={query_type or '-'} "
+        f"slots={slot_text} "
+        f"selected_room={selected_room_name} "
+        f"next_screen={next_screen or '-'} "
+        f"transcript={json.dumps(transcript_text)} "
+        f"raw_transcript={json.dumps(raw_transcript_text)}"
+    )
+
+
 def _should_stay_in_room_preview(
     state: KioskState,
     selected_room: Optional[RoomInventoryItem],
@@ -693,6 +814,47 @@ def _is_room_change_request(transcript: str) -> bool:
     return references_room and wants_change
 
 
+def _looks_like_explicit_preview_booking_request(transcript: str) -> bool:
+    text = (transcript or "").strip().lower()
+    if not text:
+        return False
+    return bool(
+        re.search(
+            r"\b("
+            r"book\s+(?:this|the)?\s*(?:room|suite|one|it)|"
+            r"reserve\s+(?:this|the)?\s*(?:room|suite|one|it)|"
+            r"i(?:\s*would)?\s+like\s+to\s+book\s+(?:this|it|the\s+room)|"
+            r"i\s+want\s+(?:this|it|the\s+room)|"
+            r"i(?:'ll|\s+will)\s+take\s+(?:this|it|the\s+room)?|"
+            r"go\s+ahead\s+with\s+(?:this|it|the\s+room)|"
+            r"proceed\s+with\s+(?:this|it|the\s+room)|"
+            r"confirm\s+(?:this|it|the\s+room)"
+            r")\b",
+            text,
+        )
+    )
+
+
+def _looks_like_explicit_check_in_restart_request(transcript: str) -> bool:
+    text = (transcript or "").strip().lower()
+    if not text:
+        return False
+    return bool(
+        re.search(
+            r"\b("
+            r"check\s+in\s+instead|"
+            r"start\s+over\s+and\s+check\s+in|"
+            r"restart\s+and\s+check\s+in|"
+            r"cancel\s+(?:this|the)?\s*(?:booking|reservation)?\s*and\s+check\s+in|"
+            r"forget\s+(?:this|the)?\s*(?:booking|reservation)?\s*and\s+check\s+in|"
+            r"stop\s+(?:this|the)?\s*(?:booking|reservation)?\s*and\s+check\s+in|"
+            r"switch\s+to\s+check\s+in"
+            r")\b",
+            text,
+        )
+    )
+
+
 def _looks_like_check_in_request(transcript: str) -> bool:
     text = (transcript or "").strip().lower()
     if not text:
@@ -720,6 +882,8 @@ def _looks_like_room_browsing_request(transcript: str) -> bool:
     text = (transcript or "").strip().lower()
     if not text:
         return False
+    if looks_like_room_discovery_repairable(text):
+        return True
     # Guard: if the user is asking an informational question about rooms
     # (e.g. "what time can I check into my room"), that is NOT a browsing request.
     info_question = bool(
@@ -756,6 +920,47 @@ def _looks_like_room_browsing_request(transcript: str) -> bool:
     )
 
 
+def _looks_like_room_recommendation_request(transcript: str) -> bool:
+    text = (transcript or "").strip().lower()
+    if not text:
+        return False
+
+    if re.search(
+        r"\b("
+        r"which\s+room\s+(?:should|would)|"
+        r"what\s+room\s+should|"
+        r"recommend(?:\s+me)?\s+(?:a\s+)?(?:room|suite)|"
+        r"suggest(?:\s+me)?\s+(?:a\s+)?(?:room|suite)|"
+        r"best\s+(?:room|suite)\s+for|"
+        r"(?:cheapest|budget|affordable|lowest\s+price)\s+(?:room|suite)|"
+        r"compare\s+(?:rooms?|the\s+.+\s+and\s+.+)|"
+        r"difference\s+between\s+.+\s+and\s+.+|"
+        r"which\s+is\s+better|"
+        r"which\s+(?:one|room|suite)\s+is\s+better|"
+        r"which\s+(?:room|suite)\s+(?:is|would\s+be)\s+best"
+        r")\b",
+        text,
+    ):
+        return True
+
+    has_guest_fit = bool(
+        re.search(
+            r"\b("
+            r"family\s+of\s+(?:\d+|one|two|three|four|five|six|seven|eight)|"
+            r"(?:\d+|one|two|three|four|five|six|seven|eight)\s+adults?"
+            r"(?:\s+and\s+(?:\d+|one|two|three|four|five|six|seven|eight)\s+children?)?|"
+            r"two\s+adults?\s+and\s+two\s+children|"
+            r"two\s+adults?\s+and\s+one\s+child"
+            r")\b",
+            text,
+        )
+    )
+    has_room_discovery_context = bool(
+        re.search(
+            r"\b("
+            r"room|suite|rooms|suites|"
+            r"fit|fits|suitable|best|recommend|suggest|choose|"
+            r"look\s+at|look\s+for|compare|affordable|budget|cheapest"
 def _looks_like_gallery_close_request(transcript: str) -> bool:
     text = (transcript or "").strip().lower()
     if not text:
@@ -777,6 +982,57 @@ def _looks_like_gallery_close_request(transcript: str) -> bool:
             text,
         )
     )
+    return has_guest_fit and has_room_discovery_context
+
+
+def _looks_like_room_comparison_request(transcript: str) -> bool:
+    text = (transcript or "").strip().lower()
+    if not text:
+        return False
+    return bool(
+        re.search(
+            r"\b("
+            r"compare|comparison|"
+            r"difference\s+between|"
+            r"which\s+is\s+better|"
+            r"which\s+(?:one|room|suite)?\s*is\s+better|"
+            r"versus|vs\.?"
+            r")\b",
+            text,
+        )
+    )
+
+
+def _looks_like_room_preview_detail_request(transcript: str) -> bool:
+    text = (transcript or "").strip().lower()
+    if not text:
+        return False
+
+    mentions_room_context = bool(
+        re.search(r"\b(this|it|room|suite)\b", text)
+        or re.search(r"\bdoes\s+this\s+room\b", text)
+    )
+    mentions_feature = bool(
+        re.search(
+            r"\b("
+            r"balcony|terrace|view|city\s+view|sea\s+view|ocean\s+view|"
+            r"bathroom|bath\s*tub|bathtub|shower|bedroom|bed|window|"
+            r"living\s+room|living\s+area|lounge|workspace|desk|sofa|seating|"
+            r"feature|features|amenity|amenities"
+            r")\b",
+            text,
+        )
+    )
+    asks_about_feature = bool(
+        re.search(
+            r"\b("
+            r"does|is|has|have|what|which|tell|describe|show|see|view|"
+            r"can\s+i\s+see|can\s+you\s+show"
+            r")\b",
+            text,
+        )
+    )
+    return mentions_feature and (mentions_room_context or asks_about_feature)
 
 
 def _gallery_close_fallback_intent(transcript: str) -> str:
@@ -828,18 +1084,22 @@ Rules:
 
 ## Screen Context Rules
 A "Current UI screen" message is provided. Use it to disambiguate ambiguous intents:
-- WELCOME / IDLE: Opening screen. Any mention of rooms, availability, booking, or wanting to see/explore rooms -> BOOK_ROOM. Greetings, amenity questions, hotel info -> GENERAL_QUERY.
+- WELCOME / IDLE: Opening screen. Any mention of rooms, availability, booking, wanting to see/explore rooms, family-fit room advice, cheapest/affordable rooms, or room comparisons -> BOOK_ROOM. Greetings, amenity questions, hotel info -> GENERAL_QUERY.
 - ROOM_SELECT: User is browsing the room catalog. Selecting or asking about a specific room -> BOOK_ROOM. Feature questions -> GENERAL_QUERY.
 - ROOM_PREVIEW: User is viewing a SPECIFIC room's image carousel.
-  * "show me bathroom", "I want to see the balcony", "show me the view", or ANY request to focus on a room feature/area -> GENERAL_QUERY (this is a visual focus request, NOT a new booking).
+  * "show me bathroom", "I want to see the balcony", "show me the view", "does this room have a balcony", or ANY request to focus on a room feature/area -> GENERAL_QUERY (this is a visual focus request, NOT a new booking).
   * "book this room", "I'll take it", "I want this one" -> BOOK_ROOM.
+  * If the user starts giving guest counts, dates, or a guest name while still in ROOM_PREVIEW, classify as the corresponding PROVIDE_* intent so the booking flow can begin naturally.
   * "show me another option", "different room", "I don't like this", "go back", "other rooms" -> MODIFY_BOOKING (user wants to browse different rooms).
   * "open full view", "expand image", "fullscreen" -> OPEN_FULLSCREEN_GALLERY.
   * "close full view", "exit fullscreen", "close image" -> CLOSE_FULLSCREEN_GALLERY.
 - BOOKING_COLLECT: User is providing booking details (guests, dates, name).
   * Visual focus requests ("show me the balcony") -> GENERAL_QUERY.
+  * Phrases like "check in tomorrow" inside a booking-detail sentence usually refer to stay dates, not kiosk CHECK_IN for an existing reservation.
   * Guest counts -> PROVIDE_GUESTS. Dates -> PROVIDE_DATES. Names -> PROVIDE_NAME.
 - BOOKING_SUMMARY: Only CONFIRM_BOOKING or MODIFY_BOOKING are expected here.
+  * "yes, that's correct", "proceed to payment", "go to payment" -> CONFIRM_BOOKING.
+  * "change the guest name", "edit the dates", "modify the details" -> MODIFY_BOOKING.
 CRITICAL: On ROOM_PREVIEW and BOOKING_COLLECT, phrases like "show me [room part]" are visual focus requests (GENERAL_QUERY), NOT booking requests. Do not classify them as BOOK_ROOM.
 
 Respond ONLY with a JSON object:
@@ -847,20 +1107,69 @@ Respond ONLY with a JSON object:
 """
 
 
-async def route_intent(state: KioskState) -> dict:
-    """Node 1: Classify the user's intent."""
-    print(f"[Router] Classifying: '{state.latest_transcript}'")
-    semantic_hint: Optional[str] = None
+def _router_result(
+    state: KioskState,
+    intent: str,
+    confidence: float,
+    *,
+    intent_source: str,
+    speech_override: Optional[str] = None,
+    consecutive_failures: int = 0,
+    last_failed_screen: Optional[str] = None,
+) -> dict:
+    log_decision_trace(
+        "router",
+        intent=intent,
+        intent_source=intent_source,
+        selected_room=state.selected_room or state.booking_slots.room_type,
+        next_screen=state.current_ui_screen,
+        transcript=state.latest_transcript,
+    )
+    return {
+        "resolved_intent": intent,
+        "confidence": confidence,
+        "speech_override": speech_override,
+        "consecutive_failures": consecutive_failures,
+        "last_failed_screen": last_failed_screen,
+    }
 
-    if _looks_like_check_in_request(state.latest_transcript):
-        return {
-            "resolved_intent": "CHECK_IN",
-            "confidence": 0.97,
-            "speech_override": None,
-            "consecutive_failures": 0,
-            "last_failed_screen": None,
-        }
 
+def _route_booking_summary_override(state: KioskState, transcript_text: str) -> Optional[dict]:
+    if state.current_ui_screen != "BOOKING_SUMMARY":
+        return None
+    if _is_summary_modify_transcript(transcript_text):
+        return _router_result(
+            state,
+            "MODIFY_BOOKING",
+            0.96,
+            intent_source="summary_guard",
+        )
+    if state.booking_slots.is_complete() and _is_summary_confirmation_transcript(transcript_text):
+        return _router_result(
+            state,
+            "CONFIRM_BOOKING",
+            0.97,
+            intent_source="summary_guard",
+        )
+    return None
+
+
+def _route_preview_context_override(state: KioskState, transcript_text: str) -> Optional[dict]:
+    current_screen = state.current_ui_screen
+    if current_screen == "ROOM_PREVIEW" and _looks_like_room_preview_detail_request(transcript_text):
+        print(
+            f"[Router] Preview detail guard on {current_screen}: "
+            f"'{state.latest_transcript}' -> GENERAL_QUERY"
+        )
+        return _router_result(
+            state,
+            "GENERAL_QUERY",
+            0.97,
+            intent_source="preview_detail_guard",
+        )
+
+    if current_screen in ("ROOM_PREVIEW", "BOOKING_COLLECT"):
+        visual_focus_text = transcript_text.strip().lower()
     if state.is_gallery_fullscreen and _looks_like_gallery_close_request(state.latest_transcript):
         print(f"[Router] Gallery-close priority (fullscreen=true): '{state.latest_transcript}'")
         return {
@@ -878,59 +1187,99 @@ async def route_intent(state: KioskState) -> dict:
     if state.current_ui_screen in ("ROOM_PREVIEW", "BOOKING_COLLECT"):
         _vf_text = (state.latest_transcript or "").strip().lower()
         if re.search(
-            r"\b(?:show|see|view|display|open|focus)\b.*"
+            r"\b(?:show|see|view|display|open|focus|describe|tell)\b.*"
             r"\b(?:bath(?:room|tub)?|balcony|terrace|bedroom|bed|living|lounge|"
-            r"kitchen|view|ocean|fireplace|shower|pool|sofa|seating)\b",
-            _vf_text,
+            r"kitchen|view|ocean|fireplace|shower|pool|sofa|seating|window|workspace|desk)\b",
+            visual_focus_text,
         ):
             print(
-                f"[Router] Visual focus guard on {state.current_ui_screen}: "
+                f"[Router] Visual focus guard on {current_screen}: "
                 f"'{state.latest_transcript}' -> GENERAL_QUERY"
             )
-            return {
-                "resolved_intent": "GENERAL_QUERY",
-                "confidence": 0.95,
-                "speech_override": None,
-                "consecutive_failures": 0,
-                "last_failed_screen": None,
-            }
+            return _router_result(
+                state,
+                "GENERAL_QUERY",
+                0.95,
+                intent_source="visual_focus_guard",
+            )
+    return None
 
-    if _looks_like_room_browsing_request(state.latest_transcript):
+
+def _route_welcome_discovery_override(state: KioskState, transcript_text: str) -> Optional[dict]:
+    current_screen = state.current_ui_screen
+    if current_screen in {"WELCOME", "IDLE", "AI_CHAT", "MANUAL_MENU", "ROOM_SELECT"} and _looks_like_room_comparison_request(transcript_text):
+        print(f"[Router] Deterministic room comparison match: '{state.latest_transcript}'")
+        return _router_result(
+            state,
+            "BOOK_ROOM",
+            0.95,
+            intent_source="room_comparison_guard",
+        )
+
+    if current_screen in {"WELCOME", "IDLE", "AI_CHAT", "MANUAL_MENU"} and _looks_like_room_recommendation_request(transcript_text):
+        print(f"[Router] Deterministic room recommendation match: '{state.latest_transcript}'")
+        return _router_result(
+            state,
+            "BOOK_ROOM",
+            0.95,
+            intent_source="welcome_room_recommendation_guard",
+        )
+
+    if _looks_like_room_browsing_request(transcript_text):
         print(f"[Router] Deterministic room browsing match: '{state.latest_transcript}'")
-        return {
-            "resolved_intent": "BOOK_ROOM",
-            "confidence": 0.95,
-            "speech_override": None,
-            "consecutive_failures": 0,
-            "last_failed_screen": None,
-        }
+        return _router_result(
+            state,
+            "BOOK_ROOM",
+            0.95,
+            intent_source="room_browsing_guard",
+        )
+    return None
 
-    # Deterministic summary control avoids LLM drift on "confirm and pay"/"it's correct"/"card".
-    if state.current_ui_screen == "BOOKING_SUMMARY":
-        if _is_summary_modify_transcript(state.latest_transcript):
-            return {
-                "resolved_intent": "MODIFY_BOOKING",
-                "confidence": 0.96,
-                "speech_override": None,
-                "consecutive_failures": 0,
-                "last_failed_screen": None,
-            }
-        if state.booking_slots.is_complete() and _is_summary_confirmation_transcript(state.latest_transcript):
-            return {
-                "resolved_intent": "CONFIRM_BOOKING",
-                "confidence": 0.97,
-                "speech_override": None,
-                "consecutive_failures": 0,
-                "last_failed_screen": None,
-            }
+
+def _route_check_in_override(state: KioskState, transcript_text: str) -> Optional[dict]:
+    current_screen = state.current_ui_screen
+    is_booking_context = current_screen in {"BOOKING_COLLECT", "BOOKING_SUMMARY"}
+    if not _looks_like_check_in_request(transcript_text):
+        return None
+    if is_booking_context and not _looks_like_explicit_check_in_restart_request(transcript_text):
+        print(
+            f"[Router] Suppressing CHECK_IN takeover on {current_screen}: "
+            f"'{state.latest_transcript}'"
+        )
+        return None
+    return _router_result(
+        state,
+        "CHECK_IN",
+        0.97,
+        intent_source="check_in_guard",
+    )
+
+
+async def route_intent(state: KioskState) -> dict:
+    """Node 1: Classify the user's intent."""
+    print(f"[Router] Classifying: '{state.latest_transcript}'")
+    semantic_hint: Optional[str] = None
+    transcript_text = state.latest_transcript or ""
+    current_screen = state.current_ui_screen
+    is_booking_context = current_screen in {"BOOKING_COLLECT", "BOOKING_SUMMARY"}
+
+    for guard in (
+        _route_booking_summary_override,
+        _route_preview_context_override,
+        _route_welcome_discovery_override,
+        _route_check_in_override,
+    ):
+        override = guard(state, transcript_text)
+        if override:
+            return override
 
     # Layer 2: semantic classifier
     try:
         from agent.semantic_classifier import classify_intent_semantically
 
         semantic_result = await classify_intent_semantically(
-            transcript=state.latest_transcript,
-            current_screen=state.current_ui_screen,
+            transcript=transcript_text,
+            current_screen=current_screen,
         )
         if semantic_result is not None:
             if semantic_result.is_out_of_domain:
@@ -941,6 +1290,12 @@ async def route_intent(state: KioskState) -> dict:
                 print(
                     f"[Router][L2] HIGH confidence: intent={semantic_result.intent} "
                     f"score={semantic_result.confidence} phrase='{semantic_result.matched_phrase}'"
+                )
+                return _router_result(
+                    state,
+                    semantic_result.intent,
+                    semantic_result.confidence,
+                    intent_source="semantic_classifier",
                 )
                 resolved_intent = _apply_gallery_context_intent_override(state, semantic_result.intent)
                 return {
@@ -966,9 +1321,9 @@ async def route_intent(state: KioskState) -> dict:
     full_prompt = ROUTER_SYSTEM_PROMPT + hint_text
     messages = [
         {"role": "system", "content": full_prompt},
-        {"role": "system", "content": f"Current UI screen: {state.current_ui_screen}"},
+        {"role": "system", "content": f"Current UI screen: {current_screen}"},
         {"role": "system", "content": f"Guest language preference: {state.language}"},
-        {"role": "user", "content": state.latest_transcript},
+        {"role": "user", "content": transcript_text},
     ]
 
     raw = get_llm_response(messages, temperature=0.1)
@@ -986,14 +1341,28 @@ async def route_intent(state: KioskState) -> dict:
 
     # Low-confidence fallback: if LLM classified as GENERAL_QUERY but transcript
     # matches room browsing patterns, override to BOOK_ROOM.
+    final_intent_source = "llm"
     if intent == "GENERAL_QUERY" and confidence < 0.80:
-        if _looks_like_room_browsing_request(state.latest_transcript):
+        if _looks_like_room_browsing_request(transcript_text) or (
+            current_screen in {"WELCOME", "IDLE", "AI_CHAT", "MANUAL_MENU"}
+            and _looks_like_room_recommendation_request(transcript_text)
+        ):
             print(f"[Router] Low-confidence fallback: GENERAL_QUERY({confidence}) -> BOOK_ROOM")
             intent = "BOOK_ROOM"
             confidence = 0.85
+            final_intent_source = "llm_room_browsing_fallback"
+
+    if intent == "CHECK_IN" and is_booking_context and not _looks_like_explicit_check_in_restart_request(transcript_text):
+        replacement_intent = semantic_hint or "GENERAL_QUERY"
+        print(
+            f"[Router] Post-LLM CHECK_IN suppression on {current_screen}: "
+            f"'{state.latest_transcript}' -> {replacement_intent}"
+        )
+        intent = replacement_intent
+        confidence = max(confidence, 0.7 if replacement_intent != "GENERAL_QUERY" else 0.6)
+        final_intent_source = "llm_check_in_suppression"
 
     is_failure = intent in {"IDLE", "GENERAL_QUERY"} and confidence < 0.60
-    current_screen = state.current_ui_screen
     if is_failure:
         if state.last_failed_screen == current_screen:
             consecutive_failures = (state.consecutive_failures or 0) + 1
@@ -1007,39 +1376,44 @@ async def route_intent(state: KioskState) -> dict:
     escalation_threshold = 2
     if is_failure and consecutive_failures >= escalation_threshold:
         print(f"[Router][L4] {consecutive_failures} consecutive failures -> escalating")
-        return {
-            "resolved_intent": "IDLE",
-            "confidence": 1.0,
-            "speech_override": (
+        return _router_result(
+            state,
+            "IDLE",
+            1.0,
+            intent_source="failure_escalation",
+            speech_override=(
                 "I'm sorry, I'm having trouble understanding. "
                 "A staff member can assist you right away - "
                 "please approach the front desk or press the call button on this screen."
             ),
-            "consecutive_failures": consecutive_failures,
-            "last_failed_screen": last_failed_screen,
-        }
+            consecutive_failures=consecutive_failures,
+            last_failed_screen=last_failed_screen,
+        )
 
     if is_failure and consecutive_failures == 1:
         print("[Router][L4] First failure -> retry guidance")
-        return {
-            "resolved_intent": "IDLE",
-            "confidence": 1.0,
-            "speech_override": (
+        return _router_result(
+            state,
+            "IDLE",
+            1.0,
+            intent_source="failure_retry",
+            speech_override=(
                 "I didn't quite catch that. "
                 "You can tap the screen buttons, or try saying it again in a different way."
             ),
-            "consecutive_failures": consecutive_failures,
-            "last_failed_screen": last_failed_screen,
-        }
+            consecutive_failures=consecutive_failures,
+            last_failed_screen=last_failed_screen,
+        )
 
     print(f"[Router] -> Intent: {intent} (confidence: {confidence})")
-    return {
-        "resolved_intent": intent,
-        "confidence": confidence,
-        "speech_override": None,
-        "consecutive_failures": consecutive_failures,
-        "last_failed_screen": last_failed_screen,
-    }
+    return _router_result(
+        state,
+        intent,
+        confidence,
+        intent_source=final_intent_source,
+        consecutive_failures=consecutive_failures,
+        last_failed_screen=last_failed_screen,
+    )
 
 
 GENERAL_CHAT_SYSTEM_PROMPT = """
@@ -1266,6 +1640,8 @@ def _transcript_explicitly_identifies_room(
     transcript: str,
     room_inventory: list[RoomInventoryItem],
 ) -> Optional[RoomInventoryItem]:
+    if _looks_like_room_comparison_request(transcript):
+        return None
     candidate = _extract_room_candidate_from_transcript(transcript)
     return _find_room_from_inventory(room_inventory, candidate or transcript)
 
@@ -1312,40 +1688,87 @@ def _extract_guest_name_deterministically(transcript: str) -> Optional[str]:
     if not text:
         return None
 
-    cleaned = re.sub(
-        r"^(?:my name is|name is|i am|i'm|its|it's|this is)\s+",
-        "",
+    prefix_match = re.match(
+        r"^(?:my name is|name is|guest name is|the name is|i am|i'm|this is)\s+(.+)$",
         text,
         flags=re.IGNORECASE,
-    ).strip(" .")
-    if not cleaned:
+    )
+    if prefix_match:
+        cleaned = prefix_match.group(1).strip(" .")
+        cleaned = re.split(r"\s*(?:,|;|\.)\s*", cleaned, maxsplit=1)[0]
+        cleaned = re.split(
+            r"\s+(?=(?:\d+|one|two|three|four|five|six|today|tomorrow|day\s+after\s+tomorrow|next|check[\s-]?in|check[\s-]?out|adults?|children|kids|guests?|nights?))",
+            cleaned,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0].strip(" .")
+    else:
+        if re.search(
+            r"\b(change|modify|edit|update|guest name|booking name|payment|check[\s-]?in|check[\s-]?out|adults?|children|kids|dates?|nights?)\b",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            return None
+        if not re.fullmatch(r"[A-Za-z][A-Za-z .'-]{1,60}", text):
+            return None
+        cleaned = text.strip(" .")
+
+    if not cleaned or len(cleaned.split()) > 4:
         return None
     return cleaned.title()
+
+
+def _has_booking_detail_updates(extracted_slots: dict) -> bool:
+    return any(
+        extracted_slots.get(key) is not None
+        for key in ("adults", "children", "check_in_date", "check_out_date", "guest_name")
+    )
+
+
+def _infer_booking_follow_up_slot(transcript: str, extracted_slots: dict) -> Optional[str]:
+    text = (transcript or "").strip().lower()
+
+    if extracted_slots.get("guest_name") or re.search(r"\b(name|guest name)\b", text):
+        return "guest_name"
+    if (
+        extracted_slots.get("check_in_date")
+        or extracted_slots.get("check_out_date")
+        or re.search(r"\b(check[\s-]?in|check[\s-]?out|date|dates|stay|night|nights)\b", text)
+    ):
+        return "check_in_date"
+    if (
+        extracted_slots.get("adults") is not None
+        or extracted_slots.get("children") is not None
+        or re.search(r"\b(adults?|children|kids|guests?)\b", text)
+    ):
+        return "adults"
+    return None
 
 
 def _extract_slots_deterministically(state: KioskState) -> dict:
     text = (state.latest_transcript or "").strip()
     room_inventory = state.tenant_room_inventory or []
     slots: dict[str, object] = {}
+    should_extract_booking_slots = state.current_ui_screen in {"BOOKING_COLLECT", "BOOKING_SUMMARY"}
 
-    if state.resolved_intent == "BOOK_ROOM":
+    if state.resolved_intent == "BOOK_ROOM" or should_extract_booking_slots:
         matched_room = _transcript_explicitly_identifies_room(text, room_inventory)
         if matched_room:
             slots["room_type"] = matched_room.name
         elif (
             state.current_ui_screen == "ROOM_PREVIEW"
             and state.selected_room
-            and re.search(r"\b(book|take|want|choose|confirm)\b.*\b(this|it|room|one)\b", text, re.IGNORECASE)
+            and _looks_like_explicit_preview_booking_request(text)
         ):
             slots["room_type"] = state.selected_room.name
 
-    if state.resolved_intent == "PROVIDE_GUESTS":
+    if state.resolved_intent == "PROVIDE_GUESTS" or should_extract_booking_slots:
         slots.update(_extract_guest_counts_deterministically(text))
 
-    if state.resolved_intent == "PROVIDE_DATES":
+    if state.resolved_intent == "PROVIDE_DATES" or should_extract_booking_slots:
         slots.update(_extract_dates_deterministically(text))
 
-    if state.resolved_intent == "PROVIDE_NAME":
+    if state.resolved_intent == "PROVIDE_NAME" or should_extract_booking_slots:
         guest_name = _extract_guest_name_deterministically(text)
         if guest_name:
             slots["guest_name"] = guest_name
@@ -1418,6 +1841,204 @@ def _make_booking_response(
     }
 
 
+def _booking_response(
+    state: KioskState,
+    response: dict,
+    *,
+    decision_source: str,
+    extracted_slots: Optional[dict] = None,
+) -> dict:
+    log_decision_trace(
+        "booking_logic",
+        intent=state.resolved_intent,
+        intent_source=decision_source,
+        extracted_slots=extracted_slots,
+        selected_room=response.get("selected_room") or state.selected_room or state.booking_slots.room_type,
+        next_screen=response.get("next_ui_screen"),
+        transcript=state.latest_transcript,
+    )
+    return response
+
+
+def _build_preview_booking_gate_response(state: KioskState) -> dict:
+    speech = (
+        f"Whenever you're ready, say book this room and I'll continue the reservation for {state.selected_room.name}."
+    )
+    updated_history = state.history + [
+        ConversationTurn(role="user", content=state.latest_transcript),
+        ConversationTurn(role="assistant", content=speech),
+    ]
+    return {
+        "speech_response": speech,
+        "booking_slots": state.booking_slots,
+        "active_slot": None,
+        "selected_room": state.selected_room,
+        "history": updated_history,
+        "next_ui_screen": "ROOM_PREVIEW",
+    }
+
+
+def _handle_room_request_transition(
+    state: KioskState,
+    extracted_slots: dict,
+    room_inventory: list[RoomInventoryItem],
+) -> Optional[dict]:
+    if state.current_ui_screen in {"WELCOME", "IDLE", "AI_CHAT", "MANUAL_MENU", "ROOM_SELECT"} and _looks_like_room_comparison_request(state.latest_transcript):
+        compared_rooms = _rooms_mentioned_in_transcript(state.latest_transcript, room_inventory)
+        comparison_prompt = _build_room_comparison_prompt(compared_rooms or room_inventory[:2])
+        return _make_booking_response(
+            state,
+            comparison_prompt,
+            "ROOM_SELECT",
+            active_slot="room_type",
+            clear_room_selection=True,
+        )
+
+    room: Optional[RoomInventoryItem] = None
+    if extracted_slots.get("room_type"):
+        room = _find_room_from_inventory(room_inventory, str(extracted_slots["room_type"]))
+    elif state.current_ui_screen == "ROOM_PREVIEW" and state.selected_room:
+        room = state.selected_room
+    elif state.booking_slots.room_type and state.current_ui_screen in {"ROOM_PREVIEW", "BOOKING_COLLECT"}:
+        room = _find_room_from_inventory(room_inventory, state.booking_slots.room_type) or state.selected_room
+
+    if room:
+        extracted = dict(extracted_slots)
+        extracted["room_type"] = room.name
+        if (
+            state.current_ui_screen == "ROOM_PREVIEW"
+            and _looks_like_explicit_preview_booking_request(state.latest_transcript)
+        ):
+            return _make_booking_response(
+                state,
+                _build_room_confirmation(room),
+                "BOOKING_COLLECT",
+                active_slot="adults",
+                extracted_slots=extracted,
+                selected_room=room,
+            )
+        return _make_booking_response(
+            state,
+            _build_room_preview_intro(room),
+            "ROOM_PREVIEW",
+            active_slot=None,
+            extracted_slots=extracted,
+            selected_room=room,
+        )
+
+    if not state.booking_slots.room_type:
+        if not room_inventory:
+            return None
+        return _make_booking_response(
+            state,
+            _build_room_presentation(room_inventory),
+            "ROOM_SELECT",
+            active_slot="room_type",
+            clear_room_selection=True,
+        )
+
+    return None
+
+
+def _handle_booking_detail_transition(
+    state: KioskState,
+    extracted_slots: dict,
+    room_inventory: list[RoomInventoryItem],
+) -> Optional[dict]:
+    if state.current_ui_screen not in {"BOOKING_COLLECT", "BOOKING_SUMMARY"}:
+        return None
+    if not _has_booking_detail_updates(extracted_slots):
+        return None
+
+    preview_slots, preview_room = _prepare_booking_state_update(
+        state,
+        extracted_slots=extracted_slots,
+    )
+    missing_required = preview_slots.missing_required_slots()
+    selected_room_name = (
+        preview_room.name
+        if preview_room and preview_room.name
+        else preview_slots.room_type
+    )
+
+    if state.current_ui_screen == "BOOKING_SUMMARY":
+        if not missing_required:
+            return _make_booking_response(
+                state,
+                "I've updated those booking details. Please review them once more before payment, or tell me if anything else should change.",
+                "BOOKING_COLLECT",
+                active_slot=None,
+                extracted_slots=extracted_slots,
+                selected_room=preview_room,
+            )
+        next_slot = _infer_booking_follow_up_slot(state.latest_transcript, extracted_slots) or missing_required[0]
+        return _make_booking_response(
+            state,
+            _fallback_booking_prompt(next_slot, selected_room_name, room_inventory),
+            "BOOKING_COLLECT",
+            active_slot=next_slot,
+            extracted_slots=extracted_slots,
+            selected_room=preview_room,
+        )
+
+    if not missing_required:
+        guest_name = preview_slots.guest_name
+        speech = (
+            f"Thank you, {guest_name}. Let me pull up your booking summary."
+            if guest_name
+            else "Perfect. Let me pull up your booking summary."
+        )
+        return _make_booking_response(
+            state,
+            speech,
+            "BOOKING_SUMMARY",
+            active_slot=None,
+            extracted_slots=extracted_slots,
+            selected_room=preview_room,
+        )
+
+    next_slot = missing_required[0]
+    return _make_booking_response(
+        state,
+        _fallback_booking_prompt(next_slot, selected_room_name, room_inventory),
+        "BOOKING_COLLECT",
+        active_slot=next_slot,
+        extracted_slots=extracted_slots,
+        selected_room=preview_room,
+    )
+
+
+def _handle_summary_modify_transition(state: KioskState, extracted_slots: dict) -> dict:
+    preview_slots, preview_room = _prepare_booking_state_update(
+        state,
+        extracted_slots=extracted_slots,
+    )
+    requested_slot = _infer_booking_follow_up_slot(state.latest_transcript, extracted_slots)
+    missing_required = preview_slots.missing_required_slots()
+    selected_room_name = (
+        preview_room.name
+        if preview_room and preview_room.name
+        else preview_slots.room_type
+    )
+    if _has_booking_detail_updates(extracted_slots) and not missing_required:
+        speech = (
+            "I've updated those booking details. Please review them once more before payment, "
+            "or tell me if anything else should change."
+        )
+        active_slot = None
+    else:
+        active_slot = requested_slot or (missing_required[0] if missing_required else "guest_name")
+        speech = _fallback_booking_prompt(active_slot, selected_room_name, state.tenant_room_inventory)
+    return _make_booking_response(
+        state,
+        speech,
+        "BOOKING_COLLECT",
+        active_slot=active_slot,
+        extracted_slots=extracted_slots,
+        selected_room=preview_room,
+    )
+
+
 def _deterministic_booking_response(
     state: KioskState,
     extracted_slots: dict,
@@ -1435,37 +2056,24 @@ def _deterministic_booking_response(
             clear_room_selection=True,
         )
 
+    if (
+        state.current_ui_screen == "ROOM_PREVIEW"
+        and state.selected_room
+        and intent in {"PROVIDE_GUESTS", "PROVIDE_DATES", "PROVIDE_NAME"}
+        and not _looks_like_explicit_preview_booking_request(state.latest_transcript)
+    ):
+        return _build_preview_booking_gate_response(state)
+
     if intent == "BOOK_ROOM":
-        room: Optional[RoomInventoryItem] = None
-        if extracted_slots.get("room_type"):
-            room = _find_room_from_inventory(room_inventory, str(extracted_slots["room_type"]))
-        elif state.current_ui_screen == "ROOM_PREVIEW" and state.selected_room:
-            room = state.selected_room
-        elif state.booking_slots.room_type and state.current_ui_screen in {"ROOM_PREVIEW", "BOOKING_COLLECT"}:
-            room = _find_room_from_inventory(room_inventory, state.booking_slots.room_type) or state.selected_room
+        return _handle_room_request_transition(state, extracted_slots, room_inventory)
 
-        if room:
-            extracted = dict(extracted_slots)
-            extracted["room_type"] = room.name
-            return _make_booking_response(
-                state,
-                _build_room_confirmation(room),
-                "BOOKING_COLLECT",
-                active_slot="adults",
-                extracted_slots=extracted,
-                selected_room=room,
-            )
-
-        if not state.booking_slots.room_type:
-            if not room_inventory:
-                return None
-            return _make_booking_response(
-                state,
-                _build_room_presentation(room_inventory),
-                "ROOM_SELECT",
-                active_slot="room_type",
-                clear_room_selection=True,
-            )
+    booking_detail_transition = _handle_booking_detail_transition(
+        state,
+        extracted_slots,
+        room_inventory,
+    )
+    if booking_detail_transition:
+        return booking_detail_transition
 
     if intent == "PROVIDE_GUESTS" and extracted_slots.get("adults") is not None:
         adults = int(extracted_slots["adults"])
@@ -1538,15 +2146,21 @@ async def booking_logic(state: KioskState) -> dict:
             ConversationTurn(role="user", content=state.latest_transcript),
             ConversationTurn(role="assistant", content=speech),
         ]
-        return {
-            "speech_response": speech,
-            "speech_override": None,
-            "booking_slots": state.booking_slots,
-            "active_slot": state.active_slot,
-            "selected_room": state.selected_room,
-            "history": updated_history,
-            "next_ui_screen": state.current_ui_screen,
-        }
+        return _booking_response(
+            state,
+            {
+                "speech_response": speech,
+                "speech_override": None,
+                "booking_slots": state.booking_slots,
+                "active_slot": state.active_slot,
+                "selected_room": state.selected_room,
+                "history": updated_history,
+                "next_ui_screen": state.current_ui_screen,
+            },
+            decision_source="speech_override",
+        )
+
+    extracted = _extract_slots_deterministically(state)
 
     # Backend-authoritative confirmation path:
     # If the guest confirms on BOOKING_SUMMARY and all required slots are present,
@@ -1564,14 +2178,18 @@ async def booking_logic(state: KioskState) -> dict:
                 ConversationTurn(role="user", content=state.latest_transcript),
                 ConversationTurn(role="assistant", content=speech),
             ]
-            return {
-                "speech_response": speech,
-                "booking_slots": state.booking_slots,
-                "active_slot": None,
-                "selected_room": state.selected_room,
-                "history": updated_history,
-                "next_ui_screen": "PAYMENT",
-            }
+            return _booking_response(
+                state,
+                {
+                    "speech_response": speech,
+                    "booking_slots": state.booking_slots,
+                    "active_slot": None,
+                    "selected_room": state.selected_room,
+                    "history": updated_history,
+                    "next_ui_screen": "PAYMENT",
+                },
+                decision_source="summary_confirm_payment",
+            )
         if missing_required:
             next_slot = missing_required[0]
             speech = _fallback_booking_prompt(next_slot, selected_room_name, state.tenant_room_inventory)
@@ -1579,37 +2197,53 @@ async def booking_logic(state: KioskState) -> dict:
                 ConversationTurn(role="user", content=state.latest_transcript),
                 ConversationTurn(role="assistant", content=speech),
             ]
-            return {
-                "speech_response": speech,
-                "booking_slots": state.booking_slots,
-                "active_slot": next_slot,
-                "selected_room": state.selected_room,
-                "history": updated_history,
-                "next_ui_screen": "BOOKING_COLLECT",
-            }
+            return _booking_response(
+                state,
+                {
+                    "speech_response": speech,
+                    "booking_slots": state.booking_slots,
+                    "active_slot": next_slot,
+                    "selected_room": state.selected_room,
+                    "history": updated_history,
+                    "next_ui_screen": "BOOKING_COLLECT",
+                },
+                decision_source="summary_confirm_collect_missing",
+            )
 
-    if state.resolved_intent == "MODIFY_BOOKING" and _is_room_change_request(state.latest_transcript):
-        speech = "Of course. Let's take another look at the rooms and find a comfortable option for you."
-        updated_history = state.history + [
-            ConversationTurn(role="user", content=state.latest_transcript),
-            ConversationTurn(role="assistant", content=speech),
-        ]
-        updated_slots = state.booking_slots.model_copy(
-            update={
-                "room_type": None,
-                "total_price": None,
-            }
-        )
-        return {
-            "speech_response": speech,
-            "booking_slots": updated_slots,
-            "active_slot": "room_type",
-            "selected_room": None,
-            "history": updated_history,
-            "next_ui_screen": "ROOM_SELECT",
-        }
+    if state.resolved_intent == "MODIFY_BOOKING":
+        if _is_room_change_request(state.latest_transcript):
+            speech = "Of course. Let's take another look at the rooms and find a comfortable option for you."
+            updated_history = state.history + [
+                ConversationTurn(role="user", content=state.latest_transcript),
+                ConversationTurn(role="assistant", content=speech),
+            ]
+            updated_slots = state.booking_slots.model_copy(
+                update={
+                    "room_type": None,
+                    "total_price": None,
+                }
+            )
+            return _booking_response(
+                state,
+                {
+                    "speech_response": speech,
+                    "booking_slots": updated_slots,
+                    "active_slot": "room_type",
+                    "selected_room": None,
+                    "history": updated_history,
+                    "next_ui_screen": "ROOM_SELECT",
+                },
+                decision_source="summary_modify_room_change",
+            )
 
-    extracted = _extract_slots_deterministically(state)
+        if state.current_ui_screen == "BOOKING_SUMMARY":
+            return _booking_response(
+                state,
+                _handle_summary_modify_transition(state, extracted),
+                decision_source="summary_modify_collect",
+                extracted_slots=extracted,
+            )
+
     deterministic = _deterministic_booking_response(
         state,
         extracted,
@@ -1617,7 +2251,12 @@ async def booking_logic(state: KioskState) -> dict:
     )
     if deterministic:
         print("[BookingLogic] Deterministic response (no LLM)")
-        return deterministic
+        return _booking_response(
+            state,
+            deterministic,
+            decision_source="deterministic",
+            extracted_slots=extracted,
+        )
 
     messages = [
         {"role": "system", "content": build_booking_prompt(state)},
@@ -1631,10 +2270,14 @@ async def booking_logic(state: KioskState) -> dict:
     except Exception:
         print("[BookingLogic] Failed to parse JSON response.")
         fallback_screen = "ROOM_SELECT" if _is_initial_booking_turn(state) else "BOOKING_COLLECT"
-        return {
-            "speech_response": "I'm sorry, I didn't quite catch that. Could you please say it once more?",
-            "next_ui_screen": fallback_screen,
-        }
+        return _booking_response(
+            state,
+            {
+                "speech_response": "I'm sorry, I didn't quite catch that. Could you please say it once more?",
+                "next_ui_screen": fallback_screen,
+            },
+            decision_source="llm_parse_error",
+        )
 
     extracted = result.get("extracted_slots", {})
     speech = result.get("speech", "Let me note that down.")
@@ -1741,14 +2384,19 @@ async def booking_logic(state: KioskState) -> dict:
         f"complete={is_complete} screen={next_screen}"
     )
 
-    return {
-        "speech_response": speech,
-        "booking_slots": updated_slots,
-        "active_slot": None if next_screen == "ROOM_PREVIEW" else next_slot,
-        "selected_room": selected_room,
-        "history": updated_history,
-        "next_ui_screen": next_screen,
-    }
+    return _booking_response(
+        state,
+        {
+            "speech_response": speech,
+            "booking_slots": updated_slots,
+            "active_slot": None if next_screen == "ROOM_PREVIEW" else next_slot,
+            "selected_room": selected_room,
+            "history": updated_history,
+            "next_ui_screen": next_screen,
+        },
+        decision_source="llm_booking_fallback",
+        extracted_slots=extracted,
+    )
 
 
 def _determine_next_screen(slots: BookingSlots, is_complete: bool, stay_in_room_preview: bool) -> str:
