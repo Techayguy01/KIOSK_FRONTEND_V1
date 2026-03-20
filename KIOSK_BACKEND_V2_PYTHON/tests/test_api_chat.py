@@ -5,6 +5,7 @@ Uses httpx ASGI transport so no live server is required.
 
 import json
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -214,6 +215,95 @@ class TestChatEndpointWithMocks:
         assert response.json()["nextUiScreen"] == "ROOM_SELECT"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("transcript", "expected_routing_transcript"),
+        [
+            (
+                "i want room for what hotel rooms are available",
+                "what rooms are available in this hotel",
+            ),
+            (
+                "what hotel rooms are available in this",
+                "what rooms are available in this hotel",
+            ),
+            (
+                "what hotel rooms are available in this hotel",
+                "what rooms are available in this hotel",
+            ),
+        ],
+    )
+    async def test_chat_voice_room_discovery_replay_bypasses_faq_fallback(
+        self,
+        override_session,
+        transcript,
+        expected_routing_transcript,
+    ):
+        captured_payload = {}
+
+        async def fake_ainvoke(payload):
+            captured_payload.update(payload)
+            payload["resolved_intent"] = "BOOK_ROOM"
+            payload["speech_response"] = "Let me show you our available rooms."
+            payload["next_ui_screen"] = "ROOM_SELECT"
+            return payload
+
+        transport = ASGITransport(app=app)
+        with patch.object(chat_api.kiosk_agent, "ainvoke", AsyncMock(side_effect=fake_ainvoke)), patch(
+            "api.chat.find_best_faq_match",
+            new_callable=AsyncMock,
+        ) as mock_faq_lookup:
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    "/api/chat",
+                    json={
+                        "sessionId": f"voice-replay-{abs(hash(transcript))}",
+                        "transcript": transcript,
+                        "currentState": "WELCOME",
+                    },
+                )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["nextUiScreen"] == "ROOM_SELECT"
+        assert data["intent"] == "BOOK_ROOM"
+        assert captured_payload["latest_transcript"] == expected_routing_transcript
+        mock_faq_lookup.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_chat_logs_query_type_and_repaired_transcript_for_room_discovery(self, override_session):
+        captured_payload = {}
+
+        async def fake_ainvoke(payload):
+            captured_payload.update(payload)
+            payload["resolved_intent"] = "BOOK_ROOM"
+            payload["speech_response"] = "Let me show you our available rooms."
+            payload["next_ui_screen"] = "ROOM_SELECT"
+            return payload
+
+        transport = ASGITransport(app=app)
+        with patch.object(chat_api.kiosk_agent, "ainvoke", AsyncMock(side_effect=fake_ainvoke)), patch(
+            "api.chat.find_best_faq_match",
+            new_callable=AsyncMock,
+        ) as mock_faq_lookup, patch("api.chat.log_decision_trace") as mock_trace:
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    "/api/chat",
+                    json={
+                        "sessionId": "trace-room-discovery",
+                        "transcript": "what hotel rooms are available in this hotel",
+                        "currentState": "WELCOME",
+                    },
+                )
+
+        assert response.status_code == 200
+        mock_faq_lookup.assert_not_awaited()
+        mock_trace.assert_called_once()
+        _, kwargs = mock_trace.call_args
+        assert kwargs["query_type"] == "ROOM_DISCOVERY"
+        assert kwargs["raw_transcript"] == "what hotel rooms are available in this hotel"
+        assert kwargs["transcript"] == "what rooms are available in this hotel"
+
+    @pytest.mark.asyncio
     async def test_chat_response_contains_session_id(self, override_session):
         with patch("agent.nodes.get_llm_response") as mock_llm:
             mock_llm.side_effect = [
@@ -232,6 +322,42 @@ class TestChatEndpointWithMocks:
                 )
         assert response.status_code == 200
         assert response.json()["sessionId"] == "session-echo"
+
+    @pytest.mark.asyncio
+    async def test_chat_breakfast_question_still_uses_faq_pipeline(self, override_session):
+        faq_lookup = SimpleNamespace(
+            localizations_synced=False,
+            match=None,
+            faq_count=0,
+            normalized_query="what time is breakfast and do you offer free wi fi",
+        )
+        transport = ASGITransport(app=app)
+        with patch.object(chat_api.kiosk_agent, "ainvoke", AsyncMock()) as mock_ainvoke, patch(
+            "api.chat.find_best_faq_match",
+            new_callable=AsyncMock,
+            return_value=faq_lookup,
+        ) as mock_faq_lookup, patch("api.chat.log_decision_trace") as mock_trace:
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    "/api/chat",
+                    json={
+                        "sessionId": "faq-breakfast",
+                        "transcript": "What time is breakfast and do you offer free Wi-Fi?",
+                        "currentState": "WELCOME",
+                    },
+                )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["answerSource"] == "FAQ_FALLBACK"
+        assert data["intent"] == "GENERAL_QUERY"
+        mock_faq_lookup.assert_awaited_once()
+        mock_ainvoke.assert_not_awaited()
+        mock_trace.assert_called_once()
+        _, kwargs = mock_trace.call_args
+        assert kwargs["query_type"] == "FAQ_INFO"
+        assert kwargs["raw_transcript"] == "What time is breakfast and do you offer free Wi-Fi?"
+        assert kwargs["transcript"] == "What time is breakfast and do you offer free Wi-Fi?"
 
     @pytest.mark.asyncio
     async def test_chat_family_room_recommendation_bypasses_faq_fallback(self, override_session):

@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 from agent.state import KioskState, BookingSlots, ConversationTurn, RoomInventoryItem
 from core.llm import get_llm_response
+from services.transcript_understanding import looks_like_room_discovery_repairable
 
 
 LANGUAGE_DISPLAY_NAMES = {
@@ -710,6 +711,9 @@ def log_decision_trace(
     extracted_slots: Optional[dict] = None,
     selected_room: Optional[object] = None,
     next_screen: Optional[str] = None,
+    transcript: Optional[str] = None,
+    raw_transcript: Optional[str] = None,
+    query_type: Optional[str] = None,
 ) -> None:
     compact_slots = {key: value for key, value in (extracted_slots or {}).items() if value is not None}
     try:
@@ -731,13 +735,19 @@ def log_decision_trace(
     elif selected_room:
         selected_room_name = str(selected_room)
 
+    transcript_text = str(transcript or "-").replace("\n", " ").strip() or "-"
+    raw_transcript_text = str(raw_transcript or "-").replace("\n", " ").strip() or "-"
+
     print(
         f"[DecisionTrace][{scope}] "
         f"intent={intent or '-'} "
         f"source={intent_source} "
+        f"query_type={query_type or '-'} "
         f"slots={slot_text} "
         f"selected_room={selected_room_name} "
-        f"next_screen={next_screen or '-'}"
+        f"next_screen={next_screen or '-'} "
+        f"transcript={json.dumps(transcript_text)} "
+        f"raw_transcript={json.dumps(raw_transcript_text)}"
     )
 
 
@@ -872,6 +882,8 @@ def _looks_like_room_browsing_request(transcript: str) -> bool:
     text = (transcript or "").strip().lower()
     if not text:
         return False
+    if looks_like_room_discovery_repairable(text):
+        return True
     # Guard: if the user is asking an informational question about rooms
     # (e.g. "what time can I check into my room"), that is NOT a browsing request.
     info_question = bool(
@@ -1067,6 +1079,7 @@ def _router_result(
         intent_source=intent_source,
         selected_room=state.selected_room or state.booking_slots.room_type,
         next_screen=state.current_ui_screen,
+        transcript=state.latest_transcript,
     )
     return {
         "resolved_intent": intent,
@@ -1727,6 +1740,7 @@ def _booking_response(
         extracted_slots=extracted_slots,
         selected_room=response.get("selected_room") or state.selected_room or state.booking_slots.room_type,
         next_screen=response.get("next_ui_screen"),
+        transcript=state.latest_transcript,
     )
     return response
 

@@ -34,6 +34,8 @@ from services.booking_guards import (
     resolve_effective_room_payload,
     sanitize_booking_constraints,
 )
+from services.query_classifier import QueryType, classify_query_type
+from services.transcript_understanding import repair_transcript_for_routing
 from models.booking import Booking
 from models.room_instance import RoomInstance
 
@@ -1071,7 +1073,7 @@ def _looks_like_room_recommendation_prompt(transcript: str) -> bool:
     return False
 
 
-def _should_attempt_faq(transcript: str, normalized_ui_screen: UIScreen) -> bool:
+def _should_attempt_faq(transcript: str, normalized_ui_screen: UIScreen, query_type: QueryType) -> bool:
     if normalized_ui_screen in FAQ_BLOCKED_SCREENS:
         print(
             "[ChatAPI][FAQ] candidate "
@@ -1085,6 +1087,13 @@ def _should_attempt_faq(transcript: str, normalized_ui_screen: UIScreen) -> bool
     cleaned = (transcript or "").strip()
     if not cleaned:
         return False
+    if query_type != "FAQ_INFO":
+        print(
+            "[ChatAPI][FAQ] candidate "
+            f"screen={normalized_ui_screen} "
+            f"allowed=False reason=query_type_{query_type.lower()}"
+        )
+        return False
     # Avoid running FAQ retrieval on very long turns (likely conversational/transactional).
     if len(cleaned) > 240:
         return False
@@ -1096,50 +1105,11 @@ def _should_attempt_faq(transcript: str, normalized_ui_screen: UIScreen) -> bool
             "allowed=False reason=too_vague"
         )
         return False
-    if TRANSACTIONAL_BOOKING_RE.search(cleaned) or TRANSACTIONAL_BOOKING_RE.search(normalized):
-        print(
-            "[ChatAPI][FAQ] candidate "
-            f"screen={normalized_ui_screen} "
-            "allowed=False reason=transactional_booking"
-        )
-        return False
-    if TRANSACTIONAL_CHECKIN_RE.search(cleaned) or TRANSACTIONAL_CHECKIN_RE.search(normalized):
-        print(
-            "[ChatAPI][FAQ] candidate "
-            f"screen={normalized_ui_screen} "
-            "allowed=False reason=transactional_checkin"
-        )
-        return False
-    # Room browsing / virtual tour phrases are transactional (trigger BOOK_ROOM),
-    # not informational.  They must reach the LangGraph agent, not the FAQ pipeline.
-    from agent.nodes import _looks_like_room_browsing_request
-    if _looks_like_room_browsing_request(cleaned):
-        print(
-            "[ChatAPI][FAQ] candidate "
-            f"screen={normalized_ui_screen} "
-            "allowed=False reason=transactional_room_browsing"
-        )
-        return False
-    if _looks_like_room_recommendation_prompt(cleaned):
-        print(
-            "[ChatAPI][FAQ] candidate "
-            f"screen={normalized_ui_screen} "
-            "allowed=False reason=transactional_room_recommendation"
-        )
-        return False
-    if ROOM_GUEST_FIT_RE.search(normalized) and ROOM_DISCOVERY_CONTEXT_RE.search(normalized):
-        print(
-            "[ChatAPI][FAQ] candidate "
-            f"screen={normalized_ui_screen} "
-            "allowed=False reason=transactional_room_fit"
-        )
-        return False
-
     is_candidate = is_faq_candidate_query(cleaned)
     print(
         "[ChatAPI][FAQ] candidate "
         f"screen={normalized_ui_screen} "
-        f"allowed={is_candidate}"
+        f"allowed={is_candidate} query_type={query_type}"
     )
     return is_candidate
 
@@ -1387,6 +1357,7 @@ async def chat(
         resolved_tenant_id = await _resolve_tenant_id(session, req.tenant_id, requested_tenant_slug)
         tenant_config = await _load_tenant_config(session, resolved_tenant_id)
         effective_language = _resolve_effective_language(req.language, tenant_config)
+        routing_transcript = repair_transcript_for_routing(req.transcript)
         room_inventory = await _load_room_inventory(session, resolved_tenant_id)
         if not room_inventory and req.room_catalog:
             room_inventory = [
@@ -1426,7 +1397,7 @@ async def chat(
         previous_state = state.model_copy(deep=True)
 
         # Update state with current request data
-        state.latest_transcript = req.transcript
+        state.latest_transcript = routing_transcript
         state.language = effective_language
         state.tenant_id = resolved_tenant_id or state.tenant_id
         state.tenant_room_inventory = [RoomInventoryItem(**room) for room in room_inventory]
@@ -1438,6 +1409,11 @@ async def chat(
 
         normalized_ui_screen = _coerce_booking_context_screen(normalized_ui_screen, state)
         state.current_ui_screen = normalized_ui_screen
+        query_type = classify_query_type(
+            req.transcript,
+            normalized_ui_screen,
+            repaired_transcript=routing_transcript,
+        )
         print(
             "[ChatAPI] request "
             f"session={req.session_id} "
@@ -1445,14 +1421,20 @@ async def chat(
             f"tenant={resolved_tenant_id or req.tenant_id} "
             f"language={effective_language} "
             f"rooms={len(room_inventory)} "
-            f"db={_database_target_hint()}"
+            f"db={_database_target_hint()} "
+            f"query_type={query_type}"
         )
+        if routing_transcript != (req.transcript or "").strip():
+            print(
+                "[ChatAPI] repaired transcript "
+                f"session={req.session_id} raw='{req.transcript}' routed='{routing_transcript}'"
+            )
 
         updated_state: Optional[KioskState] = None
 
         # Deterministic FAQ retrieval layer (tenant-scoped), only for non-transactional turns.
-        if not updated_state and _should_attempt_faq(req.transcript, normalized_ui_screen):
-            normalized_transcript = normalize_faq_query(req.transcript)
+        if not updated_state and _should_attempt_faq(routing_transcript, normalized_ui_screen, query_type):
+            normalized_transcript = normalize_faq_query(routing_transcript)
             print(
                 "[ChatAPI][FAQ] attempt "
                 f"session={req.session_id} "
@@ -1462,7 +1444,7 @@ async def chat(
             faq_lookup = await find_best_faq_match(
                 session=session,
                 tenant_id=resolved_tenant_id or req.tenant_id,
-                user_query=req.transcript,
+                user_query=routing_transcript,
                 language=state.language,
             )
             if faq_lookup.localizations_synced:
@@ -1496,6 +1478,16 @@ async def chat(
                     "[ChatAPI][FAQ] respond "
                     f"session={req.session_id} "
                     f"answerSource=FAQ_DB faq_id={faq_match.faq_id}"
+                )
+                log_decision_trace(
+                    "chat_api",
+                    intent="GENERAL_QUERY",
+                    intent_source="faq_db",
+                    selected_room=state.selected_room.model_dump(by_alias=True) if state.selected_room else None,
+                    next_screen=normalized_ui_screen,
+                    transcript=routing_transcript,
+                    raw_transcript=req.transcript,
+                    query_type=query_type,
                 )
 
                 return ChatResponse(
@@ -1540,6 +1532,16 @@ async def chat(
                 f"session={req.session_id} "
                 f"reason={'no_match' if not faq_match else f'low_confidence:{faq_match.confidence:.3f}'} "
                 f"faq_count={faq_lookup.faq_count}"
+            )
+            log_decision_trace(
+                "chat_api",
+                intent="GENERAL_QUERY",
+                intent_source="faq_fallback",
+                selected_room=state.selected_room.model_dump(by_alias=True) if state.selected_room else None,
+                next_screen=normalized_ui_screen,
+                transcript=routing_transcript,
+                raw_transcript=req.transcript,
+                query_type=query_type,
             )
             return ChatResponse(
                 speech=fallback_text,
@@ -1855,6 +1857,9 @@ async def chat(
             extracted_slots=slots_dict,
             selected_room=selected_room_payload or updated_state.booking_slots.room_type,
             next_screen=response_next_screen,
+            transcript=routing_transcript,
+            raw_transcript=req.transcript,
+            query_type=query_type,
         )
 
         return ChatResponse(
