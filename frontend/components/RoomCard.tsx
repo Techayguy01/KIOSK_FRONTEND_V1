@@ -219,7 +219,7 @@ export const RoomCard: React.FC<RoomCardProps> = ({ room, onSelect, selected }) 
       className={`group relative overflow-hidden rounded-[2rem] border text-left transition-all duration-300 ${
         selected
           ? 'border-amber-200/80 bg-slate-950/95 shadow-[0_26px_70px_rgba(250,204,21,0.16)]'
-          : 'border-white/10 bg-slate-950/72 hover:border-sky-200/35 hover:bg-slate-950/88'
+          : 'border-transparent bg-slate-950/72 hover:border-sky-200/35 hover:bg-slate-950/88'
       }`}
     >
       <div
