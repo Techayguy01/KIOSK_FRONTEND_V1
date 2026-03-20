@@ -4,6 +4,7 @@ import { RoomCard } from '../components/RoomCard';
 import { ProgressBar } from '../components/ProgressBar';
 import { Loader2 } from 'lucide-react';
 import AnimatedGradientBackground from '../components/ui/animated-gradient-background';
+import { CardStack, CardStackItem } from '../components/ui/card-stack';
 import { RoomDTO, RoomService, RoomServiceError } from '../services/room.service';
 
 export const RoomSelectPage: React.FC = () => {
@@ -12,9 +13,19 @@ export const RoomSelectPage: React.FC = () => {
   const [liveRooms, setLiveRooms] = useState<RoomDTO[]>([]);
   const [isLoadingRooms, setIsLoadingRooms] = useState<boolean>(true);
   const [roomsError, setRoomsError] = useState<string | null>(null);
-  const rooms = liveRooms;
+  const stateRooms = Array.isArray(data?.rooms) ? (data.rooms as RoomDTO[]) : [];
+  const rooms = liveRooms.length > 0 ? liveRooms : stateRooms;
   const progress = data.progress || { currentStep: 2, totalSteps: 4, steps: ['Room'] };
   const selectedRoom = selectedRoomId ? rooms.find((room) => room.id === selectedRoomId) || null : null;
+  const stackItems: (RoomDTO & CardStackItem)[] = rooms.map((room, index) => ({
+    ...room,
+    id: room.id,
+    title: room.name,
+    description: Array.isArray(room.features) ? room.features.slice(0, 2).join(', ') : undefined,
+    imageSrc: (Array.isArray(room.imageUrls) && room.imageUrls[0]) || room.image,
+    href: undefined,
+    tag: index === 0 ? 'Popular' : undefined,
+  }));
 
   useEffect(() => {
     if (data?.selectedRoom?.id) {
@@ -101,15 +112,43 @@ export const RoomSelectPage: React.FC = () => {
               <p className="text-base text-slate-400">Please contact front desk support.</p>
             </div>
           ) : (
-            <div className={`grid grid-cols-1 lg:grid-cols-2 gap-8 overflow-y-auto pb-40 px-2 transition-opacity ${loading ? 'opacity-50 pointer-events-none' : ''}`}>
-              {rooms.map((room: any) => (
-                <RoomCard
-                  key={room.id}
-                  room={room}
-                  selected={selectedRoomId === room.id}
-                  onSelect={(r) => setSelectedRoomId(r.id)}
+            <div className={`w-full pb-72 px-2 transition-opacity ${loading ? 'opacity-50 pointer-events-none' : ''}`}>
+              <div className="mx-auto w-full max-w-[1600px]">
+                <CardStack
+                  items={stackItems}
+                  initialIndex={0}
+                  autoAdvance
+                  intervalMs={3000}
+                  pauseOnHover={false}
+                  loop
+                  showDots
+                  maxVisible={6}
+                  cardWidth={900}
+                  cardHeight={1400}
+                  overlap={0}
+                  spreadDeg={0}
+                  depthPx={0}
+                  tiltXDeg={0}
+                  activeScale={1}
+                  inactiveScale={1}
+                  springStiffness={260}
+                  springDamping={26}
+                  className="w-full"
+                  onChangeIndex={(index, item) => {
+                    if (!item?.id) return;
+                    setSelectedRoomId(String(item.id));
+                  }}
+                  renderCard={(item) => (
+                    <div className="w-full h-full">
+                      <RoomCard
+                        room={item}
+                        selected={selectedRoomId === String(item.id)}
+                        onSelect={(selected) => setSelectedRoomId(selected.id)}
+                      />
+                    </div>
+                  )}
                 />
-              ))}
+              </div>
             </div>
           )}
 

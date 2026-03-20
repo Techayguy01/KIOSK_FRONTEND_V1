@@ -12,7 +12,7 @@
 import { AgentAdapter } from "../agent/adapter";
 import { buildTenantApiUrl, getCurrentTenantLanguage, getTenantHeaders, getTenantSlug } from "./tenantContext";
 import type { BookingChatResponseDTO, ChatRequestDTO, ChatResponseDTO } from "@contracts/api.contract";
-import { normalizeBackendStateFromResponse, normalizeStateForBackendChat } from "./uiStateInterop";
+import { normalizeBackendStateFromResponse, normalizeBackendUiAction, normalizeStateForBackendChat } from "./uiStateInterop";
 import { buildCacheKey, getCachedFaqAnswer, putCachedFaqAnswer } from "./faqCache.service";
 
 export type BrainResponse = ChatResponseDTO & Partial<BookingChatResponseDTO>;
@@ -27,6 +27,7 @@ export interface SendToBrainOptions {
     filledSlots?: Record<string, unknown>;
     conversationHistory?: BrainTurn[];
     roomCatalog?: unknown[];
+    isGalleryFullscreen?: boolean;
 }
 
 // Subscribers who want to know about brain responses (e.g., TTS, UI)
@@ -85,6 +86,7 @@ function dispatchFromConfidence(data: BrainResponse): void {
         console.log(`[BrainService] HIGH confidence (${data.confidence}) - Dispatching: ${data.intent}`);
         AgentAdapter.dispatch(data.intent as any, {
             speech: data.speech,
+            uiAction: data.uiAction,
             selectedRoom: data.selectedRoom,
             slots: data.accumulatedSlots,
             missingSlots: data.missingSlots,
@@ -98,6 +100,7 @@ function dispatchFromConfidence(data: BrainResponse): void {
         console.log(`[BrainService] MEDIUM confidence (${data.confidence}) - Dispatching with clarification: ${data.intent}`);
         AgentAdapter.dispatch(data.intent as any, {
             speech: data.speech,
+            uiAction: data.uiAction,
             selectedRoom: data.selectedRoom,
             slots: data.accumulatedSlots,
             missingSlots: data.missingSlots,
@@ -186,6 +189,9 @@ export async function sendToBrain(
     if (Array.isArray(options?.roomCatalog) && options!.roomCatalog.length > 0) {
         payload.room_catalog = options!.roomCatalog;
     }
+    if (typeof options?.isGalleryFullscreen === "boolean") {
+        payload.is_gallery_fullscreen = options.isGalleryFullscreen;
+    }
 
     console.log("[BrainService] Outgoing payload:", payload);
 
@@ -210,6 +216,11 @@ export async function sendToBrain(
         if (normalizedNextUiScreen) {
             data.nextUiScreen = normalizedNextUiScreen;
         }
+        const normalizedUiAction = normalizeBackendUiAction(data.uiAction);
+        if (data.uiAction && !normalizedUiAction) {
+            console.warn(`[BrainService] Ignoring unknown backend uiAction: ${data.uiAction}`);
+        }
+        data.uiAction = normalizedUiAction;
 
         if (data.answerSource === "FAQ_DB") {
             console.log(`[BrainService][FAQCache] WRITE_PATH faqId=${data.faqId || "none"} lang=${activeLanguage}`);

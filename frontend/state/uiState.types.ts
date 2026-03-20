@@ -5,11 +5,32 @@ import { TenantPayload } from '../services/tenantContext';
 
 export type { UiState as UIState };
 
+export type FullscreenGalleryToggleEvent = {
+  type: 'TOGGLE_FULLSCREEN_GALLERY';
+  isOpen: boolean;
+};
+
+export type FullscreenGalleryActionEvent =
+  | { type: 'OPEN_FULLSCREEN_GALLERY' }
+  | { type: 'CLOSE_FULLSCREEN_GALLERY' };
+
+export type UIStrictEvent = FullscreenGalleryToggleEvent | FullscreenGalleryActionEvent;
+
+type UIEmitFn = {
+  (type: 'TOGGLE_FULLSCREEN_GALLERY', payload: { isOpen: boolean }): void;
+  (type: string, payload?: any): void;
+};
+
+export interface UIData {
+  isGalleryFullscreen?: boolean;
+  [key: string]: any;
+}
+
 export interface UIContextType {
   state: UiState;
-  data: any; // Flexible metadata container
+  data: UIData; // Flexible metadata container
   transcript: string;
-  emit: (type: string, payload?: any) => void;
+  emit: UIEmitFn;
   loading: boolean;
   tenantSlug: string;
   tenant: TenantPayload | null;

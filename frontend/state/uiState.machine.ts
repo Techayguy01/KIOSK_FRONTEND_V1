@@ -2,6 +2,7 @@ import { UIState } from '@contracts/backend.contract';
 
 type TransitionMap = Record<string, UIState>;
 type StateConfig = Record<UIState, { on: TransitionMap; canGoBack: boolean }>;
+type GalleryEvent = 'OPEN_FULLSCREEN_GALLERY' | 'CLOSE_FULLSCREEN_GALLERY' | 'TOGGLE_FULLSCREEN_GALLERY';
 
 // DEFINITION OF TRUTH
 const MACHINE_CONFIG: StateConfig = {
@@ -13,7 +14,7 @@ const MACHINE_CONFIG: StateConfig = {
     on: {
       CHECK_IN_SELECTED: 'SCAN_ID',
       BOOK_ROOM_SELECTED: 'ROOM_SELECT',
-      HELP_SELECTED: 'WELCOME', // Stay on page, show notification
+      HELP_SELECTED: 'HELP',
       TOUCH_SELECTED: 'MANUAL_MENU',
       EXPLAIN_CAPABILITIES: 'WELCOME',
       GENERAL_QUERY: 'WELCOME'
@@ -24,7 +25,7 @@ const MACHINE_CONFIG: StateConfig = {
     on: {
       CHECK_IN_SELECTED: 'SCAN_ID',
       BOOK_ROOM_SELECTED: 'ROOM_SELECT',
-      HELP_SELECTED: 'IDLE' // or HELP state if exists
+      HELP_SELECTED: 'HELP'
     },
     canGoBack: true
   },
@@ -32,7 +33,7 @@ const MACHINE_CONFIG: StateConfig = {
     on: {
       CHECK_IN_SELECTED: 'SCAN_ID',
       BOOK_ROOM_SELECTED: 'ROOM_SELECT',
-      HELP_SELECTED: 'IDLE'
+      HELP_SELECTED: 'HELP'
     },
     canGoBack: true
   },
@@ -70,6 +71,7 @@ const MACHINE_CONFIG: StateConfig = {
   ROOM_SELECT: {
     on: {
       ROOM_SELECTED: 'ROOM_PREVIEW',
+      HELP_SELECTED: 'HELP',
       BACK_REQUESTED: 'MANUAL_MENU',
       CANCEL_REQUESTED: 'WELCOME'
     },
@@ -81,8 +83,11 @@ const MACHINE_CONFIG: StateConfig = {
       ASK_ROOM_DETAIL: 'ROOM_PREVIEW',
       ASK_PRICE: 'ROOM_PREVIEW',
       COMPARE_ROOMS: 'ROOM_PREVIEW',
+      OPEN_FULLSCREEN_GALLERY: 'ROOM_PREVIEW',
+      CLOSE_FULLSCREEN_GALLERY: 'ROOM_PREVIEW',
+      TOGGLE_FULLSCREEN_GALLERY: 'ROOM_PREVIEW',
       GENERAL_QUERY: 'ROOM_PREVIEW',
-      HELP_SELECTED: 'ROOM_PREVIEW',
+      HELP_SELECTED: 'HELP',
       MODIFY_BOOKING: 'ROOM_PREVIEW',
       SELECT_ROOM: 'ROOM_PREVIEW',
       PROVIDE_GUESTS: 'BOOKING_COLLECT',
@@ -108,7 +113,7 @@ const MACHINE_CONFIG: StateConfig = {
       CONFIRM_BOOKING: 'BOOKING_SUMMARY',
       CANCEL_BOOKING: 'ROOM_SELECT',
       BACK_REQUESTED: 'ROOM_SELECT',
-      HELP_SELECTED: 'BOOKING_COLLECT',
+      HELP_SELECTED: 'HELP',
       RESET: 'IDLE'
     },
     canGoBack: true
@@ -117,8 +122,17 @@ const MACHINE_CONFIG: StateConfig = {
     on: {
       CONFIRM_PAYMENT: 'PAYMENT',
       MODIFY_BOOKING: 'BOOKING_COLLECT',
+      HELP_SELECTED: 'HELP',
       BACK_REQUESTED: 'BOOKING_COLLECT',
       CANCEL_BOOKING: 'WELCOME',
+      RESET: 'IDLE'
+    },
+    canGoBack: true
+  },
+  HELP: {
+    on: {
+      BACK_REQUESTED: 'WELCOME',
+      CANCEL_REQUESTED: 'WELCOME',
       RESET: 'IDLE'
     },
     canGoBack: true
@@ -142,6 +156,34 @@ const MACHINE_CONFIG: StateConfig = {
 };
 
 export const StateMachine = {
+  isGalleryEvent: (event: string): event is GalleryEvent =>
+    event === 'OPEN_FULLSCREEN_GALLERY'
+    || event === 'CLOSE_FULLSCREEN_GALLERY'
+    || event === 'TOGGLE_FULLSCREEN_GALLERY',
+
+  canProcessGalleryEvent: (currentState: UIState, event: string): boolean =>
+    currentState === 'ROOM_PREVIEW' && StateMachine.isGalleryEvent(event),
+
+  reduceGalleryFullscreen: (
+    currentState: UIState,
+    event: string,
+    isOpen: boolean,
+    payload?: { isOpen?: boolean }
+  ): boolean => {
+    if (!StateMachine.canProcessGalleryEvent(currentState, event)) {
+      return isOpen;
+    }
+    if (event === 'OPEN_FULLSCREEN_GALLERY') return true;
+    if (event === 'CLOSE_FULLSCREEN_GALLERY') return false;
+    if (event === 'TOGGLE_FULLSCREEN_GALLERY' && typeof payload?.isOpen === 'boolean') {
+      return payload.isOpen;
+    }
+    return isOpen;
+  },
+
+  shouldResetGalleryOnStateExit: (previousState: UIState, nextState: UIState): boolean =>
+    previousState === 'ROOM_PREVIEW' && nextState !== 'ROOM_PREVIEW',
+
   /**
    * pure function to determine next state
    */
@@ -180,6 +222,7 @@ export const StateMachine = {
       ROOM_PREVIEW: 'ROOM_SELECT',
       BOOKING_COLLECT: 'ROOM_PREVIEW',
       BOOKING_SUMMARY: 'BOOKING_COLLECT',
+      HELP: 'WELCOME',
       PAYMENT: 'BOOKING_SUMMARY',
       KEY_DISPENSING: 'PAYMENT',
       COMPLETE: 'WELCOME',

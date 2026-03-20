@@ -40,6 +40,7 @@ const VOICE_AUTHORITY_MATRIX: Record<UiState, boolean> = {
     ROOM_PREVIEW: true,
     BOOKING_COLLECT: true,
     BOOKING_SUMMARY: true,
+    HELP: false,
     PAYMENT: true,
     KEY_DISPENSING: false,
     COMPLETE: false,
@@ -1838,6 +1839,7 @@ class AgentAdapterService {
                 // Room data selection remains a separate concern.
                 return 'ROOM_SELECTED';
             case 'HELP':
+            case 'REQUEST_HELP':
                 return 'HELP_SELECTED';
             case 'SCAN_ID':
                 return 'SCAN_COMPLETED';
@@ -1863,6 +1865,8 @@ class AgentAdapterService {
             case 'ASK_ROOM_DETAIL':
             case 'ASK_PRICE':
             case 'COMPARE_ROOMS':
+            case 'OPEN_FULLSCREEN_GALLERY':
+            case 'CLOSE_FULLSCREEN_GALLERY':
                 return upper;
             case 'REPEAT':
             case 'GENERAL_QUERY':
@@ -2039,6 +2043,7 @@ class AgentAdapterService {
                         lastSystemPrompt: this.slotContext.promptAsked || undefined,
                         filledSlots: this.viewData.bookingSlots || {},
                         roomCatalog: Array.isArray(this.viewData.rooms) ? this.viewData.rooms : undefined,
+                        isGalleryFullscreen: Boolean(this.viewData.isGalleryFullscreen),
                     })
                 });
 
@@ -2437,9 +2442,10 @@ class AgentAdapterService {
         }
     }
 
-    private applyPayloadData(intent: string, payload?: any, nextState?: UiState): void {
+    private applyPayloadData(intent: string, payload?: any, nextState?: UiState, previousState?: UiState): void {
         const merged: Record<string, any> = { ...this.viewData };
         const resolvedState = nextState || this.state;
+        const resolvedPreviousState = previousState || this.state;
         const incomingRoom = payload?.selectedRoom ?? payload?.room;
         const resetRoomSelection =
             (resolvedState === "ROOM_SELECT" || resolvedState === "ROOM_PREVIEW") &&
@@ -2461,7 +2467,15 @@ class AgentAdapterService {
             delete merged.manualBookingOverrides;
             delete merged.manualSelectedRoomOverride;
             delete merged.visualFocus;
+            merged.isGalleryFullscreen = false;
             this.manualEditModeActive = false;
+        }
+
+        if (merged.isGalleryFullscreen === undefined) {
+            merged.isGalleryFullscreen = false;
+        }
+        if (StateMachine.shouldResetGalleryOnStateExit(resolvedPreviousState as UIState, resolvedState as UIState)) {
+            merged.isGalleryFullscreen = false;
         }
 
         if (nextState === "SCAN_ID" && (intent === "RESCAN" || intent === "CHECK_IN_SELECTED")) {
@@ -2640,6 +2654,16 @@ class AgentAdapterService {
             }
         }
 
+        const galleryAction = String(payload?.uiAction || intent || "").trim().toUpperCase();
+        if (StateMachine.isGalleryEvent(galleryAction)) {
+            merged.isGalleryFullscreen = StateMachine.reduceGalleryFullscreen(
+                resolvedState as UIState,
+                galleryAction,
+                Boolean(merged.isGalleryFullscreen),
+                { isOpen: payload?.isOpen },
+            );
+        }
+
         if (payload && Object.prototype.hasOwnProperty.call(payload, "persistedBookingId")) {
             merged.persistedBookingId = payload.persistedBookingId || null;
         }
@@ -2694,8 +2718,11 @@ class AgentAdapterService {
     private resolveNextStateFromIntent(currentState: UiState, intent: string): UiState {
         // ROOM_SELECT must not auto-advance on generic queries/amenity questions.
         if (currentState === "ROOM_SELECT") {
-            if (intent === "ASK_ROOM_DETAIL" || intent === "ASK_PRICE" || intent === "COMPARE_ROOMS" || intent === "GENERAL_QUERY" || intent === "HELP_SELECTED") {
+            if (intent === "ASK_ROOM_DETAIL" || intent === "ASK_PRICE" || intent === "COMPARE_ROOMS" || intent === "GENERAL_QUERY") {
                 return "ROOM_SELECT";
+            }
+            if (intent === "HELP_SELECTED") {
+                return "HELP";
             }
             if (intent === "PROVIDE_GUESTS" || intent === "PROVIDE_DATES" || intent === "PROVIDE_NAME" || intent === "CONFIRM_BOOKING" || intent === "MODIFY_BOOKING") {
                 return "ROOM_SELECT";
@@ -2714,7 +2741,6 @@ class AgentAdapterService {
             "ASK_PRICE",
             "COMPARE_ROOMS",
             "GENERAL_QUERY",
-            "HELP_SELECTED",
         ]);
 
         if (currentState === "ROOM_SELECT" && bookingIntents.has(intent)) {
@@ -2724,8 +2750,11 @@ class AgentAdapterService {
         }
 
         if (currentState === "ROOM_PREVIEW") {
-            if (intent === "ROOM_SELECTED" || intent === "ASK_ROOM_DETAIL" || intent === "ASK_PRICE" || intent === "COMPARE_ROOMS" || intent === "GENERAL_QUERY" || intent === "HELP_SELECTED" || intent === "MODIFY_BOOKING" || intent === "SELECT_ROOM") {
+            if (intent === "ROOM_SELECTED" || intent === "ASK_ROOM_DETAIL" || intent === "ASK_PRICE" || intent === "COMPARE_ROOMS" || intent === "GENERAL_QUERY" || intent === "MODIFY_BOOKING" || intent === "SELECT_ROOM") {
                 return "ROOM_PREVIEW";
+            }
+            if (intent === "HELP_SELECTED") {
+                return "HELP";
             }
         }
 
@@ -3023,7 +3052,7 @@ class AgentAdapterService {
             this.lastBookingPromptFingerprint = null;
             this.lastBookingPromptAt = 0;
         }
-        this.applyPayloadData(intent || 'UNKNOWN', payload, nextState);
+        this.applyPayloadData(intent || 'UNKNOWN', payload, nextState, previousState);
         this.resetInactivityTimer();
         this.hasAnnouncedRoomOptions = false;
 

@@ -961,6 +961,23 @@ def _looks_like_room_recommendation_request(transcript: str) -> bool:
             r"room|suite|rooms|suites|"
             r"fit|fits|suitable|best|recommend|suggest|choose|"
             r"look\s+at|look\s+for|compare|affordable|budget|cheapest"
+def _looks_like_gallery_close_request(transcript: str) -> bool:
+    text = (transcript or "").strip().lower()
+    if not text:
+        return False
+    return bool(
+        re.search(
+            r"\b("
+            r"close|"
+            r"close\s+it|"
+            r"close\s+image|"
+            r"close\s+gallery|"
+            r"close\s+full\s*screen|"
+            r"exit\s+full\s*screen|"
+            r"exit|"
+            r"back|"
+            r"go\s+back|"
+            r"band\s+karo"
             r")\b",
             text,
         )
@@ -1018,6 +1035,28 @@ def _looks_like_room_preview_detail_request(transcript: str) -> bool:
     return mentions_feature and (mentions_room_context or asks_about_feature)
 
 
+def _gallery_close_fallback_intent(transcript: str) -> str:
+    text = (transcript or "").strip().lower()
+    if re.search(r"\b(back|go\s+back|another|different|change|modify|other)\b", text):
+        return "MODIFY_BOOKING"
+    return "CANCEL_BOOKING"
+
+
+def _apply_gallery_context_intent_override(state: KioskState, intent: str) -> str:
+    if intent != "CLOSE_FULLSCREEN_GALLERY":
+        return intent
+
+    if state.is_gallery_fullscreen:
+        return "CLOSE_FULLSCREEN_GALLERY"
+
+    fallback_intent = _gallery_close_fallback_intent(state.latest_transcript)
+    print(
+        f"[Router] Gallery close ignored (fullscreen=false): '{state.latest_transcript}' "
+        f"-> {fallback_intent}"
+    )
+    return fallback_intent
+
+
 ROUTER_SYSTEM_PROMPT = """
 You are a highly critical intent classifier for a luxury hotel kiosk AI named "Siya".
 The user's text may contain mixed intentions, conversational filler, or mid-sentence corrections (e.g., "Wait, no, I mean check in").
@@ -1025,6 +1064,7 @@ Your job is to read the ENTIRE message carefully before deciding the final inten
 
 - BOOK_ROOM: User wants to start a NEW reservation, explore rooms, see room options, take a virtual tour, view available rooms, or browse what's available. Any expression of interest in seeing, exploring, or choosing rooms counts as BOOK_ROOM.
 - CHECK_IN: User is at the kiosk to get their room key for an EXISTING booking.
+- REQUEST_HELP: User is asking for staff assistance, a human, a manager, or general support contact info.
 - GENERAL_QUERY: User is asking about amenities (pool, gym, etc.), prices, or just greeting.
 - PROVIDE_GUESTS: User is giving the number of people staying.
 - PROVIDE_DATES: User is giving check-in or check-out dates.
@@ -1032,6 +1072,8 @@ Your job is to read the ENTIRE message carefully before deciding the final inten
 - CONFIRM_BOOKING: User is confirming the details shown.
 - CANCEL_BOOKING: User wants to stop the current process or cancel.
 - MODIFY_BOOKING: User wants to change something they just said.
+- OPEN_FULLSCREEN_GALLERY: User asks to open/expand the room image into fullscreen gallery view.
+- CLOSE_FULLSCREEN_GALLERY: User asks to close/exit fullscreen gallery view.
 - IDLE: No meaningful input or silence.
 
 Rules:
@@ -1049,6 +1091,8 @@ A "Current UI screen" message is provided. Use it to disambiguate ambiguous inte
   * "book this room", "I'll take it", "I want this one" -> BOOK_ROOM.
   * If the user starts giving guest counts, dates, or a guest name while still in ROOM_PREVIEW, classify as the corresponding PROVIDE_* intent so the booking flow can begin naturally.
   * "show me another option", "different room", "I don't like this", "go back", "other rooms" -> MODIFY_BOOKING (user wants to browse different rooms).
+  * "open full view", "expand image", "fullscreen" -> OPEN_FULLSCREEN_GALLERY.
+  * "close full view", "exit fullscreen", "close image" -> CLOSE_FULLSCREEN_GALLERY.
 - BOOKING_COLLECT: User is providing booking details (guests, dates, name).
   * Visual focus requests ("show me the balcony") -> GENERAL_QUERY.
   * Phrases like "check in tomorrow" inside a booking-detail sentence usually refer to stay dates, not kiosk CHECK_IN for an existing reservation.
@@ -1126,6 +1170,22 @@ def _route_preview_context_override(state: KioskState, transcript_text: str) -> 
 
     if current_screen in ("ROOM_PREVIEW", "BOOKING_COLLECT"):
         visual_focus_text = transcript_text.strip().lower()
+    if state.is_gallery_fullscreen and _looks_like_gallery_close_request(state.latest_transcript):
+        print(f"[Router] Gallery-close priority (fullscreen=true): '{state.latest_transcript}'")
+        return {
+            "resolved_intent": "CLOSE_FULLSCREEN_GALLERY",
+            "confidence": 0.97,
+            "speech_override": None,
+            "consecutive_failures": 0,
+            "last_failed_screen": None,
+        }
+
+    # Screen-aware visual focus guard: on ROOM_PREVIEW / BOOKING_COLLECT,
+    # "show me bathroom / balcony / bedroom / view" is a visual focus request,
+    # NOT a new booking.  Route as GENERAL_QUERY so the visual concierge
+    # in chat.py handles the carousel focus + narration.
+    if state.current_ui_screen in ("ROOM_PREVIEW", "BOOKING_COLLECT"):
+        _vf_text = (state.latest_transcript or "").strip().lower()
         if re.search(
             r"\b(?:show|see|view|display|open|focus|describe|tell)\b.*"
             r"\b(?:bath(?:room|tub)?|balcony|terrace|bedroom|bed|living|lounge|"
@@ -1237,6 +1297,14 @@ async def route_intent(state: KioskState) -> dict:
                     semantic_result.confidence,
                     intent_source="semantic_classifier",
                 )
+                resolved_intent = _apply_gallery_context_intent_override(state, semantic_result.intent)
+                return {
+                    "resolved_intent": resolved_intent,
+                    "confidence": semantic_result.confidence,
+                    "speech_override": None,
+                    "consecutive_failures": 0,
+                    "last_failed_screen": None,
+                }
             else:
                 print(
                     f"[Router][L2] MEDIUM confidence: intent={semantic_result.intent} "
@@ -1268,6 +1336,8 @@ async def route_intent(state: KioskState) -> dict:
         print("[Router] Failed to parse JSON, defaulting to GENERAL_QUERY")
         intent = "GENERAL_QUERY"
         confidence = 0.5
+
+    intent = _apply_gallery_context_intent_override(state, intent)
 
     # Low-confidence fallback: if LLM classified as GENERAL_QUERY but transcript
     # matches room browsing patterns, override to BOOK_ROOM.
@@ -1404,6 +1474,7 @@ async def general_chat(state: KioskState) -> dict:
         return {
             "speech_response": response,
             "speech_override": None,
+            "ui_action": None,
             "history": updated_history,
             "next_ui_screen": state.current_ui_screen,
         }
@@ -1417,8 +1488,51 @@ async def general_chat(state: KioskState) -> dict:
         return {
             "speech_response": response,
             "speech_override": None,
+            "ui_action": None,
             "history": updated_history,
             "next_ui_screen": "SCAN_ID",
+        }
+
+    if state.resolved_intent == "REQUEST_HELP":
+        response = "Certainly, I will pull up the support contact details for you now."
+        updated_history = state.history + [
+            ConversationTurn(role="user", content=state.latest_transcript),
+            ConversationTurn(role="assistant", content=response),
+        ]
+        return {
+            "speech_response": response,
+            "speech_override": None,
+            "ui_action": None,
+            "history": updated_history,
+            "next_ui_screen": "HELP",
+        }
+
+    if state.resolved_intent == "OPEN_FULLSCREEN_GALLERY":
+        response = ""
+        updated_history = state.history + [
+            ConversationTurn(role="user", content=state.latest_transcript),
+            ConversationTurn(role="assistant", content=response),
+        ]
+        return {
+            "speech_response": response,
+            "speech_override": None,
+            "ui_action": "OPEN_FULLSCREEN_GALLERY",
+            "history": updated_history,
+            "next_ui_screen": state.current_ui_screen,
+        }
+
+    if state.resolved_intent == "CLOSE_FULLSCREEN_GALLERY":
+        response = ""
+        updated_history = state.history + [
+            ConversationTurn(role="user", content=state.latest_transcript),
+            ConversationTurn(role="assistant", content=response),
+        ]
+        return {
+            "speech_response": response,
+            "speech_override": None,
+            "ui_action": "CLOSE_FULLSCREEN_GALLERY",
+            "history": updated_history,
+            "next_ui_screen": state.current_ui_screen,
         }
 
     history_messages = [
@@ -1442,6 +1556,7 @@ async def general_chat(state: KioskState) -> dict:
     return {
         "speech_response": response,
         "speech_override": None,
+        "ui_action": None,
         "history": updated_history,
         "next_ui_screen": state.current_ui_screen,
     }

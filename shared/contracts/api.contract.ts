@@ -1,4 +1,5 @@
 import type { UIState } from "./backend.contract";
+import type { KioskUiAction } from "./intents";
 
 export interface ApiErrorBody {
   error: {
@@ -12,12 +13,16 @@ export interface ApiErrorBody {
 export interface TenantConfigDTO {
   timezone: string;
   supportPhone?: string | null;
+  support_phone?: string | null;
   checkInTime: string;
   checkOutTime?: string;
   defaultLang?: string;
   availableLang?: string[];
   welcomeMessage?: string | null;
   supportEmail?: string | null;
+  support_email?: string | null;
+  address?: string | null;
+  extra?: Record<string, any>;
   logoUrl?: string | null;
 }
 
@@ -26,6 +31,10 @@ export interface TenantDTO {
   name: string;
   slug: string;
   plan: string;
+  support_phone?: string | null;
+  support_email?: string | null;
+  address?: string | null;
+  extra?: Record<string, any>;
   hotelConfig?: TenantConfigDTO | null;
 }
 
@@ -115,6 +124,7 @@ export interface ChatRequestDTO {
   transcript?: string;
   currentState?: UIState;
   sessionId?: string;
+  isGalleryFullscreen?: boolean;
   activeSlot?: BookingSlotName | null;
   expectedType?: BookingSlotExpectedType | null;
   lastSystemPrompt?: string;
@@ -127,6 +137,7 @@ export interface ChatResponseDTO {
   intent: string;
   confidence: number;
   nextUiScreen?: UIState;
+  uiAction?: KioskUiAction | null;
   visualFocus?: VisualFocusDTO | null;
   answerSource?: "FAQ_DB" | "FAQ_CACHE" | "LLM" | "LOCAL_SIMILARITY" | "FAQ_FALLBACK";
   faqId?: string | null;

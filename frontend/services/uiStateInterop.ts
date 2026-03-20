@@ -3,6 +3,7 @@ import {
   BACKEND_STATE_NORMALIZATION_FALLBACK,
   UIState,
 } from "@contracts/backend.contract";
+import type { KioskUiAction } from "@contracts/intents";
 
 const ACCEPTED_STATE_SET = new Set<string>(BACKEND_CHAT_ACCEPTED_STATES);
 
@@ -68,4 +69,15 @@ export function normalizeBackendStateFromResponse(rawState: unknown): UIState | 
   }
 
   return normalized;
+}
+
+const UI_ACTION_SET = new Set<KioskUiAction>([
+  "OPEN_FULLSCREEN_GALLERY",
+  "CLOSE_FULLSCREEN_GALLERY",
+]);
+
+export function normalizeBackendUiAction(rawAction: unknown): KioskUiAction | null {
+  if (typeof rawAction !== "string") return null;
+  const normalized = rawAction.trim().toUpperCase();
+  return UI_ACTION_SET.has(normalized as KioskUiAction) ? (normalized as KioskUiAction) : null;
 }

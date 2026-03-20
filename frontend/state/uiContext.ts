@@ -6,7 +6,7 @@ const initialContext: UIContextType = {
   state: 'IDLE',
   data: {},
   transcript: '',
-  emit: () => { throw new Error("Not Implemented: UIContext Provider missing"); },
+  emit: (_type: string, _payload?: any) => { throw new Error("Not Implemented: UIContext Provider missing"); },
   loading: false,
   tenantSlug: '',
   tenant: null,

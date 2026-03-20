@@ -24,6 +24,7 @@ UIScreen = Literal[
     "ROOM_PREVIEW",
     "BOOKING_COLLECT",
     "BOOKING_SUMMARY",
+    "HELP",
     "PAYMENT",
     "KEY_DISPENSING",
     "COMPLETE",
@@ -48,8 +49,16 @@ IntentType = Literal[
     "CONFIRM_BOOKING",
     "CANCEL_BOOKING",
     "MODIFY_BOOKING",
+    "REQUEST_HELP",
+    "OPEN_FULLSCREEN_GALLERY",
+    "CLOSE_FULLSCREEN_GALLERY",
     "IDLE",
     "RESET",
+]
+
+KioskUiAction = Literal[
+    "OPEN_FULLSCREEN_GALLERY",
+    "CLOSE_FULLSCREEN_GALLERY",
 ]
 
 
@@ -139,6 +148,8 @@ class KioskState(BaseModel):
 
     # The UI screen the frontend should transition to after this turn
     next_ui_screen: Optional[UIScreen] = None
+    ui_action: Optional[KioskUiAction] = None
+    is_gallery_fullscreen: bool = False
 
     # Tracks consecutive failed intents per session for graceful escalation
     consecutive_failures: int = 0

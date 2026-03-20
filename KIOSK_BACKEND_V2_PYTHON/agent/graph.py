@@ -27,6 +27,11 @@ BOOKING_INTENTS = {
     "CANCEL_BOOKING",
 }
 
+GENERAL_CHAT_UI_INTENTS = {
+    "OPEN_FULLSCREEN_GALLERY",
+    "CLOSE_FULLSCREEN_GALLERY",
+}
+
 def route_to_node(state: KioskState) -> str:
     """
     Conditional edge function: decides which node to call after intent classification.
@@ -35,6 +40,9 @@ def route_to_node(state: KioskState) -> str:
     """
     intent = state.resolved_intent
     screen = state.current_ui_screen
+
+    if intent in GENERAL_CHAT_UI_INTENTS:
+        return "general_chat"
 
     # User is in the booking flow OR explicitly booking
     if intent in BOOKING_INTENTS or screen in BOOKING_PROGRESS_SCREENS:

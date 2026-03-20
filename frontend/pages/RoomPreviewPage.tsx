@@ -122,6 +122,8 @@ function buildVoicePrompts(room: RoomDTO | null, images: RoomPreviewVisual[]): s
     });
 
   prompts.add('Show me another room');
+  prompts.add('Open full view');
+  prompts.add('Close full view');
   prompts.add('Yes, continue with this room');
   return Array.from(prompts).slice(0, 4);
 }
@@ -131,6 +133,7 @@ export const RoomPreviewPage: React.FC = () => {
   const room = resolveSelectedRoom(data);
   const visuals = useMemo(() => buildPreviewImages(room), [room]);
   const focusImageId = String(data?.visualFocus?.imageId || '').trim() || null;
+  const isGalleryFullscreen = Boolean(data?.isGalleryFullscreen);
   const progress = data?.progress || { currentStep: 2, totalSteps: 4, steps: ['ID Scan', 'Room', 'Payment', 'Key'] };
   const narrative = useMemo(() => buildRoomNarrative(room, visuals), [room, visuals]);
   const voicePrompts = useMemo(() => buildVoicePrompts(room, visuals), [room, visuals]);
@@ -163,6 +166,8 @@ export const RoomPreviewPage: React.FC = () => {
               visuals={visuals}
               narrative={narrative}
               focusImageId={focusImageId}
+              isFullscreen={isGalleryFullscreen}
+              onFullscreenChange={(isOpen) => emit('TOGGLE_FULLSCREEN_GALLERY', { isOpen })}
               voicePrompts={voicePrompts}
               onConfirm={() => emit('CONFIRM_BOOKING')}
               onBack={() => emit('BACK_REQUESTED')}

@@ -14,8 +14,9 @@ from urllib.parse import urlparse
 from datetime import date, datetime
 import re
 from agent.graph import kiosk_agent
-from agent.nodes import _is_room_change_request, log_decision_trace
-from agent.state import KioskState, ConversationTurn, RoomInventoryItem, UIScreen
+from agent.nodes import _is_room_change_request, log_decision_trace, _is_summary_confirmation_transcript
+
+from agent.state import KioskState, ConversationTurn, RoomInventoryItem, UIScreen, KioskUiAction
 from core.voice import normalize_language_code, normalize_language_list
 from core.database import get_session
 from core import database as database_runtime
@@ -587,9 +588,13 @@ def _should_use_room_overview_reply(transcript: str) -> bool:
     if not normalized_transcript:
         return False
 
+    if re.search(r"\b(ok|okay|close|close it|exit|back|go back|done|enough)\b", normalized_transcript):
+        return False
+
     overview_phrases = [
         "tell me more",
-        "describe",
+        "describe this room",
+        "describe the room",
         "about this room",
         "about the room",
         "about ocean",
@@ -600,7 +605,8 @@ def _should_use_room_overview_reply(transcript: str) -> bool:
         "what does the room have",
         "what amenities",
         "what features",
-        "know about",
+        "tell me about this room",
+        "tell me about the room",
     ]
     return any(_phrase_in_text(normalized_transcript, phrase) for phrase in overview_phrases)
 
@@ -1300,6 +1306,7 @@ class ChatRequest(BaseModel):
     filled_slots: Optional[dict] = Field(default=None, alias="filledSlots")
     conversation_history: Optional[list[ConversationTurn]] = Field(default=None, alias="conversationHistory")
     room_catalog: Optional[list[dict]] = Field(default=None, alias="roomCatalog")
+    is_gallery_fullscreen: bool = Field(default=False, alias="isGalleryFullscreen")
 
     class Config:
         populate_by_name = True  # Allow both camelCase and snake_case
@@ -1315,6 +1322,7 @@ class ChatResponse(BaseModel):
     confidence: float
     # camelCase to match frontend contract
     nextUiScreen: str
+    uiAction: Optional[KioskUiAction] = None
     visualFocus: Optional[dict] = None
     accumulatedSlots: dict
     extractedSlots: Optional[dict] = None
@@ -1399,6 +1407,7 @@ async def chat(
         # Update state with current request data
         state.latest_transcript = routing_transcript
         state.language = effective_language
+        state.is_gallery_fullscreen = bool(req.is_gallery_fullscreen)
         state.tenant_id = resolved_tenant_id or state.tenant_id
         state.tenant_room_inventory = [RoomInventoryItem(**room) for room in room_inventory]
 
@@ -1495,6 +1504,7 @@ async def chat(
                     intent="GENERAL_QUERY",
                     confidence=faq_match.confidence,
                     nextUiScreen=normalized_ui_screen,
+                    uiAction=None,
                     accumulatedSlots=state.booking_slots.model_dump(by_alias=True),
                     extractedSlots={},
                     missingSlots=[],
@@ -1548,6 +1558,7 @@ async def chat(
                 intent="GENERAL_QUERY",
                 confidence=1.0,
                 nextUiScreen=normalized_ui_screen,
+                uiAction=None,
                 accumulatedSlots=state.booking_slots.model_dump(by_alias=True),
                 extractedSlots={},
                 missingSlots=[],
@@ -1595,7 +1606,10 @@ async def chat(
         if selected_room_payload and selected_room_payload.get("name"):
             selected_room_payload["displayName"] = selected_room_payload.get("name")
         response_next_screen = updated_state.next_ui_screen or normalized_ui_screen
-        response_speech = updated_state.speech_response or "I'm not sure how to help with that."
+        response_ui_action = updated_state.ui_action
+        response_speech = str(updated_state.speech_response or "")
+        if not response_speech.strip() and not response_ui_action:
+            response_speech = "I'm not sure how to help with that."
 
         sanitized_slots, constraint_error, constraint_slot, constraint_screen = sanitize_booking_constraints(
             slots_dict,
@@ -1809,12 +1823,19 @@ async def chat(
             slots_dict=slots_dict,
             language=updated_state.language,
         )
+        last_assistant_reply = ""
+        for turn in reversed(updated_state.history):
+            if turn.role == "assistant":
+                last_assistant_reply = str(turn.content or "")
+                break
+
         if (
             room_overview_reply
             and updated_state.resolved_intent == "GENERAL_QUERY"
             and response_next_screen in {"ROOM_PREVIEW", "BOOKING_COLLECT"}
             and not constraint_error
             and not persistence_error
+            and _normalize_visual_text(last_assistant_reply) != _normalize_visual_text(room_overview_reply)
         ):
             response_speech = room_overview_reply
             if updated_state.history and updated_state.history[-1].role == "assistant":
@@ -1861,12 +1882,15 @@ async def chat(
             raw_transcript=req.transcript,
             query_type=query_type,
         )
+        updated_state.ui_action = None
+      
 
         return ChatResponse(
             speech=response_speech,
             intent=updated_state.resolved_intent or "GENERAL_QUERY",
             confidence=updated_state.confidence,
             nextUiScreen=response_next_screen,
+            uiAction=response_ui_action,
             visualFocus=visual_focus,
             accumulatedSlots=updated_state.booking_slots.model_dump(by_alias=True),
             extractedSlots={},
