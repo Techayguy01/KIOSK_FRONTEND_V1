@@ -11,6 +11,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from api import chat as chat_api
+from agent.state import BookingSlots, KioskState, RoomInventoryItem
 from main import app
 
 
@@ -34,6 +35,45 @@ def override_session(mock_db_session):
     app.dependency_overrides[chat_api.get_session] = _override
     yield mock_db_session
     app.dependency_overrides.pop(chat_api.get_session, None)
+
+
+@pytest.fixture(autouse=True)
+def clear_chat_runtime_state():
+    chat_api._sessions.clear()
+    chat_api._persisted_booking_by_session.clear()
+    chat_api._persisted_room_id_by_session.clear()
+    chat_api._persisted_room_number_by_session.clear()
+    yield
+    chat_api._sessions.clear()
+    chat_api._persisted_booking_by_session.clear()
+    chat_api._persisted_room_id_by_session.clear()
+    chat_api._persisted_room_number_by_session.clear()
+
+
+def build_state_payload(
+    session_id: str,
+    current_ui_screen: str,
+    *,
+    resolved_intent: str = "GENERAL_QUERY",
+    speech_response: str = "Hello there.",
+    next_ui_screen: str | None = None,
+    booking_slots: BookingSlots | None = None,
+    selected_room: RoomInventoryItem | None = None,
+    active_slot: str | None = None,
+) -> dict:
+    state = KioskState(
+        session_id=session_id,
+        tenant_id="default",
+        current_ui_screen=current_ui_screen,
+        resolved_intent=resolved_intent,
+        confidence=0.9,
+        speech_response=speech_response,
+        next_ui_screen=next_ui_screen or current_ui_screen,
+        booking_slots=booking_slots or BookingSlots(),
+        selected_room=selected_room,
+        active_slot=active_slot,
+    )
+    return state.model_dump()
 
 
 class TestHealthEndpoint:
@@ -192,6 +232,123 @@ class TestChatEndpointWithMocks:
                 )
         assert response.status_code == 200
         assert response.json()["sessionId"] == "session-echo"
+
+    @pytest.mark.asyncio
+    async def test_chat_family_room_recommendation_bypasses_faq_fallback(self, override_session):
+        mock_ainvoke = AsyncMock(
+            return_value=build_state_payload(
+                "family-room",
+                "WELCOME",
+                resolved_intent="BOOK_ROOM",
+                speech_response="Let me show you room options that fit your family.",
+                next_ui_screen="ROOM_SELECT",
+            )
+        )
+        transport = ASGITransport(app=app)
+        with patch.object(chat_api.kiosk_agent, "ainvoke", mock_ainvoke), patch(
+            "api.chat.find_best_faq_match",
+            new_callable=AsyncMock,
+        ) as mock_faq_lookup:
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    "/api/chat",
+                    json={
+                        "sessionId": "family-room",
+                        "transcript": "We are a family of four. Which room should we look at?",
+                        "currentState": "WELCOME",
+                    },
+                )
+        assert response.status_code == 200
+        assert response.json()["nextUiScreen"] == "ROOM_SELECT"
+        mock_ainvoke.assert_awaited_once()
+        mock_faq_lookup.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_chat_summary_confirm_runs_through_agent_not_api_short_circuit(self, override_session):
+        captured_payload = {}
+
+        async def fake_ainvoke(payload):
+            captured_payload.update(payload)
+            payload["resolved_intent"] = "GENERAL_QUERY"
+            payload["speech_response"] = "Still reviewing your booking summary."
+            payload["next_ui_screen"] = "BOOKING_SUMMARY"
+            return payload
+
+        transport = ASGITransport(app=app)
+        with patch.object(chat_api.kiosk_agent, "ainvoke", AsyncMock(side_effect=fake_ainvoke)) as mock_ainvoke:
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    "/api/chat",
+                    json={
+                        "sessionId": "summary-confirm",
+                        "transcript": "Yes, those details are correct. Please proceed to payment.",
+                        "currentState": "BOOKING_SUMMARY",
+                        "filledSlots": {
+                            "roomType": "Family Suite",
+                            "adults": 2,
+                            "checkInDate": "2026-03-21",
+                            "checkOutDate": "2026-03-23",
+                            "guestName": "John Carter",
+                        },
+                    },
+                )
+        assert response.status_code == 200
+        assert response.json()["nextUiScreen"] == "BOOKING_SUMMARY"
+        assert captured_payload["current_ui_screen"] == "BOOKING_SUMMARY"
+        mock_ainvoke.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_chat_preserves_booking_screen_when_request_regresses_to_welcome(self, override_session):
+        family_suite = RoomInventoryItem(
+            id="room-family-suite",
+            name="Family Suite",
+            code="FAM-S",
+            price=8999,
+            maxAdults=4,
+            maxChildren=2,
+            maxTotalGuests=6,
+        )
+        chat_api._sessions["preserve-booking-screen"] = KioskState(
+            session_id="preserve-booking-screen",
+            tenant_id="default",
+            current_ui_screen="BOOKING_COLLECT",
+            booking_slots=BookingSlots(
+                roomType="Family Suite",
+                adults=2,
+                checkInDate="2026-03-21",
+                checkOutDate="2026-03-23",
+            ),
+            active_slot="guest_name",
+            selectedRoom=family_suite,
+        )
+        captured_payload = {}
+
+        async def fake_ainvoke(payload):
+            captured_payload.update(payload)
+            payload["resolved_intent"] = "PROVIDE_NAME"
+            payload["speech_response"] = "Thanks, I am still collecting your booking details."
+            payload["next_ui_screen"] = payload["current_ui_screen"]
+            return payload
+
+        transport = ASGITransport(app=app)
+        with patch.object(chat_api.kiosk_agent, "ainvoke", AsyncMock(side_effect=fake_ainvoke)) as mock_ainvoke:
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    "/api/chat",
+                    json={
+                        "sessionId": "preserve-booking-screen",
+                        "transcript": "The guest name is John Carter.",
+                        "currentState": "WELCOME",
+                        "filledSlots": {
+                            "guestName": "John Carter",
+                        },
+                    },
+                )
+        assert response.status_code == 200
+        assert response.json()["nextUiScreen"] == "BOOKING_COLLECT"
+        assert captured_payload["current_ui_screen"] == "BOOKING_COLLECT"
+        assert captured_payload["selected_room"]["name"] == "Family Suite"
+        mock_ainvoke.assert_awaited_once()
 
 
 class TestAPIRobustness:

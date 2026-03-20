@@ -14,7 +14,6 @@ from urllib.parse import urlparse
 from datetime import date, datetime
 import re
 from agent.graph import kiosk_agent
-from agent.nodes import _is_summary_confirmation_transcript
 from agent.state import KioskState, ConversationTurn, RoomInventoryItem, UIScreen
 from core.voice import normalize_language_code, normalize_language_list
 from core.database import get_session
@@ -110,6 +109,36 @@ TRANSACTIONAL_CHECKIN_RE = re.compile(
     r"i\s+have\s+a\s+booking|"
     r"existing\s+booking|"
     r"my\s+reservation"
+    r")\b",
+    re.IGNORECASE,
+)
+
+ROOM_RECOMMENDATION_RE = re.compile(
+    r"\b("
+    r"(?:which|what)\s+room\s+(?:should|would|is)|"
+    r"recommend(?:\s+me)?\s+(?:a\s+)?(?:room|suite)|"
+    r"suggest(?:\s+me)?\s+(?:a\s+)?(?:room|suite)|"
+    r"best\s+(?:room|suite)\s+for|"
+    r"(?:affordable|budget|cheapest|lowest\s+price)\s+(?:room|suite)|"
+    r"compare\s+(?:rooms?|the\s+.+)|"
+    r"which\s+(?:room|suite)\s+(?:is|would\s+be)\s+best"
+    r")\b",
+    re.IGNORECASE,
+)
+ROOM_GUEST_FIT_RE = re.compile(
+    r"\b("
+    r"family\s+of\s+(?:\d+|one|two|three|four|five|six|seven|eight)|"
+    r"(?:\d+|one|two|three|four|five|six|seven|eight)\s+adults?"
+    r"(?:\s+and\s+(?:\d+|one|two|three|four|five|six|seven|eight)\s+children?)?"
+    r")\b",
+    re.IGNORECASE,
+)
+ROOM_DISCOVERY_CONTEXT_RE = re.compile(
+    r"\b("
+    r"room|suite|rooms|suites|"
+    r"fit|fits|good\s+for|best\s+for|suitable|"
+    r"recommend|suggest|choose|look\s+at|look\s+for|"
+    r"compare|affordable|budget|cheapest|lowest\s+price"
     r")\b",
     re.IGNORECASE,
 )
@@ -758,6 +787,7 @@ def _merge_filled_slots(state: KioskState, filled_slots: dict, room_inventory: l
         "guestName": "guest_name",
         "nights": "nights"
     }
+    explicit_room_type = filled_slots.get("roomType")
 
     current_slots = state.booking_slots.model_dump()
     has_updates = False
@@ -787,7 +817,12 @@ def _merge_filled_slots(state: KioskState, filled_slots: dict, room_inventory: l
     target_room_name = current_slots.get("room_type")
     if target_room_name:
         normalized_target = target_room_name.strip().lower()
-        if not state.selected_room or (state.selected_room.name or "").lower() != normalized_target:
+        should_refresh_selected_room = (
+            explicit_room_type is not None and str(explicit_room_type).strip() != ""
+        ) or state.selected_room is None
+        if should_refresh_selected_room and (
+            not state.selected_room or (state.selected_room.name or "").lower() != normalized_target
+        ):
             import difflib
             # Find the best match in the inventory
             for room in room_inventory:
@@ -994,8 +1029,8 @@ def _coerce_booking_context_screen(requested_screen: UIScreen, state: KioskState
         )
         return "ROOM_SELECT"
 
-    if previous_screen in {"ROOM_PREVIEW", "BOOKING_COLLECT", "BOOKING_SUMMARY"} and has_selected_room:
-        preserved_screen = "ROOM_PREVIEW" if not state.booking_slots.is_complete() else previous_screen
+    if previous_screen in {"ROOM_PREVIEW", "BOOKING_COLLECT", "BOOKING_SUMMARY"}:
+        preserved_screen = previous_screen
         print(
             "[ChatAPI] Preserving booking context "
             f"from={previous_screen} requested={requested_screen} -> {preserved_screen}"
@@ -1010,6 +1045,24 @@ def _coerce_booking_context_screen(requested_screen: UIScreen, state: KioskState
         return "ROOM_PREVIEW"
 
     return requested_screen
+
+
+def _looks_like_room_recommendation_prompt(transcript: str) -> bool:
+    cleaned = (transcript or "").strip()
+    if not cleaned:
+        return False
+
+    normalized = normalize_faq_query(cleaned)
+    if ROOM_RECOMMENDATION_RE.search(cleaned) or ROOM_RECOMMENDATION_RE.search(normalized):
+        return True
+
+    if ROOM_GUEST_FIT_RE.search(cleaned) and ROOM_DISCOVERY_CONTEXT_RE.search(cleaned):
+        return True
+
+    if ROOM_GUEST_FIT_RE.search(normalized) and ROOM_DISCOVERY_CONTEXT_RE.search(normalized):
+        return True
+
+    return False
 
 
 def _should_attempt_faq(transcript: str, normalized_ui_screen: UIScreen) -> bool:
@@ -1059,6 +1112,20 @@ def _should_attempt_faq(transcript: str, normalized_ui_screen: UIScreen) -> bool
             "[ChatAPI][FAQ] candidate "
             f"screen={normalized_ui_screen} "
             "allowed=False reason=transactional_room_browsing"
+        )
+        return False
+    if _looks_like_room_recommendation_prompt(cleaned):
+        print(
+            "[ChatAPI][FAQ] candidate "
+            f"screen={normalized_ui_screen} "
+            "allowed=False reason=transactional_room_recommendation"
+        )
+        return False
+    if ROOM_GUEST_FIT_RE.search(normalized) and ROOM_DISCOVERY_CONTEXT_RE.search(normalized):
+        print(
+            "[ChatAPI][FAQ] candidate "
+            f"screen={normalized_ui_screen} "
+            "allowed=False reason=transactional_room_fit"
         )
         return False
 
@@ -1293,7 +1360,6 @@ async def chat(
 
         # Update state with current request data
         state.latest_transcript = req.transcript
-        state.current_ui_screen = normalized_ui_screen
         state.language = effective_language
         state.tenant_id = resolved_tenant_id or state.tenant_id
         state.tenant_room_inventory = [RoomInventoryItem(**room) for room in room_inventory]
@@ -1315,30 +1381,7 @@ async def chat(
             f"db={_database_target_hint()}"
         )
 
-        summary_confirm_short_circuit = (
-            normalized_ui_screen == "BOOKING_SUMMARY"
-            and state.booking_slots.is_complete()
-            and _is_summary_confirmation_transcript(req.transcript)
-        )
-
         updated_state: Optional[KioskState] = None
-
-        if summary_confirm_short_circuit:
-            speech = "Perfect. Your booking details are confirmed. Taking you to payment now."
-            updated_history = state.history + [
-                ConversationTurn(role="user", content=req.transcript),
-                ConversationTurn(role="assistant", content=speech),
-            ]
-            updated_state = state.model_copy(
-                update={
-                    "resolved_intent": "CONFIRM_BOOKING",
-                    "speech_response": speech,
-                    "active_slot": None,
-                    "history": updated_history,
-                    "next_ui_screen": "PAYMENT",
-                }
-            )
-            _sessions[req.session_id] = updated_state
 
         # Deterministic FAQ retrieval layer (tenant-scoped), only for non-transactional turns.
         if not updated_state and _should_attempt_faq(req.transcript, normalized_ui_screen):

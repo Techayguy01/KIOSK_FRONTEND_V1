@@ -693,6 +693,26 @@ def _is_room_change_request(transcript: str) -> bool:
     return references_room and wants_change
 
 
+def _looks_like_explicit_check_in_restart_request(transcript: str) -> bool:
+    text = (transcript or "").strip().lower()
+    if not text:
+        return False
+    return bool(
+        re.search(
+            r"\b("
+            r"check\s+in\s+instead|"
+            r"start\s+over\s+and\s+check\s+in|"
+            r"restart\s+and\s+check\s+in|"
+            r"cancel\s+(?:this|the)?\s*(?:booking|reservation)?\s*and\s+check\s+in|"
+            r"forget\s+(?:this|the)?\s*(?:booking|reservation)?\s*and\s+check\s+in|"
+            r"stop\s+(?:this|the)?\s*(?:booking|reservation)?\s*and\s+check\s+in|"
+            r"switch\s+to\s+check\s+in"
+            r")\b",
+            text,
+        )
+    )
+
+
 def _looks_like_check_in_request(transcript: str) -> bool:
     text = (transcript or "").strip().lower()
     if not text:
@@ -756,6 +776,83 @@ def _looks_like_room_browsing_request(transcript: str) -> bool:
     )
 
 
+def _looks_like_room_recommendation_request(transcript: str) -> bool:
+    text = (transcript or "").strip().lower()
+    if not text:
+        return False
+
+    if re.search(
+        r"\b("
+        r"which\s+room\s+(?:should|would)|"
+        r"what\s+room\s+should|"
+        r"recommend(?:\s+me)?\s+(?:a\s+)?(?:room|suite)|"
+        r"suggest(?:\s+me)?\s+(?:a\s+)?(?:room|suite)|"
+        r"best\s+(?:room|suite)\s+for|"
+        r"(?:cheapest|budget|affordable|lowest\s+price)\s+(?:room|suite)|"
+        r"compare\s+(?:rooms?|the\s+.+\s+and\s+.+)|"
+        r"which\s+(?:room|suite)\s+(?:is|would\s+be)\s+best"
+        r")\b",
+        text,
+    ):
+        return True
+
+    has_guest_fit = bool(
+        re.search(
+            r"\b("
+            r"family\s+of\s+(?:\d+|one|two|three|four|five|six|seven|eight)|"
+            r"(?:\d+|one|two|three|four|five|six|seven|eight)\s+adults?"
+            r"(?:\s+and\s+(?:\d+|one|two|three|four|five|six|seven|eight)\s+children?)?|"
+            r"two\s+adults?\s+and\s+two\s+children|"
+            r"two\s+adults?\s+and\s+one\s+child"
+            r")\b",
+            text,
+        )
+    )
+    has_room_discovery_context = bool(
+        re.search(
+            r"\b("
+            r"room|suite|rooms|suites|"
+            r"fit|fits|suitable|best|recommend|suggest|choose|"
+            r"look\s+at|look\s+for|compare|affordable|budget|cheapest"
+            r")\b",
+            text,
+        )
+    )
+    return has_guest_fit and has_room_discovery_context
+
+
+def _looks_like_room_preview_detail_request(transcript: str) -> bool:
+    text = (transcript or "").strip().lower()
+    if not text:
+        return False
+
+    mentions_room_context = bool(
+        re.search(r"\b(this|it|room|suite)\b", text)
+        or re.search(r"\bdoes\s+this\s+room\b", text)
+    )
+    mentions_feature = bool(
+        re.search(
+            r"\b("
+            r"balcony|terrace|view|city\s+view|sea\s+view|ocean\s+view|"
+            r"bathroom|bath\s*tub|bathtub|shower|bedroom|bed|window|"
+            r"living\s+room|living\s+area|lounge|workspace|desk|sofa|seating|"
+            r"feature|features|amenity|amenities"
+            r")\b",
+            text,
+        )
+    )
+    asks_about_feature = bool(
+        re.search(
+            r"\b("
+            r"does|is|has|have|what|which|tell|describe|show|see|view|"
+            r"can\s+i\s+see|can\s+you\s+show"
+            r")\b",
+            text,
+        )
+    )
+    return mentions_feature and (mentions_room_context or asks_about_feature)
+
+
 ROUTER_SYSTEM_PROMPT = """
 You are a highly critical intent classifier for a luxury hotel kiosk AI named "Siya".
 The user's text may contain mixed intentions, conversational filler, or mid-sentence corrections (e.g., "Wait, no, I mean check in").
@@ -780,16 +877,20 @@ Rules:
 
 ## Screen Context Rules
 A "Current UI screen" message is provided. Use it to disambiguate ambiguous intents:
-- WELCOME / IDLE: Opening screen. Any mention of rooms, availability, booking, or wanting to see/explore rooms -> BOOK_ROOM. Greetings, amenity questions, hotel info -> GENERAL_QUERY.
+- WELCOME / IDLE: Opening screen. Any mention of rooms, availability, booking, wanting to see/explore rooms, family-fit room advice, cheapest/affordable rooms, or room comparisons -> BOOK_ROOM. Greetings, amenity questions, hotel info -> GENERAL_QUERY.
 - ROOM_SELECT: User is browsing the room catalog. Selecting or asking about a specific room -> BOOK_ROOM. Feature questions -> GENERAL_QUERY.
 - ROOM_PREVIEW: User is viewing a SPECIFIC room's image carousel.
-  * "show me bathroom", "I want to see the balcony", "show me the view", or ANY request to focus on a room feature/area -> GENERAL_QUERY (this is a visual focus request, NOT a new booking).
+  * "show me bathroom", "I want to see the balcony", "show me the view", "does this room have a balcony", or ANY request to focus on a room feature/area -> GENERAL_QUERY (this is a visual focus request, NOT a new booking).
   * "book this room", "I'll take it", "I want this one" -> BOOK_ROOM.
+  * If the user starts giving guest counts, dates, or a guest name while still in ROOM_PREVIEW, classify as the corresponding PROVIDE_* intent so the booking flow can begin naturally.
   * "show me another option", "different room", "I don't like this", "go back", "other rooms" -> MODIFY_BOOKING (user wants to browse different rooms).
 - BOOKING_COLLECT: User is providing booking details (guests, dates, name).
   * Visual focus requests ("show me the balcony") -> GENERAL_QUERY.
+  * Phrases like "check in tomorrow" inside a booking-detail sentence usually refer to stay dates, not kiosk CHECK_IN for an existing reservation.
   * Guest counts -> PROVIDE_GUESTS. Dates -> PROVIDE_DATES. Names -> PROVIDE_NAME.
 - BOOKING_SUMMARY: Only CONFIRM_BOOKING or MODIFY_BOOKING are expected here.
+  * "yes, that's correct", "proceed to payment", "go to payment" -> CONFIRM_BOOKING.
+  * "change the guest name", "edit the dates", "modify the details" -> MODIFY_BOOKING.
 CRITICAL: On ROOM_PREVIEW and BOOKING_COLLECT, phrases like "show me [room part]" are visual focus requests (GENERAL_QUERY), NOT booking requests. Do not classify them as BOOK_ROOM.
 
 Respond ONLY with a JSON object:
@@ -801,10 +902,37 @@ async def route_intent(state: KioskState) -> dict:
     """Node 1: Classify the user's intent."""
     print(f"[Router] Classifying: '{state.latest_transcript}'")
     semantic_hint: Optional[str] = None
+    transcript_text = state.latest_transcript or ""
+    current_screen = state.current_ui_screen
+    is_booking_context = current_screen in {"BOOKING_COLLECT", "BOOKING_SUMMARY"}
 
-    if _looks_like_check_in_request(state.latest_transcript):
+    if current_screen == "BOOKING_SUMMARY":
+        if _is_summary_modify_transcript(transcript_text):
+            return {
+                "resolved_intent": "MODIFY_BOOKING",
+                "confidence": 0.96,
+                "speech_override": None,
+                "consecutive_failures": 0,
+                "last_failed_screen": None,
+            }
+        if state.booking_slots.is_complete() and _is_summary_confirmation_transcript(transcript_text):
+            return {
+                "resolved_intent": "CONFIRM_BOOKING",
+                "confidence": 0.97,
+                "speech_override": None,
+                "consecutive_failures": 0,
+                "last_failed_screen": None,
+            }
+
+    # Screen-aware preview detail guard: questions about the currently viewed room
+    # must stay in preview context rather than being treated as a new room search.
+    if current_screen == "ROOM_PREVIEW" and _looks_like_room_preview_detail_request(transcript_text):
+        print(
+            f"[Router] Preview detail guard on {current_screen}: "
+            f"'{state.latest_transcript}' -> GENERAL_QUERY"
+        )
         return {
-            "resolved_intent": "CHECK_IN",
+            "resolved_intent": "GENERAL_QUERY",
             "confidence": 0.97,
             "speech_override": None,
             "consecutive_failures": 0,
@@ -813,18 +941,18 @@ async def route_intent(state: KioskState) -> dict:
 
     # Screen-aware visual focus guard: on ROOM_PREVIEW / BOOKING_COLLECT,
     # "show me bathroom / balcony / bedroom / view" is a visual focus request,
-    # NOT a new booking.  Route as GENERAL_QUERY so the visual concierge
-    # in chat.py handles the carousel focus + narration.
-    if state.current_ui_screen in ("ROOM_PREVIEW", "BOOKING_COLLECT"):
-        _vf_text = (state.latest_transcript or "").strip().lower()
+    # NOT a new booking. Route as GENERAL_QUERY so downstream logic can keep
+    # the guest anchored to the current room context.
+    if current_screen in ("ROOM_PREVIEW", "BOOKING_COLLECT"):
+        _vf_text = transcript_text.strip().lower()
         if re.search(
-            r"\b(?:show|see|view|display|open|focus)\b.*"
+            r"\b(?:show|see|view|display|open|focus|describe|tell)\b.*"
             r"\b(?:bath(?:room|tub)?|balcony|terrace|bedroom|bed|living|lounge|"
-            r"kitchen|view|ocean|fireplace|shower|pool|sofa|seating)\b",
+            r"kitchen|view|ocean|fireplace|shower|pool|sofa|seating|window|workspace|desk)\b",
             _vf_text,
         ):
             print(
-                f"[Router] Visual focus guard on {state.current_ui_screen}: "
+                f"[Router] Visual focus guard on {current_screen}: "
                 f"'{state.latest_transcript}' -> GENERAL_QUERY"
             )
             return {
@@ -835,7 +963,17 @@ async def route_intent(state: KioskState) -> dict:
                 "last_failed_screen": None,
             }
 
-    if _looks_like_room_browsing_request(state.latest_transcript):
+    if current_screen in {"WELCOME", "IDLE", "AI_CHAT", "MANUAL_MENU"} and _looks_like_room_recommendation_request(transcript_text):
+        print(f"[Router] Deterministic room recommendation match: '{state.latest_transcript}'")
+        return {
+            "resolved_intent": "BOOK_ROOM",
+            "confidence": 0.95,
+            "speech_override": None,
+            "consecutive_failures": 0,
+            "last_failed_screen": None,
+        }
+
+    if _looks_like_room_browsing_request(transcript_text):
         print(f"[Router] Deterministic room browsing match: '{state.latest_transcript}'")
         return {
             "resolved_intent": "BOOK_ROOM",
@@ -845,19 +983,15 @@ async def route_intent(state: KioskState) -> dict:
             "last_failed_screen": None,
         }
 
-    # Deterministic summary control avoids LLM drift on "confirm and pay"/"it's correct"/"card".
-    if state.current_ui_screen == "BOOKING_SUMMARY":
-        if _is_summary_modify_transcript(state.latest_transcript):
+    if _looks_like_check_in_request(transcript_text):
+        if is_booking_context and not _looks_like_explicit_check_in_restart_request(transcript_text):
+            print(
+                f"[Router] Suppressing CHECK_IN takeover on {current_screen}: "
+                f"'{state.latest_transcript}'"
+            )
+        else:
             return {
-                "resolved_intent": "MODIFY_BOOKING",
-                "confidence": 0.96,
-                "speech_override": None,
-                "consecutive_failures": 0,
-                "last_failed_screen": None,
-            }
-        if state.booking_slots.is_complete() and _is_summary_confirmation_transcript(state.latest_transcript):
-            return {
-                "resolved_intent": "CONFIRM_BOOKING",
+                "resolved_intent": "CHECK_IN",
                 "confidence": 0.97,
                 "speech_override": None,
                 "consecutive_failures": 0,
@@ -869,8 +1003,8 @@ async def route_intent(state: KioskState) -> dict:
         from agent.semantic_classifier import classify_intent_semantically
 
         semantic_result = await classify_intent_semantically(
-            transcript=state.latest_transcript,
-            current_screen=state.current_ui_screen,
+            transcript=transcript_text,
+            current_screen=current_screen,
         )
         if semantic_result is not None:
             if semantic_result.is_out_of_domain:
@@ -905,9 +1039,9 @@ async def route_intent(state: KioskState) -> dict:
     full_prompt = ROUTER_SYSTEM_PROMPT + hint_text
     messages = [
         {"role": "system", "content": full_prompt},
-        {"role": "system", "content": f"Current UI screen: {state.current_ui_screen}"},
+        {"role": "system", "content": f"Current UI screen: {current_screen}"},
         {"role": "system", "content": f"Guest language preference: {state.language}"},
-        {"role": "user", "content": state.latest_transcript},
+        {"role": "user", "content": transcript_text},
     ]
 
     raw = get_llm_response(messages, temperature=0.1)
@@ -924,13 +1058,24 @@ async def route_intent(state: KioskState) -> dict:
     # Low-confidence fallback: if LLM classified as GENERAL_QUERY but transcript
     # matches room browsing patterns, override to BOOK_ROOM.
     if intent == "GENERAL_QUERY" and confidence < 0.80:
-        if _looks_like_room_browsing_request(state.latest_transcript):
+        if _looks_like_room_browsing_request(transcript_text) or (
+            current_screen in {"WELCOME", "IDLE", "AI_CHAT", "MANUAL_MENU"}
+            and _looks_like_room_recommendation_request(transcript_text)
+        ):
             print(f"[Router] Low-confidence fallback: GENERAL_QUERY({confidence}) -> BOOK_ROOM")
             intent = "BOOK_ROOM"
             confidence = 0.85
 
+    if intent == "CHECK_IN" and is_booking_context and not _looks_like_explicit_check_in_restart_request(transcript_text):
+        replacement_intent = semantic_hint or "GENERAL_QUERY"
+        print(
+            f"[Router] Post-LLM CHECK_IN suppression on {current_screen}: "
+            f"'{state.latest_transcript}' -> {replacement_intent}"
+        )
+        intent = replacement_intent
+        confidence = max(confidence, 0.7 if replacement_intent != "GENERAL_QUERY" else 0.6)
+
     is_failure = intent in {"IDLE", "GENERAL_QUERY"} and confidence < 0.60
-    current_screen = state.current_ui_screen
     if is_failure:
         if state.last_failed_screen == current_screen:
             consecutive_failures = (state.consecutive_failures or 0) + 1
