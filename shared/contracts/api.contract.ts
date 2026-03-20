@@ -1,4 +1,5 @@
 import type { UIState } from "./backend.contract";
+import type { KioskUiAction } from "./intents";
 
 export interface ApiErrorBody {
   error: {
@@ -123,6 +124,7 @@ export interface ChatRequestDTO {
   transcript?: string;
   currentState?: UIState;
   sessionId?: string;
+  isGalleryFullscreen?: boolean;
   activeSlot?: BookingSlotName | null;
   expectedType?: BookingSlotExpectedType | null;
   lastSystemPrompt?: string;
@@ -135,6 +137,7 @@ export interface ChatResponseDTO {
   intent: string;
   confidence: number;
   nextUiScreen?: UIState;
+  uiAction?: KioskUiAction | null;
   visualFocus?: VisualFocusDTO | null;
   answerSource?: "FAQ_DB" | "FAQ_CACHE" | "LLM" | "LOCAL_SIMILARITY" | "FAQ_FALLBACK";
   faqId?: string | null;

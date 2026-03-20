@@ -31,4 +31,10 @@ export type Intent =
     | "CANCEL_BOOKING"
     | "ASK_ROOM_DETAIL"
     | "COMPARE_ROOMS"
-    | "ASK_PRICE";
+    | "ASK_PRICE"
+    | "OPEN_FULLSCREEN_GALLERY"
+    | "CLOSE_FULLSCREEN_GALLERY";
+
+export type KioskUiAction =
+    | "OPEN_FULLSCREEN_GALLERY"
+    | "CLOSE_FULLSCREEN_GALLERY";

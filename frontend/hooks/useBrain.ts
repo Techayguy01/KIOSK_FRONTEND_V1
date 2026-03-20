@@ -67,8 +67,9 @@ export function useBrain() {
             filledSlots: bookingSlots,
             conversationHistory: nextHistory,
             roomCatalog: Array.isArray(data?.rooms) ? data.rooms : undefined,
+            isGalleryFullscreen: Boolean(data?.isGalleryFullscreen),
         });
-    }, [state, bookingSlots, conversationHistory, data?.rooms]);
+    }, [state, bookingSlots, conversationHistory, data?.rooms, data?.isGalleryFullscreen]);
 
     return {
         lastResponse,

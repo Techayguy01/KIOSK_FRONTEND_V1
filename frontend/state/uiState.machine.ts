@@ -2,6 +2,7 @@ import { UIState } from '@contracts/backend.contract';
 
 type TransitionMap = Record<string, UIState>;
 type StateConfig = Record<UIState, { on: TransitionMap; canGoBack: boolean }>;
+type GalleryEvent = 'OPEN_FULLSCREEN_GALLERY' | 'CLOSE_FULLSCREEN_GALLERY' | 'TOGGLE_FULLSCREEN_GALLERY';
 
 // DEFINITION OF TRUTH
 const MACHINE_CONFIG: StateConfig = {
@@ -82,6 +83,9 @@ const MACHINE_CONFIG: StateConfig = {
       ASK_ROOM_DETAIL: 'ROOM_PREVIEW',
       ASK_PRICE: 'ROOM_PREVIEW',
       COMPARE_ROOMS: 'ROOM_PREVIEW',
+      OPEN_FULLSCREEN_GALLERY: 'ROOM_PREVIEW',
+      CLOSE_FULLSCREEN_GALLERY: 'ROOM_PREVIEW',
+      TOGGLE_FULLSCREEN_GALLERY: 'ROOM_PREVIEW',
       GENERAL_QUERY: 'ROOM_PREVIEW',
       HELP_SELECTED: 'HELP',
       MODIFY_BOOKING: 'ROOM_PREVIEW',
@@ -152,6 +156,34 @@ const MACHINE_CONFIG: StateConfig = {
 };
 
 export const StateMachine = {
+  isGalleryEvent: (event: string): event is GalleryEvent =>
+    event === 'OPEN_FULLSCREEN_GALLERY'
+    || event === 'CLOSE_FULLSCREEN_GALLERY'
+    || event === 'TOGGLE_FULLSCREEN_GALLERY',
+
+  canProcessGalleryEvent: (currentState: UIState, event: string): boolean =>
+    currentState === 'ROOM_PREVIEW' && StateMachine.isGalleryEvent(event),
+
+  reduceGalleryFullscreen: (
+    currentState: UIState,
+    event: string,
+    isOpen: boolean,
+    payload?: { isOpen?: boolean }
+  ): boolean => {
+    if (!StateMachine.canProcessGalleryEvent(currentState, event)) {
+      return isOpen;
+    }
+    if (event === 'OPEN_FULLSCREEN_GALLERY') return true;
+    if (event === 'CLOSE_FULLSCREEN_GALLERY') return false;
+    if (event === 'TOGGLE_FULLSCREEN_GALLERY' && typeof payload?.isOpen === 'boolean') {
+      return payload.isOpen;
+    }
+    return isOpen;
+  },
+
+  shouldResetGalleryOnStateExit: (previousState: UIState, nextState: UIState): boolean =>
+    previousState === 'ROOM_PREVIEW' && nextState !== 'ROOM_PREVIEW',
+
   /**
    * pure function to determine next state
    */

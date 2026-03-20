@@ -35,6 +35,8 @@ type RoomPreviewStoryCarouselProps = {
   visuals: RoomPreviewVisual[];
   narrative: string;
   focusImageId?: string | null;
+  isFullscreen?: boolean;
+  onFullscreenChange?: (isOpen: boolean) => void;
   voicePrompts: string[];
   onConfirm: () => void;
   onBack: () => void;
@@ -114,13 +116,35 @@ export function RoomPreviewStoryCarousel({
   visuals,
   narrative,
   focusImageId,
+  isFullscreen,
+  onFullscreenChange,
   voicePrompts,
   onConfirm,
   onBack,
 }: RoomPreviewStoryCarouselProps) {
   const [step, setStep] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [isExpandedInternal, setIsExpandedInternal] = useState(false);
+  const isExpandedControlled = typeof isFullscreen === "boolean";
+  const isExpanded = isExpandedControlled ? Boolean(isFullscreen) : isExpandedInternal;
+
+  const setExpanded = (nextValue: boolean) => {
+    if (!isExpandedControlled) {
+      setIsExpandedInternal(nextValue);
+    }
+    onFullscreenChange?.(nextValue);
+  };
+
+  useEffect(() => {
+    if (!isExpanded) return undefined;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setExpanded(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isExpanded]);
 
   useEffect(() => {
     setStep(0);
@@ -348,7 +372,7 @@ export function RoomPreviewStoryCarousel({
                     {activeVisual && (
                       <button
                         type="button"
-                        onClick={() => setIsExpanded(true)}
+                        onClick={() => setExpanded(true)}
                         className="inline-flex items-center gap-2 rounded-full border border-white/12 bg-white/[0.05] px-4 py-2 text-sm text-white/82 transition hover:bg-white/[0.11]"
                       >
                         <Expand size={15} />
@@ -449,60 +473,74 @@ export function RoomPreviewStoryCarousel({
         </div>
       </div>
 
-      {isExpanded && activeVisual && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/92 p-6 backdrop-blur-2xl lg:p-10">
-          <div className="grid h-full w-full max-w-7xl gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
-            <div className="overflow-hidden rounded-[36px] border border-white/8 bg-black shadow-2xl shadow-black/50">
+      <AnimatePresence>
+        {isExpanded && activeVisual && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2, ease: "easeOut" }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/92 p-6 backdrop-blur-2xl lg:p-10"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.98, y: 8 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.98, y: 8 }}
+              transition={{ duration: 0.22, ease: "easeOut" }}
+              className="grid h-full w-full max-w-7xl gap-6 lg:grid-cols-[minmax(0,1fr)_360px]"
+            >
+              <div className="overflow-hidden rounded-[36px] border border-white/8 bg-black shadow-2xl shadow-black/50">
               <img
                 src={optimizeCloudinaryUrl(activeVisual.src)}
                 alt={activeVisual.title}
                 className="h-full w-full object-cover"
               />
-            </div>
-            <div className="flex flex-col rounded-[36px] border border-white/10 bg-slate-950 p-6 shadow-2xl shadow-black/40">
-              <div className="flex items-center justify-between gap-4">
-                <p className="text-xs uppercase tracking-[0.3em] text-cyan-100/74">{activeVisual.category}</p>
-                <button
-                  type="button"
-                  onClick={() => setIsExpanded(false)}
-                  className="rounded-full border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-white/20"
-                >
-                  Close
-                </button>
               </div>
-
-              <h3 className="mt-4 text-3xl font-light text-white">{activeVisual.title}</h3>
-              <p className="mt-4 text-sm leading-7 text-white/72">{activeVisual.description}</p>
-
-              {visuals.length > 1 && (
-                <div className="mt-6 grid grid-cols-2 gap-3">
-                  {visuals.map((visual, index) => (
-                    <button
-                      key={visual.id}
-                      type="button"
-                      onClick={() => setStep(index)}
-                      className={cn(
-                        "overflow-hidden rounded-[20px] border transition",
-                        index === currentIndex
-                          ? "border-cyan-300/70 ring-2 ring-cyan-300/25"
-                          : "border-white/10 hover:border-white/30"
-                      )}
-                    >
-                      <div className="aspect-[4/3] overflow-hidden bg-black">
-                        <img
-                          src={optimizeCloudinaryUrl(visual.src)}
-                          alt={visual.title}
-                          className="h-full w-full object-cover"
-                        />
-                      </div>
-                    </button>
-                  ))}
+              <div className="flex flex-col rounded-[36px] border border-white/10 bg-slate-950 p-6 shadow-2xl shadow-black/40">
+                <div className="flex items-center justify-between gap-4">
+                  <p className="text-xs uppercase tracking-[0.3em] text-cyan-100/74">{activeVisual.category}</p>
+                  <button
+                    type="button"
+                    onClick={() => setExpanded(false)}
+                    className="rounded-full border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-white/20"
+                  >
+                    Close
+                  </button>
                 </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+
+                <h3 className="mt-4 text-3xl font-light text-white">{activeVisual.title}</h3>
+                <p className="mt-4 text-sm leading-7 text-white/72">{activeVisual.description}</p>
+
+                {visuals.length > 1 && (
+                  <div className="mt-6 grid grid-cols-2 gap-3">
+                    {visuals.map((visual, index) => (
+                      <button
+                        key={visual.id}
+                        type="button"
+                        onClick={() => setStep(index)}
+                        className={cn(
+                          "overflow-hidden rounded-[20px] border transition",
+                          index === currentIndex
+                            ? "border-cyan-300/70 ring-2 ring-cyan-300/25"
+                            : "border-white/10 hover:border-white/30"
+                        )}
+                      >
+                        <div className="aspect-[4/3] overflow-hidden bg-black">
+                          <img
+                            src={optimizeCloudinaryUrl(visual.src)}
+                            alt={visual.title}
+                            className="h-full w-full object-cover"
+                          />
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </>
   );
 }
