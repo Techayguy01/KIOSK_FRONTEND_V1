@@ -21,6 +21,55 @@ LANGUAGE_DISPLAY_NAMES = {
     "te": "Telugu",
 }
 
+NUMBER_WORDS = {
+    "zero": 0,
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+}
+
+MONTH_NAME_TO_NUMBER = {
+    "jan": 1,
+    "january": 1,
+    "feb": 2,
+    "february": 2,
+    "mar": 3,
+    "march": 3,
+    "apr": 4,
+    "april": 4,
+    "may": 5,
+    "jun": 6,
+    "june": 6,
+    "jul": 7,
+    "july": 7,
+    "aug": 8,
+    "august": 8,
+    "sep": 9,
+    "sept": 9,
+    "september": 9,
+    "oct": 10,
+    "october": 10,
+    "nov": 11,
+    "november": 11,
+    "dec": 12,
+    "december": 12,
+}
+
+MONTH_REGEX = (
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|"
+    r"jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|"
+    r"oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+)
+
 
 def _response_language_instruction(language: str) -> str:
     code = (language or "en").strip().lower()
@@ -85,6 +134,63 @@ def _format_price_for_speech(price: Optional[float], currency: Optional[str]) ->
     if resolved_currency == "INR":
         return f"INR {rounded}"
     return f"{resolved_currency} {rounded}"
+
+
+def _parse_spoken_number(value: Optional[str]) -> Optional[int]:
+    if value is None:
+        return None
+    cleaned = re.sub(r"[^a-z0-9]", "", str(value).strip().lower())
+    if not cleaned:
+        return None
+    if cleaned.isdigit():
+        return int(cleaned)
+    return NUMBER_WORDS.get(cleaned)
+
+
+def _format_date_for_speech(raw_value: Optional[str]) -> Optional[str]:
+    parsed = _parse_iso_date(raw_value)
+    if not parsed:
+        return None
+    label = f"{parsed.strftime('%B')} {parsed.day}"
+    if parsed.year != date.today().year:
+        label = f"{label}, {parsed.year}"
+    return label
+
+
+def _build_room_presentation(room_inventory: list[RoomInventoryItem]) -> str:
+    if not room_inventory:
+        return "I can help you with a room booking whenever you're ready."
+
+    if len(room_inventory) == 1:
+        room = room_inventory[0]
+        price_text = _format_price_for_speech(room.price, room.currency) or "our current rate"
+        return f"We have the {room.name}, available at {price_text}. Would you like to take a look?"
+
+    descriptions: list[str] = []
+    for room in room_inventory[:3]:
+        price_text = _format_price_for_speech(room.price, room.currency)
+        descriptor = f"the {room.name}"
+        if price_text:
+            descriptor += f" at {price_text}"
+        if room.max_adults:
+            descriptor += f" for up to {room.max_adults} guest{'s' if room.max_adults != 1 else ''}"
+        descriptions.append(descriptor)
+
+    return (
+        f"We have {len(room_inventory)} room options: {_join_spoken_list(descriptions)}. "
+        "Which one interests you?"
+    )
+
+
+def _build_room_confirmation(room: RoomInventoryItem) -> str:
+    parts = [f"Great choice. {room.name}"]
+    price_text = _format_price_for_speech(room.price, room.currency)
+    if price_text:
+        parts[-1] += f" is available at {price_text} per night"
+    if room.max_adults:
+        parts[-1] += f" for up to {room.max_adults} adult{'s' if room.max_adults != 1 else ''}"
+    parts.append("How many adults will be staying?")
+    return ". ".join(parts)
 
 
 def _build_room_recommendation_prompt(room_inventory: list[RoomInventoryItem]) -> str:
@@ -251,6 +357,120 @@ def _anchor_yearless_date(raw_value: Optional[str], transcript: str, today: date
             f"(today={today.isoformat()})"
         )
     return anchored.isoformat()
+
+
+def _resolve_calendar_date(month_token: str, day_value: str, year_value: Optional[str], today: date) -> Optional[date]:
+    month = MONTH_NAME_TO_NUMBER.get(str(month_token or "").strip().lower())
+    day = _parse_spoken_number(day_value)
+    if not month or day is None:
+        return None
+
+    target_year = int(year_value) if year_value else today.year
+    try:
+        parsed = date(target_year, month, day)
+    except ValueError:
+        return None
+
+    if year_value:
+        return parsed
+
+    while parsed < today:
+        parsed = _replace_year_safely(parsed, parsed.year + 1)
+    return parsed
+
+
+def _extract_dates_deterministically(transcript: str) -> dict[str, str]:
+    if not transcript:
+        return {}
+
+    text = transcript.strip().lower()
+    today = date.today()
+
+    relative_range = re.search(
+        r"\b(today|tomorrow|day after tomorrow)\b\s*(?:to|until|through|till|-)\s*\b(today|tomorrow|day after tomorrow)\b",
+        text,
+    )
+    if relative_range:
+        first = relative_range.group(1)
+        second = relative_range.group(2)
+        relative_dates = {
+            "today": today,
+            "tomorrow": today + timedelta(days=1),
+            "day after tomorrow": today + timedelta(days=2),
+        }
+        check_in = relative_dates.get(first)
+        check_out = relative_dates.get(second)
+        if check_in and check_out:
+            return {
+                "check_in_date": check_in.isoformat(),
+                "check_out_date": check_out.isoformat(),
+            }
+
+    month_range = re.search(
+        rf"\b(?:from\s+)?(?P<month1>{MONTH_REGEX})\s+(?P<day1>\d{{1,2}})(?:st|nd|rd|th)?(?:,?\s*(?P<year1>\d{{4}}))?"
+        rf"\s*(?:to|until|through|till|-)\s*(?:(?P<month2>{MONTH_REGEX})\s+)?(?P<day2>\d{{1,2}})(?:st|nd|rd|th)?(?:,?\s*(?P<year2>\d{{4}}))?\b",
+        text,
+    )
+    if month_range:
+        check_in = _resolve_calendar_date(
+            month_range.group("month1"),
+            month_range.group("day1"),
+            month_range.group("year1"),
+            today,
+        )
+        check_out = _resolve_calendar_date(
+            month_range.group("month2") or month_range.group("month1"),
+            month_range.group("day2"),
+            month_range.group("year2") or month_range.group("year1"),
+            today,
+        )
+        if check_in and check_out:
+            return {
+                "check_in_date": check_in.isoformat(),
+                "check_out_date": check_out.isoformat(),
+            }
+
+    iso_dates = re.findall(r"\b(20\d{2}-\d{2}-\d{2})\b", text)
+    if len(iso_dates) >= 2:
+        return {
+            "check_in_date": iso_dates[0],
+            "check_out_date": iso_dates[1],
+        }
+
+    single_relative: Optional[date] = None
+    if re.search(r"\bday after tomorrow\b", text):
+        single_relative = today + timedelta(days=2)
+    elif re.search(r"\btomorrow\b", text):
+        single_relative = today + timedelta(days=1)
+    elif re.search(r"\btoday\b", text):
+        single_relative = today
+    if single_relative:
+        return {"check_in_date": single_relative.isoformat()}
+
+    if iso_dates:
+        return {"check_in_date": iso_dates[0]}
+
+    month_day_matches = list(
+        re.finditer(
+            rf"\b({MONTH_REGEX})\s+(\d{{1,2}})(?:st|nd|rd|th)?(?:,?\s*(\d{{4}}))?\b",
+            text,
+        )
+    )
+    if month_day_matches:
+        parsed_dates: list[date] = []
+        for match in month_day_matches[:2]:
+            parsed = _resolve_calendar_date(match.group(1), match.group(2), match.group(3), today)
+            if parsed:
+                parsed_dates.append(parsed)
+        if len(parsed_dates) >= 2:
+            return {
+                "check_in_date": parsed_dates[0].isoformat(),
+                "check_out_date": parsed_dates[1].isoformat(),
+            }
+        if len(parsed_dates) == 1:
+            return {"check_in_date": parsed_dates[0].isoformat()}
+
+    return {}
 
 
 def _extract_requested_nights(transcript: str) -> Optional[int]:
@@ -519,6 +739,10 @@ def _looks_like_room_browsing_request(transcript: str) -> bool:
             r"explore\s+(?:the\s+)?rooms|"
             r"room\s+options|"
             r"available\s+rooms|"
+            r"rooms?\s+available|"
+            r"(?:any|some)\s+rooms?\s+(?:available|free|open)|"
+            r"(?:is|are)\s+(?:there\s+)?(?:any\s+)?rooms?\s+(?:available|free|open)|"
+            r"(?:do\s+you\s+have|have\s+you\s+got)\s+(?:any\s+)?rooms?|"
             r"what\s+rooms|"
             r"browse\s+(?:the\s+)?rooms|"
             r"let\s+me\s+(?:see|explore|view|browse)\s+(?:the\s+)?rooms|"
@@ -555,6 +779,20 @@ Rules:
 - Do not be "eager". If the intent is ambiguous (e.g. just a partial word or silence), default to GENERAL_QUERY or IDLE.
 - If the user says "sorry" or "wait", they are likely correcting their previous thought. Ignore the part before the correction.
 
+## Screen Context Rules
+A "Current UI screen" message is provided. Use it to disambiguate ambiguous intents:
+- WELCOME / IDLE: Opening screen. Any mention of rooms, availability, booking, or wanting to see/explore rooms -> BOOK_ROOM. Greetings, amenity questions, hotel info -> GENERAL_QUERY.
+- ROOM_SELECT: User is browsing the room catalog. Selecting or asking about a specific room -> BOOK_ROOM. Feature questions -> GENERAL_QUERY.
+- ROOM_PREVIEW: User is viewing a SPECIFIC room's image carousel.
+  * "show me bathroom", "I want to see the balcony", "show me the view", or ANY request to focus on a room feature/area -> GENERAL_QUERY (this is a visual focus request, NOT a new booking).
+  * "book this room", "I'll take it", "I want this one" -> BOOK_ROOM.
+  * "show me another option", "different room", "I don't like this", "go back", "other rooms" -> MODIFY_BOOKING (user wants to browse different rooms).
+- BOOKING_COLLECT: User is providing booking details (guests, dates, name).
+  * Visual focus requests ("show me the balcony") -> GENERAL_QUERY.
+  * Guest counts -> PROVIDE_GUESTS. Dates -> PROVIDE_DATES. Names -> PROVIDE_NAME.
+- BOOKING_SUMMARY: Only CONFIRM_BOOKING or MODIFY_BOOKING are expected here.
+CRITICAL: On ROOM_PREVIEW and BOOKING_COLLECT, phrases like "show me [room part]" are visual focus requests (GENERAL_QUERY), NOT booking requests. Do not classify them as BOOK_ROOM.
+
 Respond ONLY with a JSON object:
 {"intent": "<INTENT>", "confidence": <0.0-1.0>}
 """
@@ -573,6 +811,31 @@ async def route_intent(state: KioskState) -> dict:
             "consecutive_failures": 0,
             "last_failed_screen": None,
         }
+
+    # Screen-aware visual focus guard: on ROOM_PREVIEW / BOOKING_COLLECT,
+    # "show me bathroom / balcony / bedroom / view" is a visual focus request,
+    # NOT a new booking.  Route as GENERAL_QUERY so the visual concierge
+    # in chat.py handles the carousel focus + narration.
+    if state.current_ui_screen in ("ROOM_PREVIEW", "BOOKING_COLLECT"):
+        _vf_text = (state.latest_transcript or "").strip().lower()
+        if re.search(
+            r"\b(?:show|see|view|display|open|focus)\b.*"
+            r"\b(?:bath(?:room|tub)?|balcony|terrace|bedroom|bed|living|lounge|"
+            r"kitchen|view|ocean|fireplace|shower|pool|sofa|seating)\b",
+            _vf_text,
+        ):
+            print(
+                f"[Router] Visual focus guard on {state.current_ui_screen}: "
+                f"'{state.latest_transcript}' -> GENERAL_QUERY"
+            )
+            return {
+                "resolved_intent": "GENERAL_QUERY",
+                "confidence": 0.95,
+                "speech_override": None,
+                "consecutive_failures": 0,
+                "last_failed_screen": None,
+            }
+
     if _looks_like_room_browsing_request(state.latest_transcript):
         print(f"[Router] Deterministic room browsing match: '{state.latest_transcript}'")
         return {
@@ -839,10 +1102,8 @@ def build_booking_prompt(state: KioskState) -> str:
     today_iso = date.today().isoformat()
 
     return f"""
-You are "Siya", the warm front-desk voice of a premium hotel kiosk.
-Siya is a woman, and if you refer to yourself, do so naturally as a woman.
-Speak like a calm, polished hotel receptionist: cozy, attentive, and reassuring.
-Sound hospitable and confident, never aggressive, robotic, or pushy.
+You are a booking fallback for Siya, a hotel kiosk voice assistant.
+Use the live room inventory and already collected slots as the source of truth.
 
 Already collected:
 {json.dumps(filled, indent=2) if filled else "Nothing yet."}
@@ -860,10 +1121,10 @@ The guest just said: "{state.latest_transcript}"
 
 Your job:
 1. Extract any booking information from what the guest said and update the JSON.
-2. Reply like a real receptionist, not a form or questionnaire.
-3. If the guest wants to book a room but has not chosen one yet, first present the available room options from the live inventory before gently guiding the guest toward a choice.
-4. If a room is already selected, describe it briefly and warmly before asking for the next missing booking detail.
-5. If all slots are filled, confirm the booking summary warmly.
+2. Give a short spoken response for ambiguous or open-ended booking turns.
+3. If the guest wants to book a room but has not chosen one yet, present the available room options from the live inventory.
+4. If a room is already selected, describe it briefly before asking for the next missing booking detail.
+5. If all slots are filled, confirm the booking summary.
 
 Respond ONLY with a JSON object like this:
 {{
@@ -882,15 +1143,11 @@ Respond ONLY with a JSON object like this:
 
 Rules:
 - {_response_language_instruction(state.language)}
-- Keep the speech natural for spoken audio: short, smooth sentences and a warm hospitality tone.
-- Use gentle phrasing such as "Certainly", "If you'd like", "We currently have", or "I can walk you through the available options" when it fits.
-- Never sound like a chatbot, workflow engine, or aggressive salesperson.
-- Do not say phrases like "Tell me what matters most", "Ask me about features", "Please provide room type", or "You can ask me questions".
+- Keep the speech concise and voice-friendly.
 - Mention at most 2 or 3 concrete room details in one reply.
-- Ask at most one gentle follow-up question at the end of the speech.
+- Ask at most one follow-up question at the end of the speech.
 - Prefer live tenant inventory over generic room wording.
 - If the guest has not chosen a room yet, mention how many room options are available and briefly describe one or two of them by name, price, and occupancy when possible.
-- Do not start asking for adults, dates, or guest name immediately after a room is selected.
 - While the guest is still browsing rooms or asking about room details, keep next_slot_to_ask as null and keep the speech focused on describing the selected room and offering to continue or show another option.
 - If the guest mentions a preference but not a room name, match it to the closest suitable room from the live inventory when possible.
 - If a specific room detail is not present in the authoritative inventory, do not invent it.
@@ -917,6 +1174,264 @@ def _transcript_explicitly_identifies_room(
 ) -> Optional[RoomInventoryItem]:
     candidate = _extract_room_candidate_from_transcript(transcript)
     return _find_room_from_inventory(room_inventory, candidate or transcript)
+
+
+def _extract_guest_counts_deterministically(transcript: str) -> dict[str, int]:
+    text = (transcript or "").strip().lower()
+    if not text:
+        return {}
+
+    slots: dict[str, int] = {}
+    child_match = re.search(r"\b(\d+|one|two|three|four|five|six)\s*(?:child|children|kid|kids)\b", text)
+    if child_match:
+        child_count = _parse_spoken_number(child_match.group(1))
+        if child_count is not None:
+            slots["children"] = child_count
+
+    adult_match = re.search(r"\b(\d+|one|two|three|four|five|six)\s*adults?\b", text)
+    if adult_match:
+        adult_count = _parse_spoken_number(adult_match.group(1))
+        if adult_count is not None and adult_count >= 1:
+            slots["adults"] = adult_count
+            return slots
+
+    if re.search(r"\bjust me\b|\balone\b|\bsolo\b|\b1 person\b", text):
+        slots["adults"] = 1
+        return slots
+
+    total_match = re.search(r"\b(\d+|one|two|three|four|five|six)\s*(?:people|guests?|persons?)\b", text)
+    if not total_match:
+        total_match = re.search(r"\bwe are\s+(\d+|one|two|three|four|five|six)\b", text)
+    if total_match:
+        total_count = _parse_spoken_number(total_match.group(1))
+        if total_count is not None and total_count >= 1:
+            if "children" in slots and total_count > slots["children"]:
+                slots["adults"] = total_count - slots["children"]
+            elif "children" not in slots:
+                slots["adults"] = total_count
+
+    return slots
+
+
+def _extract_guest_name_deterministically(transcript: str) -> Optional[str]:
+    text = (transcript or "").strip()
+    if not text:
+        return None
+
+    cleaned = re.sub(
+        r"^(?:my name is|name is|i am|i'm|its|it's|this is)\s+",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip(" .")
+    if not cleaned:
+        return None
+    return cleaned.title()
+
+
+def _extract_slots_deterministically(state: KioskState) -> dict:
+    text = (state.latest_transcript or "").strip()
+    room_inventory = state.tenant_room_inventory or []
+    slots: dict[str, object] = {}
+
+    if state.resolved_intent == "BOOK_ROOM":
+        matched_room = _transcript_explicitly_identifies_room(text, room_inventory)
+        if matched_room:
+            slots["room_type"] = matched_room.name
+        elif (
+            state.current_ui_screen == "ROOM_PREVIEW"
+            and state.selected_room
+            and re.search(r"\b(book|take|want|choose|confirm)\b.*\b(this|it|room|one)\b", text, re.IGNORECASE)
+        ):
+            slots["room_type"] = state.selected_room.name
+
+    if state.resolved_intent == "PROVIDE_GUESTS":
+        slots.update(_extract_guest_counts_deterministically(text))
+
+    if state.resolved_intent == "PROVIDE_DATES":
+        slots.update(_extract_dates_deterministically(text))
+
+    if state.resolved_intent == "PROVIDE_NAME":
+        guest_name = _extract_guest_name_deterministically(text)
+        if guest_name:
+            slots["guest_name"] = guest_name
+
+    return slots
+
+
+def _prepare_booking_state_update(
+    state: KioskState,
+    extracted_slots: Optional[dict] = None,
+    selected_room: Optional[RoomInventoryItem] = None,
+    reset_booking: bool = False,
+    clear_room_selection: bool = False,
+) -> tuple[BookingSlots, Optional[RoomInventoryItem]]:
+    current_slots = (
+        BookingSlots().model_dump()
+        if reset_booking
+        else state.booking_slots.model_dump()
+    )
+    if clear_room_selection:
+        current_slots["room_type"] = None
+        current_slots["total_price"] = None
+
+    for key, value in (extracted_slots or {}).items():
+        if value is not None:
+            current_slots[key] = value
+
+    resolved_selected_room = None if (reset_booking or clear_room_selection) else state.selected_room
+    if selected_room is not None:
+        resolved_selected_room = selected_room
+        current_slots["room_type"] = selected_room.name
+
+    updated_slots = BookingSlots(**current_slots)
+    room_inventory = state.tenant_room_inventory or []
+    if updated_slots.room_type and room_inventory:
+        resolved_selected_room = _find_room_from_inventory(room_inventory, updated_slots.room_type) or resolved_selected_room
+    updated_slots = _normalize_booking_dates(updated_slots, state.latest_transcript, resolved_selected_room)
+    return updated_slots, resolved_selected_room
+
+
+def _make_booking_response(
+    state: KioskState,
+    speech: str,
+    next_ui_screen: str,
+    *,
+    active_slot: Optional[str] = None,
+    extracted_slots: Optional[dict] = None,
+    selected_room: Optional[RoomInventoryItem] = None,
+    reset_booking: bool = False,
+    clear_room_selection: bool = False,
+) -> dict:
+    updated_slots, resolved_selected_room = _prepare_booking_state_update(
+        state,
+        extracted_slots=extracted_slots,
+        selected_room=selected_room,
+        reset_booking=reset_booking,
+        clear_room_selection=clear_room_selection,
+    )
+    updated_history = state.history + [
+        ConversationTurn(role="user", content=state.latest_transcript),
+        ConversationTurn(role="assistant", content=speech),
+    ]
+    return {
+        "speech_response": speech,
+        "booking_slots": updated_slots,
+        "active_slot": active_slot,
+        "selected_room": resolved_selected_room,
+        "history": updated_history,
+        "next_ui_screen": next_ui_screen,
+    }
+
+
+def _deterministic_booking_response(
+    state: KioskState,
+    extracted_slots: dict,
+    room_inventory: list[RoomInventoryItem],
+) -> Optional[dict]:
+    intent = state.resolved_intent
+
+    if intent == "CANCEL_BOOKING":
+        return _make_booking_response(
+            state,
+            "No problem. Is there anything else I can help with?",
+            "WELCOME",
+            active_slot=None,
+            reset_booking=True,
+            clear_room_selection=True,
+        )
+
+    if intent == "BOOK_ROOM":
+        room: Optional[RoomInventoryItem] = None
+        if extracted_slots.get("room_type"):
+            room = _find_room_from_inventory(room_inventory, str(extracted_slots["room_type"]))
+        elif state.current_ui_screen == "ROOM_PREVIEW" and state.selected_room:
+            room = state.selected_room
+        elif state.booking_slots.room_type and state.current_ui_screen in {"ROOM_PREVIEW", "BOOKING_COLLECT"}:
+            room = _find_room_from_inventory(room_inventory, state.booking_slots.room_type) or state.selected_room
+
+        if room:
+            extracted = dict(extracted_slots)
+            extracted["room_type"] = room.name
+            return _make_booking_response(
+                state,
+                _build_room_confirmation(room),
+                "BOOKING_COLLECT",
+                active_slot="adults",
+                extracted_slots=extracted,
+                selected_room=room,
+            )
+
+        if not state.booking_slots.room_type:
+            if not room_inventory:
+                return None
+            return _make_booking_response(
+                state,
+                _build_room_presentation(room_inventory),
+                "ROOM_SELECT",
+                active_slot="room_type",
+                clear_room_selection=True,
+            )
+
+    if intent == "PROVIDE_GUESTS" and extracted_slots.get("adults") is not None:
+        adults = int(extracted_slots["adults"])
+        children = extracted_slots.get("children")
+        guest_text = f"{adults} adult{'s' if adults != 1 else ''}"
+        if isinstance(children, int) and children > 0:
+            guest_text += f" and {children} child{'ren' if children != 1 else ''}"
+        return _make_booking_response(
+            state,
+            f"Got it, {guest_text}. When would you like to check in?",
+            "BOOKING_COLLECT",
+            active_slot="check_in_date",
+            extracted_slots=extracted_slots,
+        )
+
+    if intent == "PROVIDE_DATES":
+        preview_slots, preview_room = _prepare_booking_state_update(
+            state,
+            extracted_slots=extracted_slots,
+        )
+        check_in_text = _format_date_for_speech(preview_slots.check_in_date)
+        check_out_text = _format_date_for_speech(preview_slots.check_out_date)
+        if check_in_text and check_out_text:
+            nights = preview_slots.nights or max(
+                1,
+                (_parse_iso_date(preview_slots.check_out_date) - _parse_iso_date(preview_slots.check_in_date)).days,
+            )
+            speech = (
+                f"Check-in {check_in_text}, check-out {check_out_text}, that's {nights} "
+                f"night{'s' if nights != 1 else ''}. And the name for this booking please?"
+            )
+            return _make_booking_response(
+                state,
+                speech,
+                "BOOKING_COLLECT",
+                active_slot="guest_name",
+                extracted_slots=extracted_slots,
+                selected_room=preview_room,
+            )
+        if check_in_text:
+            return _make_booking_response(
+                state,
+                f"Check-in {check_in_text}. When would you like to check out?",
+                "BOOKING_COLLECT",
+                active_slot="check_out_date",
+                extracted_slots=extracted_slots,
+                selected_room=preview_room,
+            )
+
+    if intent == "PROVIDE_NAME" and extracted_slots.get("guest_name"):
+        name = str(extracted_slots["guest_name"])
+        return _make_booking_response(
+            state,
+            f"Thank you, {name}. Let me pull up your booking summary.",
+            "BOOKING_SUMMARY",
+            active_slot=None,
+            extracted_slots=extracted_slots,
+        )
+
+    return None
 
 
 async def booking_logic(state: KioskState) -> dict:
@@ -999,6 +1514,16 @@ async def booking_logic(state: KioskState) -> dict:
             "history": updated_history,
             "next_ui_screen": "ROOM_SELECT",
         }
+
+    extracted = _extract_slots_deterministically(state)
+    deterministic = _deterministic_booking_response(
+        state,
+        extracted,
+        state.tenant_room_inventory or [],
+    )
+    if deterministic:
+        print("[BookingLogic] Deterministic response (no LLM)")
+        return deterministic
 
     messages = [
         {"role": "system", "content": build_booking_prompt(state)},

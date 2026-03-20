@@ -143,6 +143,21 @@ def validate_booking_constraints(
     except Exception:
         child_count = 0
 
+    # Minimum guest validation: a booking must have at least 1 adult
+    if adult_count is not None and adult_count < 1:
+        return (
+            "A booking requires at least 1 adult. How many adults will be staying?",
+            "adults",
+            "BOOKING_COLLECT",
+        )
+
+    if child_count < 0:
+        return (
+            "The number of children cannot be negative. How many children will be staying?",
+            "children",
+            "BOOKING_COLLECT",
+        )
+
     if max_adults is not None and adult_count is not None and adult_count > max_adults:
         return (
             f"This room allows up to {max_adults} adult{'s' if max_adults != 1 else ''}. "
