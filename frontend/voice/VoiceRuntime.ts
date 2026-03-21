@@ -99,6 +99,7 @@ class VoiceRuntimeService {
 
     // Phase 10: Silence Loop Protection
     private consecutiveSilentTurns: number = 0;
+    private currentScreen: string = "IDLE";
 
     // Phase 10: Watchdog state
     private isWatchdogPaused: boolean = false;
@@ -279,9 +280,10 @@ class VoiceRuntimeService {
 
     private handleSilentTurn(): void {
         this.consecutiveSilentTurns++;
-        this.logDebug(`Silent turn ${this.consecutiveSilentTurns}/${CONFIG.MAX_SILENT_TURNS}`);
+        const maxSilentTurns = this.getMaxSilentTurns();
+        this.logDebug(`Silent turn ${this.consecutiveSilentTurns}/${maxSilentTurns}`);
 
-        if (this.consecutiveSilentTurns >= CONFIG.MAX_SILENT_TURNS) {
+        if (this.consecutiveSilentTurns >= maxSilentTurns) {
             console.log("[VoiceRuntime] Too many silent turns, aborting session");
             this.emit({ type: "VOICE_SESSION_ABORTED" });
             this.hardStopAll();
@@ -300,6 +302,13 @@ class VoiceRuntimeService {
             default:
                 return "I didn't catch that. Please speak or tap the screen.";
         }
+    }
+
+    private getMaxSilentTurns(): number {
+        if (this.currentScreen === "BOOKING_COLLECT" || this.currentScreen === "BOOKING_SUMMARY") {
+            return CONFIG.MAX_SILENT_TURNS + 2;
+        }
+        return CONFIG.MAX_SILENT_TURNS;
     }
 
     // === Phase 10: Watchdog Timer ===
@@ -450,6 +459,10 @@ class VoiceRuntimeService {
         console.log(`[VoiceRuntime] Updating timeouts: noSpeech=${noSpeech}ms, noResult=${noResult}ms`);
         this.noSpeechTimeoutMs = noSpeech;
         this.noResultTimeoutMs = noResult;
+    }
+
+    public setCurrentScreen(screen: string): void {
+        this.currentScreen = String(screen || "IDLE").trim() || "IDLE";
     }
 
     // === Full Duplex API ===

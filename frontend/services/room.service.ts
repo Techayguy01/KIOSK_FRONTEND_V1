@@ -21,6 +21,8 @@ type InflightFetch = {
 
 let roomCache: RoomCacheEntry | null = null;
 let inflightFetch: InflightFetch | null = null;
+let roomServiceBootLogged = false;
+const roomSampleLoggedKeys = new Set<string>();
 
 export class RoomServiceError extends Error {
   status: number;
@@ -151,13 +153,29 @@ function normalizeRooms(payload: any): RoomDTO[] {
   });
 
   if (import.meta.env.DEV) {
-    const roomSample = {
-      count: normalized.length,
-      firstRoom: normalized[0] || null,
-      rawFirstRoom: rawRooms[0] || null,
-    };
-    console.log("[RoomService] Rooms payload sample:", roomSample);
-    console.log("[RoomService] Rooms payload sample JSON:", JSON.stringify(roomSample, null, 2));
+    const sampleKey = `${getTenantSlug() || "default"}::${normalized.length}`;
+    if (!roomSampleLoggedKeys.has(sampleKey)) {
+      roomSampleLoggedKeys.add(sampleKey);
+      const first = normalized[0];
+      console.log("[RoomService] Rooms loaded:", {
+        tenantSlug: getTenantSlug() || "default",
+        count: normalized.length,
+        firstRoom: first
+          ? {
+              id: first.id,
+              name: first.name,
+              code: first.code,
+              price: first.price,
+              currency: first.currency,
+              maxAdults: first.maxAdults,
+              maxChildren: first.maxChildren,
+              maxTotalGuests: first.maxTotalGuests,
+              imageCount: Array.isArray(first.images) ? first.images.length : 0,
+              featureCount: Array.isArray(first.features) ? first.features.length : 0,
+            }
+          : null,
+      });
+    }
   }
 
   return normalized;
@@ -226,6 +244,20 @@ export const RoomService = {
   async getAvailableRooms(options?: { forceRefresh?: boolean }): Promise<RoomDTO[]> {
     const tenantKey = getTenantCacheKey();
     const forceRefresh = Boolean(options?.forceRefresh);
+
+    if (import.meta.env.DEV && !roomServiceBootLogged) {
+      roomServiceBootLogged = true;
+      console.log("[RoomService] Initialized", {
+        cacheTtlMs: ROOM_CACHE_TTL_MS,
+        primaryTimeoutMs: PRIMARY_FETCH_TIMEOUT_MS,
+        primaryRetryTimeoutMs: PRIMARY_RETRY_TIMEOUT_MS,
+        fallbackTimeoutMs: FALLBACK_FETCH_TIMEOUT_MS,
+      });
+    }
+
+    if (forceRefresh) {
+      roomSampleLoggedKeys.clear();
+    }
 
     if (!forceRefresh && isCacheValid(roomCache, tenantKey)) {
       return roomCache!.rooms;

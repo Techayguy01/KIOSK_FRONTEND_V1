@@ -23,6 +23,8 @@ type FaqBootstrapResponse = {
 const DB_NAME = "KioskDB";
 const DB_VERSION = 4;
 const STORE_NAME = "faqs";
+const FAQ_PREWARM_RETRY_DELAY_MS = 5000;
+let prewarmPromise: Promise<void> | null = null;
 
 function canUseIndexedDb(): boolean {
   return typeof window !== "undefined" && typeof window.indexedDB !== "undefined";
@@ -203,7 +205,21 @@ async function countStoreRows(db: IDBDatabase): Promise<number> {
   });
 }
 
-export async function prewarmTenantFaqsInIndexedDb(): Promise<void> {
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+export function prewarmTenantFaqsInIndexedDb(): Promise<void> {
+  if (prewarmPromise) {
+    console.debug("[FAQBootstrap] Prewarm already in progress or completed; skipping duplicate call");
+    return prewarmPromise;
+  }
+
+  prewarmPromise = doPrewarmTenantFaqsInIndexedDb();
+  return prewarmPromise;
+}
+
+async function doPrewarmTenantFaqsInIndexedDb(attempt = 0): Promise<void> {
   if (!canUseIndexedDb()) {
     console.log("[FAQBootstrap] IndexedDB unavailable");
     return;
@@ -221,8 +237,19 @@ export async function prewarmTenantFaqsInIndexedDb(): Promise<void> {
   const langCode = String(payload?.langCode || "").trim();
   const faqs = Array.isArray(payload?.faqs) ? payload.faqs : [];
   if (!tenantId || !tenantSlug || !langCode) {
-    console.warn("[FAQBootstrap] Missing tenant identity in FAQ response");
+    console.warn("[FAQBootstrap] Missing tenant identity in FAQ response", { tenantId, tenantSlug, langCode });
     return;
+  }
+
+  if (faqs.length === 0) {
+    console.warn(
+      `[FAQBootstrap] API returned 0 FAQs for tenant=${tenantSlug} (id=${tenantId}, lang=${langCode}, attempt=${attempt + 1}).`
+    );
+    if (attempt === 0) {
+      console.warn(`[FAQBootstrap] Retrying FAQ prewarm in ${FAQ_PREWARM_RETRY_DELAY_MS}ms in case startup data is still populating.`);
+      await sleep(FAQ_PREWARM_RETRY_DELAY_MS);
+      return doPrewarmTenantFaqsInIndexedDb(attempt + 1);
+    }
   }
 
   const db = await openDb();

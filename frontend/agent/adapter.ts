@@ -109,6 +109,9 @@ const PATTERN = {
     POSITIVE_SENTIMENT:     /thanks|good|great|cool|perfect/,
 } as const;
 
+const OPEN_FULLSCREEN_PATTERN  = /\b(open|show|see|view)\b.{0,20}\b(full\s*(?:screen|view|photo|image|size)|fullscreen)\b/i;
+const CLOSE_FULLSCREEN_PATTERN = /\b(close|exit|dismiss|go\s+back|hide)\b.{0,20}\b(full\s*(?:screen|view|photo|image|preview|size)|fullscreen|preview)\b/i;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // TYPES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -327,6 +330,7 @@ class AgentAdapterService {
     private pendingAiSpeechText: string | null = null;
     private lastBookingPromptFingerprint: string | null = null;
     private lastBookingPromptAt = 0;
+    private lastVisualPreviewCategory: string | null = null;
 
     // ── Request counters (stale-response guards) ──────────────────────────────
     private llmRequestCounter     = 0;
@@ -347,6 +351,7 @@ class AgentAdapterService {
     // ─────────────────────────────────────────────────────────────────────────
     constructor() {
         console.log("[AgentAdapter] Initialized (Optimized)");
+        VoiceRuntime.setCurrentScreen(this.state);
 
         const unsubVoice = VoiceRuntime.subscribe(this.handleVoiceEvent.bind(this));
         this.disposers.push(unsubVoice);
@@ -534,6 +539,7 @@ class AgentAdapterService {
             console.warn("[AgentAdapter] Inactivity timeout. Returning to IDLE.");
             this.hardStopAll();
             this.state = "IDLE";
+            VoiceRuntime.setCurrentScreen("IDLE");
             this.notifyListeners();
         }, ms);
     }
@@ -1242,18 +1248,42 @@ class AgentAdapterService {
             ["fireplace"],
             ["wifi","tv"],
         ];
-        const matchedGroup = keywordGroups.find(g => g.some(kw => transcript.includes(kw)));
+        const matchWord = (text: string, kw: string) =>
+            new RegExp(`\\b${kw.replace(/\s+/g, "\\s+")}\\b`).test(text);
+        const matchedGroup = keywordGroups.find(g => g.some(kw => matchWord(transcript, kw)));
         if (!matchedGroup) return null;
-        const best = images.find((img: any) => {
-            const hay = [String(img?.category || ""), String(img?.caption || ""),
+        const sorted = [...images].sort((a: any, b: any) => {
+            const aPrimary = a?.isPrimary === true ? -1 : 0;
+            const bPrimary = b?.isPrimary === true ? -1 : 0;
+            const aOrder = typeof a?.displayOrder === "number" ? a.displayOrder : 999;
+            const bOrder = typeof b?.displayOrder === "number" ? b.displayOrder : 999;
+            return (aPrimary - bPrimary) || (aOrder - bOrder);
+        });
+        const categoryMatch = sorted.find((img: any) =>
+            matchedGroup.some(kw => matchWord(String(img?.category || "").toLowerCase(), kw))
+        );
+        const tagMatch = sorted.find((img: any) => {
+            const hay = [String(img?.caption || ""),
                 ...(Array.isArray(img?.tags) ? img.tags.map((t: unknown) => String(t || "")) : []),
             ].join(" ").toLowerCase();
-            return matchedGroup.some(kw => hay.includes(kw));
+            return matchedGroup.some(kw => matchWord(hay, kw));
         });
+        const best = categoryMatch || tagMatch;
+        if (!best) {
+            return {
+                imageId: null,
+                noImageAvailable: true,
+                category: humanizeVisualLabel(matchedGroup[0]),
+                topic: humanizeVisualLabel(matchedGroup[0]),
+                caption: null,
+                tags: [],
+            };
+        }
         const imageId = String(best?.id || "").trim();
         if (!imageId) return null;
         return {
-            imageId, mode: "expand",
+            imageId,
+            mode: "expand",
             topic:   humanizeVisualLabel(best?.category || matchedGroup[0]),
             category: humanizeVisualLabel(best?.category || matchedGroup[0]),
             caption: String(best?.caption || "").trim() || null,
@@ -1288,13 +1318,51 @@ class AgentAdapterService {
 
     private tryHandleLocalVisualPreviewQuery(rawTranscript: string): boolean {
         if (!["ROOM_PREVIEW", "BOOKING_COLLECT"].includes(this.state)) return false;
+
+        if (CLOSE_FULLSCREEN_PATTERN.test(rawTranscript)) {
+            console.log("[AgentAdapter] Voice: close fullscreen");
+            window.dispatchEvent(new CustomEvent("voice-close-fullscreen"));
+            this.speak("Closed. You can continue browsing or say yes to book this room.");
+            this.dispatch("GENERAL_QUERY", { transcript: rawTranscript });
+            return true;
+        }
+
+        if (OPEN_FULLSCREEN_PATTERN.test(rawTranscript)) {
+            console.log("[AgentAdapter] Voice: open fullscreen");
+            window.dispatchEvent(new CustomEvent("voice-open-fullscreen"));
+            this.speak("Here you go. Say close full screen whenever you're done.");
+            this.dispatch("GENERAL_QUERY", { transcript: rawTranscript });
+            return true;
+        }
+
         const room = this.hydrateRoomDetails(this.viewData?.selectedRoom);
         if (!room) return false;
+
         const visualFocus = this.inferVisualFocusFromTranscript(rawTranscript, room);
         if (!visualFocus) return false;
+
+        if (visualFocus.noImageAvailable) {
+            const category = String(visualFocus.category || "that area").toLowerCase();
+            const speech = `I'm sorry, we don't have a photo of the ${category} for this room. You can ask about another area or continue with your booking.`;
+            console.log("[AgentAdapter] No image for category:", category);
+            this.speak(speech);
+            this.dispatch("GENERAL_QUERY", { transcript: rawTranscript, speech });
+            return true;
+        }
+
+        const requestedCategory = String(visualFocus.category || "").toLowerCase();
+        if (requestedCategory && requestedCategory === this.lastVisualPreviewCategory) {
+            const speech = `You're already viewing the ${requestedCategory}. Say open full screen to get a closer look, or ask about another area.`;
+            this.speak(speech);
+            this.dispatch("GENERAL_QUERY", { transcript: rawTranscript, speech });
+            return true;
+        }
+
         const speech = this.buildLocalVisualConciergeReply(visualFocus, room);
         if (!speech) return false;
-        console.log("[AgentAdapter] Handling visual preview request locally");
+
+        this.lastVisualPreviewCategory = requestedCategory || null;
+        console.log("[AgentAdapter] Handling visual preview request locally:", requestedCategory);
         this.speak(speech);
         this.dispatch("GENERAL_QUERY", { transcript: rawTranscript, selectedRoom: room, room, visualFocus, speech });
         return true;
@@ -1679,15 +1747,26 @@ class AgentAdapterService {
                 this.hasProcessedTranscript = false;
                 break;
 
-            case "VOICE_SESSION_ABORTED":
-                console.log("[AgentAdapter] Session ABORTED");
+            case "VOICE_SESSION_ABORTED": {
+                console.log("[AgentAdapter] Session ABORTED — current state:", this.state);
                 VoiceRuntime.setTurnState("IDLE");
                 this.resetVoiceLifecycle("session_aborted");
                 VoiceRuntime.clearSessionData();
-                if (!["WELCOME","ERROR","IDLE"].includes(this.state)) {
+
+                const bookingScreens = new Set(["ROOM_SELECT", "ROOM_PREVIEW", "BOOKING_COLLECT", "BOOKING_SUMMARY"]);
+
+                if (bookingScreens.has(this.state)) {
+                    console.log("[AgentAdapter] Silence abort during booking — preserving state, surfacing touch UI");
+                    const abortSpeech = this.state === "BOOKING_COLLECT" || this.state === "BOOKING_SUMMARY"
+                        ? "No worries — you can tap the fields on screen to complete your booking."
+                        : "Feel free to tap the screen to continue when you're ready.";
+                    this.speak(abortSpeech);
+                    window.dispatchEvent(new CustomEvent("voice-fallback-to-touch", { detail: { reason: "silence_abort", screen: this.state } }));
+                } else if (!["WELCOME", "ERROR", "IDLE"].includes(this.state)) {
                     this.transitionTo("WELCOME", "CANCEL_REQUESTED", { voiceRecovery: true });
                 }
                 break;
+            }
 
             case "VOICE_SESSION_ERROR":
                 console.warn(`[AgentAdapter] Session ERROR (${event.reason || "unknown"})`);
@@ -2050,6 +2129,7 @@ class AgentAdapterService {
         const prev = this.state;
         this.clearKeyDispenseTimer(`transition:${prev}->${nextState}`);
         this.state = nextState;
+        VoiceRuntime.setCurrentScreen(nextState);
 
         if (this.pendingVoiceConfirm) this.setInteractionMode(this.interactionMode, { pendingVoiceConfirm: false, reason: `transition:${prev}->${nextState}` });
 
@@ -2060,6 +2140,7 @@ class AgentAdapterService {
 
         if (nextState === "WELCOME" || nextState === "IDLE") this.clearSession(`transition:${prev}->${nextState}`);
         if (nextState !== "BOOKING_COLLECT") { this.clearActiveSlot(); this.lastBookingPromptFingerprint = null; this.lastBookingPromptAt = 0; }
+        if (nextState !== "ROOM_PREVIEW" && nextState !== "BOOKING_COLLECT") { this.lastVisualPreviewCategory = null; }
 
         this.applyPayloadData(intent || 'UNKNOWN', payload, nextState);
         this.resetInactivityTimer();
@@ -2142,6 +2223,7 @@ class AgentAdapterService {
         if (intent === "BOOKING_FIELDS_EDIT_CANCELLED" && this.state === "BOOKING_COLLECT") {
             this.manualEditModeActive = false;
             this.resetVoiceLifecycle(`interrupt:${intent}`);
+            this.notifyListeners();
             if (this.hasVoiceAuthority()) this.scheduleListeningRestart(DELAY.BOOKING_FIELDS_LISTEN, "state_transition");
             return;
         }
@@ -2294,6 +2376,7 @@ class AgentAdapterService {
 
     public _reset(): void {
         this.state = "IDLE";
+        VoiceRuntime.setCurrentScreen("IDLE");
         this.setInteractionMode("voice", { pendingVoiceConfirm: false, reason: "reset" });
         this.manualEditModeActive = false;
         this.lastIntent           = null;

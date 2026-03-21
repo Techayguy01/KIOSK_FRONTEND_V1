@@ -129,8 +129,22 @@ export function RoomPreviewStoryCarousel({
   useEffect(() => {
     if (!focusImageId) return;
     const index = visuals.findIndex((visual) => visual.id === focusImageId);
-    if (index >= 0) setStep(index);
+    if (index >= 0) {
+      setStep(index);
+      setIsPaused(true);
+    }
   }, [focusImageId, visuals]);
+
+  useEffect(() => {
+    const open = () => setIsExpanded(true);
+    const close = () => setIsExpanded(false);
+    window.addEventListener("voice-open-fullscreen", open);
+    window.addEventListener("voice-close-fullscreen", close);
+    return () => {
+      window.removeEventListener("voice-open-fullscreen", open);
+      window.removeEventListener("voice-close-fullscreen", close);
+    };
+  }, []);
 
   useEffect(() => {
     if (visuals.length <= 1 || isPaused || focusImageId) return undefined;

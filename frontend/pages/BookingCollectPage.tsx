@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useUIState } from "../state/uiContext";
 import { useBrain } from "../hooks/useBrain";
 import { motion, AnimatePresence } from "framer-motion";
@@ -247,6 +247,7 @@ export const BookingCollectPage: React.FC = () => {
         .map((room: any) => `${String(room?.id || "")}:${String(room?.name || "")}`)
         .join("|");
     const chatEndRef = useRef<HTMLDivElement>(null);
+    const manualEditorRef = useRef<HTMLDivElement>(null);
     const checkInInputRef = useRef<HTMLInputElement>(null);
     const checkOutInputRef = useRef<HTMLInputElement>(null);
     const todayDateValue = getTodayDateValue();
@@ -273,6 +274,19 @@ export const BookingCollectPage: React.FC = () => {
     const [manualError, setManualError] = useState<string | null>(null);
     const [manualStatus, setManualStatus] = useState<string | null>(null);
     const [manualForm, setManualForm] = useState<ManualBookingForm>(buildManualForm);
+
+    const focusFirstEmptyManualField = useCallback(() => {
+        const container = manualEditorRef.current;
+        if (!container) return;
+
+        const firstEmptyField = container.querySelector<HTMLElement>('[data-empty="true"], [data-slot-empty="true"]');
+        const firstField = container.querySelector<HTMLElement>("input, select");
+        const target = firstEmptyField || firstField;
+        if (!target) return;
+
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        target.focus();
+    }, []);
 
     useEffect(() => {
         chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -318,6 +332,23 @@ export const BookingCollectPage: React.FC = () => {
         effectiveBookingSlots.checkOutDate,
         roomOptionsFingerprint,
     ]);
+
+    useEffect(() => {
+        const handleFallback = (event: Event) => {
+            const detail = (event as CustomEvent).detail;
+            if (detail?.screen !== "BOOKING_COLLECT" && detail?.screen !== "BOOKING_SUMMARY") return;
+            setManualError(null);
+            setManualStatus("Voice timed out. Continue by tapping the form below.");
+            setManualForm(buildManualForm());
+            setIsEditing(true);
+            window.setTimeout(() => {
+                focusFirstEmptyManualField();
+            }, 50);
+        };
+
+        window.addEventListener("voice-fallback-to-touch", handleFallback);
+        return () => window.removeEventListener("voice-fallback-to-touch", handleFallback);
+    }, [focusFirstEmptyManualField]);
 
     const filledCount = REQUIRED_SLOTS.filter((slot) => hasValue(effectiveBookingSlots[slot])).length;
     const progress = (filledCount / REQUIRED_SLOTS.length) * 100;
@@ -624,112 +655,120 @@ export const BookingCollectPage: React.FC = () => {
                             )}
 
                             {isEditing && (
-                                <div className="mt-4 space-y-3">
-                                    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                                        <label className="block text-xs text-white/60">
-                                            Room
-                                            {availableRooms.length > 0 ? (
-                                                <select
-                                                    value={manualForm.roomId}
-                                                    onChange={(event) => handleManualFieldChange("roomId", event.target.value)}
-                                                    className={inputClassName}
-                                                >
-                                                    <option value="">Select a room</option>
-                                                    {availableRooms.map((room: any) => (
-                                                        <option key={room.id} value={room.id}>
-                                                            {room.name}
-                                                        </option>
-                                                    ))}
-                                                </select>
-                                            ) : (
+                                    <div ref={manualEditorRef} data-booking-form="true" className="mt-4 space-y-3">
+                                        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                                            <label
+                                                className="block text-xs text-white/60"
+                                            >
+                                                Room
+                                                {availableRooms.length > 0 ? (
+                                                    <select
+                                                        data-empty={(!manualForm.roomId && !manualForm.roomType).toString()}
+                                                        value={manualForm.roomId}
+                                                        onChange={(event) => handleManualFieldChange("roomId", event.target.value)}
+                                                        className={inputClassName}
+                                                    >
+                                                        <option value="">Select a room</option>
+                                                        {availableRooms.map((room: any) => (
+                                                            <option key={room.id} value={room.id}>
+                                                                {room.name}
+                                                            </option>
+                                                        ))}
+                                                    </select>
+                                                ) : (
+                                                    <input
+                                                        data-empty={(!manualForm.roomType).toString()}
+                                                        type="text"
+                                                        value={manualForm.roomType}
+                                                        onChange={(event) => handleManualFieldChange("roomType", event.target.value)}
+                                                        className={inputClassName}
+                                                        placeholder="Room name"
+                                                    />
+                                                )}
+                                            </label>
+
+                                            <label className="block text-xs text-white/60">
+                                                Adults
                                                 <input
+                                                    data-empty={(!manualForm.adults).toString()}
+                                                    type="number"
+                                                    min="1"
+                                                    value={manualForm.adults}
+                                                    onChange={(event) => handleManualFieldChange("adults", event.target.value)}
+                                                    className={inputClassName}
+                                                    placeholder="2"
+                                                />
+                                            </label>
+
+                                            <label className="block text-xs text-white/60">
+                                                Children
+                                                <input
+                                                    type="number"
+                                                    min="0"
+                                                    value={manualForm.children}
+                                                    onChange={(event) => handleManualFieldChange("children", event.target.value)}
+                                                    className={inputClassName}
+                                                    placeholder="0"
+                                                />
+                                            </label>
+
+                                            <label className="block text-xs text-white/60 md:col-span-2">
+                                                Guest name
+                                                <input
+                                                    data-empty={(!manualForm.guestName.trim()).toString()}
                                                     type="text"
-                                                    value={manualForm.roomType}
-                                                    onChange={(event) => handleManualFieldChange("roomType", event.target.value)}
+                                                    value={manualForm.guestName}
+                                                    onChange={(event) => handleManualFieldChange("guestName", event.target.value)}
                                                     className={inputClassName}
-                                                    placeholder="Room name"
+                                                    placeholder="Guest name"
                                                 />
-                                            )}
-                                        </label>
+                                            </label>
 
-                                        <label className="block text-xs text-white/60">
-                                            Adults
-                                            <input
-                                                type="number"
-                                                min="1"
-                                                value={manualForm.adults}
-                                                onChange={(event) => handleManualFieldChange("adults", event.target.value)}
-                                                className={inputClassName}
-                                                placeholder="2"
-                                            />
-                                        </label>
+                                            <label className="block text-xs text-white/60">
+                                                Check-in date
+                                                <div className="mt-1 flex items-center gap-2">
+                                                    <input
+                                                        data-slot-empty={(!manualForm.checkInDate).toString()}
+                                                        ref={checkInInputRef}
+                                                        type="date"
+                                                        min={todayDateValue}
+                                                        value={manualForm.checkInDate}
+                                                        onChange={(event) => handleManualFieldChange("checkInDate", event.target.value)}
+                                                        className={`${inputClassName} mt-0`}
+                                                    />
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => openDatePicker("checkInDate")}
+                                                        className="inline-flex items-center gap-1 rounded-lg border border-slate-600/70 px-3 py-2 text-xs text-cyan-100 transition hover:border-cyan-400"
+                                                    >
+                                                        <CalendarDays size={14} />
+                                                        Calendar
+                                                    </button>
+                                                </div>
+                                            </label>
 
-                                        <label className="block text-xs text-white/60">
-                                            Children
-                                            <input
-                                                type="number"
-                                                min="0"
-                                                value={manualForm.children}
-                                                onChange={(event) => handleManualFieldChange("children", event.target.value)}
-                                                className={inputClassName}
-                                                placeholder="0"
-                                            />
-                                        </label>
-
-                                        <label className="block text-xs text-white/60 md:col-span-2">
-                                            Guest name
-                                            <input
-                                                type="text"
-                                                value={manualForm.guestName}
-                                                onChange={(event) => handleManualFieldChange("guestName", event.target.value)}
-                                                className={inputClassName}
-                                                placeholder="Guest name"
-                                            />
-                                        </label>
-
-                                        <label className="block text-xs text-white/60">
-                                            Check-in date
-                                            <div className="mt-1 flex items-center gap-2">
-                                                <input
-                                                    ref={checkInInputRef}
-                                                    type="date"
-                                                    min={todayDateValue}
-                                                    value={manualForm.checkInDate}
-                                                    onChange={(event) => handleManualFieldChange("checkInDate", event.target.value)}
-                                                    className={`${inputClassName} mt-0`}
-                                                />
-                                                <button
-                                                    type="button"
-                                                    onClick={() => openDatePicker("checkInDate")}
-                                                    className="inline-flex items-center gap-1 rounded-lg border border-slate-600/70 px-3 py-2 text-xs text-cyan-100 transition hover:border-cyan-400"
-                                                >
-                                                    <CalendarDays size={14} />
-                                                    Calendar
-                                                </button>
-                                            </div>
-                                        </label>
-
-                                        <label className="block text-xs text-white/60">
-                                            Check-out date
-                                            <div className="mt-1 flex items-center gap-2">
-                                                <input
-                                                    ref={checkOutInputRef}
-                                                    type="date"
-                                                    min={manualForm.checkInDate || todayDateValue}
-                                                    value={manualForm.checkOutDate}
-                                                    onChange={(event) => handleManualFieldChange("checkOutDate", event.target.value)}
-                                                    className={`${inputClassName} mt-0`}
-                                                />
-                                                <button
-                                                    type="button"
-                                                    onClick={() => openDatePicker("checkOutDate")}
-                                                    className="inline-flex items-center gap-1 rounded-lg border border-slate-600/70 px-3 py-2 text-xs text-cyan-100 transition hover:border-cyan-400"
-                                                >
-                                                    <CalendarDays size={14} />
-                                                    Calendar
-                                                </button>
-                                            </div>
-                                        </label>
+                                            <label className="block text-xs text-white/60">
+                                                Check-out date
+                                                <div className="mt-1 flex items-center gap-2">
+                                                    <input
+                                                        data-slot-empty={(!manualForm.checkOutDate).toString()}
+                                                        ref={checkOutInputRef}
+                                                        type="date"
+                                                        min={manualForm.checkInDate || todayDateValue}
+                                                        value={manualForm.checkOutDate}
+                                                        onChange={(event) => handleManualFieldChange("checkOutDate", event.target.value)}
+                                                        className={`${inputClassName} mt-0`}
+                                                    />
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => openDatePicker("checkOutDate")}
+                                                        className="inline-flex items-center gap-1 rounded-lg border border-slate-600/70 px-3 py-2 text-xs text-cyan-100 transition hover:border-cyan-400"
+                                                    >
+                                                        <CalendarDays size={14} />
+                                                        Calendar
+                                                    </button>
+                                                </div>
+                                            </label>
                                     </div>
 
                                     {manualError && (

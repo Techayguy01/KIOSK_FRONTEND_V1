@@ -32,12 +32,16 @@ NUMBER_WORDS: dict[str, int] = {
     "zero": 0,
     "one": 1,
     "two": 2,
+    "to": 2,
+    "too": 2,
     "three": 3,
     "four": 4,
+    "for": 4,
     "five": 5,
     "six": 6,
     "seven": 7,
     "eight": 8,
+    "ate": 8,
     "nine": 9,
     "ten": 10,
     "eleven": 11,
@@ -96,6 +100,16 @@ _RELATIVE_RANGE_RE = re.compile(
 _ISO_DATE_RE = re.compile(r"\b(20\d{2}-\d{2}-\d{2})\b")
 _SINGLE_RELATIVE_RE = re.compile(r"\b(day after tomorrow|tomorrow|today)\b")
 _EXPLICIT_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+_LABELED_DATE_VALUE_PATTERN = (
+    rf"(?P<value>(?:day after tomorrow|tomorrow|today|20\d{{2}}-\d{{2}}-\d{{2}}|"
+    rf"{MONTH_REGEX}\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s*\d{{4}})?))"
+)
+_CHECK_IN_LABELED_DATE_RE = re.compile(
+    rf"\bcheck(?:[\s-]?in| and)(?:\s+date)?(?:\s+(?:it\s+is|is|for|on))?\s+{_LABELED_DATE_VALUE_PATTERN}\b"
+)
+_CHECK_OUT_LABELED_DATE_RE = re.compile(
+    rf"\bcheck[\s-]?out(?:\s+date)?(?:\s+(?:it\s+is|is|for|on))?\s+{_LABELED_DATE_VALUE_PATTERN}\b"
+)
 
 # FIX DUP-01 (continued): Build the night-word pattern from NUMBER_WORDS once.
 _NIGHT_WORD_PATTERN = re.compile(
@@ -539,23 +553,56 @@ def _extract_dates_deterministically(transcript: str) -> dict[str, str]:
 
     text = transcript.strip().lower()
     today = date.today()
+    relative_dates = {
+        "today": today,
+        "tomorrow": today + timedelta(days=1),
+        "day after tomorrow": today + timedelta(days=2),
+    }
+
+    def _merge_labeled_dates(candidate: dict[str, str]) -> dict[str, str]:
+        merged = dict(candidate)
+        for key, value in labeled_dates.items():
+            merged[key] = value
+        return merged
+
+    def _resolve_date_value(raw_value: Optional[str]) -> Optional[date]:
+        normalized = str(raw_value or "").strip().lower().strip(" .")
+        if not normalized:
+            return None
+        if normalized in relative_dates:
+            return relative_dates[normalized]
+        if _ISO_DATE_RE.fullmatch(normalized):
+            return _parse_iso_date(normalized)
+        month_match = _MONTH_DAY_RE.search(normalized)
+        if month_match:
+            return _resolve_calendar_date(month_match.group(1), month_match.group(2), month_match.group(3), today)
+        return None
+
+    labeled_dates: dict[str, str] = {}
+    labeled_check_in = _CHECK_IN_LABELED_DATE_RE.search(text)
+    if labeled_check_in:
+        resolved_check_in = _resolve_date_value(labeled_check_in.group("value"))
+        if resolved_check_in:
+            labeled_dates["check_in_date"] = resolved_check_in.isoformat()
+    labeled_check_out = _CHECK_OUT_LABELED_DATE_RE.search(text)
+    if labeled_check_out:
+        resolved_check_out = _resolve_date_value(labeled_check_out.group("value"))
+        if resolved_check_out:
+            labeled_dates["check_out_date"] = resolved_check_out.isoformat()
+    if len(labeled_dates) == 2:
+        return labeled_dates
 
     relative_range = _RELATIVE_RANGE_RE.search(text)
     if relative_range:
         first = relative_range.group(1)
         second = relative_range.group(2)
-        relative_dates = {
-            "today": today,
-            "tomorrow": today + timedelta(days=1),
-            "day after tomorrow": today + timedelta(days=2),
-        }
         check_in = relative_dates.get(first)
         check_out = relative_dates.get(second)
         if check_in and check_out:
-            return {
+            return _merge_labeled_dates({
                 "check_in_date": check_in.isoformat(),
                 "check_out_date": check_out.isoformat(),
-            }
+            })
 
     month_range = _MONTH_RANGE_RE.search(text)
     if month_range:
@@ -572,26 +619,21 @@ def _extract_dates_deterministically(transcript: str) -> dict[str, str]:
             today,
         )
         if check_in and check_out:
-            return {
+            return _merge_labeled_dates({
                 "check_in_date": check_in.isoformat(),
                 "check_out_date": check_out.isoformat(),
-            }
+            })
 
     iso_dates = _ISO_DATE_RE.findall(text)
     if len(iso_dates) >= 2:
-        return {
+        return _merge_labeled_dates({
             "check_in_date": iso_dates[0],
             "check_out_date": iso_dates[1],
-        }
+        })
 
     single_relative_match = _SINGLE_RELATIVE_RE.search(text)
     if single_relative_match:
         word = single_relative_match.group(1)
-        relative_dates = {
-            "today": today,
-            "tomorrow": today + timedelta(days=1),
-            "day after tomorrow": today + timedelta(days=2),
-        }
         single_relative = relative_dates.get(word)
         if single_relative:
             # FIX BUG-03: Log when only a check-in date is resolved so missing
@@ -600,10 +642,10 @@ def _extract_dates_deterministically(transcript: str) -> dict[str, str]:
                 f"[DateNormalize] Only check_in_date resolved from relative '{word}'. "
                 "check_out_date will require further input or nights derivation."
             )
-            return {"check_in_date": single_relative.isoformat()}
+            return _merge_labeled_dates({"check_in_date": single_relative.isoformat()})
 
     if iso_dates:
-        return {"check_in_date": iso_dates[0]}
+        return _merge_labeled_dates({"check_in_date": iso_dates[0]})
 
     month_day_matches = list(_MONTH_DAY_RE.finditer(text))
     if month_day_matches:
@@ -613,19 +655,19 @@ def _extract_dates_deterministically(transcript: str) -> dict[str, str]:
             if parsed:
                 parsed_dates.append(parsed)
         if len(parsed_dates) >= 2:
-            return {
+            return _merge_labeled_dates({
                 "check_in_date": parsed_dates[0].isoformat(),
                 "check_out_date": parsed_dates[1].isoformat(),
-            }
+            })
         if len(parsed_dates) == 1:
             # FIX BUG-03: Same log for single month/day match.
             print(
                 f"[DateNormalize] Only check_in_date resolved from month/day pattern. "
                 "check_out_date will require further input or nights derivation."
             )
-            return {"check_in_date": parsed_dates[0].isoformat()}
+            return _merge_labeled_dates({"check_in_date": parsed_dates[0].isoformat()})
 
-    return {}
+    return labeled_dates
 
 
 def _extract_requested_nights(transcript: str) -> Optional[int]:
@@ -1744,13 +1786,13 @@ def _extract_guest_counts_deterministically(transcript: str) -> dict[str, int]:
         return {}
 
     slots: dict[str, int] = {}
-    child_match = re.search(r"\b(\d+|one|two|three|four|five|six)\s*(?:child|children|kid|kids)\b", text)
+    child_match = re.search(r"\b(\d+|one|two|to|too|three|four|for|five|six)\s*(?:child|children|kid|kids)\b", text)
     if child_match:
         child_count = _parse_spoken_number(child_match.group(1))
         if child_count is not None:
             slots["children"] = child_count
 
-    adult_match = re.search(r"\b(\d+|one|two|three|four|five|six)\s*adults?\b", text)
+    adult_match = re.search(r"\b(\d+|one|two|to|too|three|four|for|five|six)\s*adults?\b", text)
     if adult_match:
         adult_count = _parse_spoken_number(adult_match.group(1))
         if adult_count is not None and adult_count >= 1:
@@ -1761,9 +1803,9 @@ def _extract_guest_counts_deterministically(transcript: str) -> dict[str, int]:
         slots["adults"] = 1
         return slots
 
-    total_match = re.search(r"\b(\d+|one|two|three|four|five|six)\s*(?:people|guests?|persons?)\b", text)
+    total_match = re.search(r"\b(\d+|one|two|to|too|three|four|for|five|six)\s*(?:people|guests?|persons?)\b", text)
     if not total_match:
-        total_match = re.search(r"\bwe are\s+(\d+|one|two|three|four|five|six)\b", text)
+        total_match = re.search(r"\bwe are\s+(\d+|one|two|to|too|three|four|for|five|six)\b", text)
     if total_match:
         total_count = _parse_spoken_number(total_match.group(1))
         if total_count is not None and total_count >= 1:
@@ -1779,6 +1821,16 @@ def _extract_guest_name_deterministically(transcript: str) -> Optional[str]:
     text = (transcript or "").strip()
     if not text:
         return None
+
+    mid_sentence_match = re.search(
+        r"(?:guest\s+name\s+is|name\s+is|the\s+name\s+is)\s+([A-Za-z][A-Za-z .'-]{1,60}?)(?:\s*(?:,|;|\.|$)|\s+(?=\d|check|adult|child|today|tomorrow|night|room))",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if mid_sentence_match:
+        cleaned = mid_sentence_match.group(1).strip(" .")
+        if cleaned and len(cleaned.split()) <= 6:
+            return cleaned.title()
 
     prefix_match = re.match(
         r"^(?:my name is|name is|guest name is|the name is|i am|i'm|this is)\s+(.+)$",
