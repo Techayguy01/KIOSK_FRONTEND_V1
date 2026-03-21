@@ -100,10 +100,10 @@ class TestRoomSelectionPipeline:
             )
 
         assert result["resolved_intent"] == "BOOK_ROOM"
-        assert result["next_ui_screen"] == "BOOKING_COLLECT"
-        assert result["active_slot"] == "adults"
+        assert result["next_ui_screen"] == "ROOM_PREVIEW"
+        assert result["active_slot"] is None
         assert result["booking_slots"].room_type == "Deluxe Ocean View"
-        assert "how many adults" in result["speech_response"].lower()
+        assert "take a look" in result["speech_response"].lower()
 
 
 class TestFullBookingFlow:
@@ -122,9 +122,37 @@ class TestFullBookingFlow:
             result = await _route_then_book(
                 _make_state("Executive Suite", screen="ROOM_SELECT")
             )
-        assert result["next_ui_screen"] == "BOOKING_COLLECT"
-        assert result["active_slot"] == "adults"
+        assert result["next_ui_screen"] == "ROOM_PREVIEW"
+        assert result["active_slot"] is None
         assert result["booking_slots"].room_type == "Executive Suite"
+
+    @pytest.mark.asyncio
+    async def test_room_select_keeps_guest_counts_without_skipping_room_choice(self):
+        with patch("agent.nodes.get_llm_response") as mock_llm:
+            mock_llm.side_effect = [_mock_router_response("PROVIDE_GUESTS", 0.9)]
+            result = await _route_then_book(
+                _make_state("2 adults and 1 child", screen="ROOM_SELECT")
+            )
+        assert result["resolved_intent"] == "PROVIDE_GUESTS"
+        assert result["next_ui_screen"] == "ROOM_SELECT"
+        assert result["active_slot"] == "room_type"
+        assert result["booking_slots"].adults == 2
+        assert result["booking_slots"].children == 1
+        assert "which room would you like to explore" in result["speech_response"].lower()
+
+    @pytest.mark.asyncio
+    async def test_room_select_keeps_dates_without_skipping_room_choice(self):
+        with patch("agent.nodes.get_llm_response") as mock_llm:
+            mock_llm.side_effect = [_mock_router_response("PROVIDE_DATES", 0.9)]
+            result = await _route_then_book(
+                _make_state("April 1 to April 4", screen="ROOM_SELECT")
+            )
+        assert result["resolved_intent"] == "PROVIDE_DATES"
+        assert result["next_ui_screen"] == "ROOM_SELECT"
+        assert result["active_slot"] == "room_type"
+        assert result["booking_slots"].check_in_date == "2026-04-01"
+        assert result["booking_slots"].check_out_date == "2026-04-04"
+        assert "which room would you like to explore" in result["speech_response"].lower()
 
     @pytest.mark.asyncio
     async def test_provide_guests_from_booking_collect(self):
@@ -142,7 +170,7 @@ class TestFullBookingFlow:
         assert result["next_ui_screen"] == "BOOKING_COLLECT"
         assert result["booking_slots"].adults == 2
         assert result["active_slot"] == "check_in_date"
-        assert "when would you like to check in" in result["speech_response"].lower()
+        assert "check in date" in result["speech_response"].lower()
 
     @pytest.mark.asyncio
     async def test_provide_dates_from_booking_collect(self):

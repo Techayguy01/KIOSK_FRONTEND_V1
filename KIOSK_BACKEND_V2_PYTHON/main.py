@@ -45,6 +45,17 @@ async def startup_event():
     except Exception as exc:
         print(f"[Startup] SemanticClassifier init failed (non-fatal): {exc}")
 
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Flush buffered classifier review logs on shutdown."""
+    try:
+        from agent.misclassification_logger import flush as flush_classification_log
+
+        flush_classification_log()
+    except Exception as exc:
+        print(f"[Shutdown] Classification log flush failed (non-fatal): {exc}")
+
 @app.get("/health")
 async def health_check():
     """Simple endpoint to verify the server is running."""

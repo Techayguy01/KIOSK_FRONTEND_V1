@@ -17,7 +17,13 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from agent.intent_config import INTENT_EXAMPLES, VALID_INTENTS_PER_SCREEN
+from agent.intent_config import (
+    INTENT_EXAMPLES,
+    get_min_confidence,
+    get_valid_intents,
+    should_llm_fallback,
+)
+from agent.stt_normalizer import normalize_for_routing
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +43,8 @@ class SemanticResult:
     matched_phrase: str
     is_out_of_domain: bool
     should_escalate_to_llm: bool
+    normalized_transcript: str
+    source: str = "semantic_classifier"
 
 
 async def initialize_semantic_classifier() -> None:
@@ -99,6 +107,9 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
 async def classify_intent_semantically(
     transcript: str,
     current_screen: str,
+    *,
+    session_id: str = "",
+    language: str = "en",
 ) -> Optional[SemanticResult]:
     """
     Classify the user's transcript by embedding similarity.
@@ -116,13 +127,25 @@ async def classify_intent_semantically(
     if not text:
         return None
 
+    normalized_text, is_filler = normalize_for_routing(text)
+    if is_filler:
+        return SemanticResult(
+            intent="IDLE",
+            confidence=1.0,
+            matched_phrase="",
+            is_out_of_domain=False,
+            should_escalate_to_llm=False,
+            normalized_transcript=normalized_text,
+            source="stt_normalizer",
+        )
+
     from core.llm import get_embedding, translate_to_english
 
     try:
-        english_text = await asyncio.to_thread(translate_to_english, text)
-        english_text = (english_text or text).strip()
+        english_text = await asyncio.to_thread(translate_to_english, normalized_text)
+        english_text = (english_text or normalized_text).strip()
     except Exception:
-        english_text = text
+        english_text = normalized_text
 
     try:
         query_vector = await asyncio.to_thread(get_embedding, english_text)
@@ -133,7 +156,7 @@ async def classify_intent_semantically(
     if not query_vector:
         return None
 
-    valid_intents = VALID_INTENTS_PER_SCREEN.get(current_screen, list(INTENT_EXAMPLES.keys()))
+    valid_intents = get_valid_intents(current_screen)
     if not valid_intents:
         return None
 
@@ -156,18 +179,28 @@ async def classify_intent_semantically(
         best_intent,
         best_score,
         best_phrase,
-        text,
+        normalized_text,
     )
 
     if best_intent is None:
         return None
 
     is_out_of_domain = best_score < OUT_OF_DOMAIN_THRESHOLD
-    should_escalate = LOW_CONFIDENCE_THRESHOLD <= best_score < HIGH_CONFIDENCE_THRESHOLD
+    min_confidence = get_min_confidence(best_intent)
+    should_escalate = False
+
+    if best_score < min_confidence:
+        should_escalate = True
+    elif should_llm_fallback(best_intent) and best_score < HIGH_CONFIDENCE_THRESHOLD:
+        should_escalate = True
+    elif LOW_CONFIDENCE_THRESHOLD <= best_score < HIGH_CONFIDENCE_THRESHOLD:
+        should_escalate = True
+
     return SemanticResult(
         intent=best_intent,
         confidence=round(best_score, 3),
         matched_phrase=best_phrase,
         is_out_of_domain=is_out_of_domain,
         should_escalate_to_llm=should_escalate,
+        normalized_transcript=normalized_text,
     )

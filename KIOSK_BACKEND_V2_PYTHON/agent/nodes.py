@@ -8,6 +8,10 @@ from core.llm import get_llm_response
 from services.transcript_understanding import looks_like_room_discovery_repairable
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CONSTANTS
+# ─────────────────────────────────────────────────────────────────────────────
+
 LANGUAGE_DISPLAY_NAMES = {
     "en": "English",
     "hi": "Hindi",
@@ -22,7 +26,9 @@ LANGUAGE_DISPLAY_NAMES = {
     "te": "Telugu",
 }
 
-NUMBER_WORDS = {
+# FIX DUP-01: Single authoritative number-word map used everywhere.
+# The original re-declared a near-identical dict inside _extract_requested_nights().
+NUMBER_WORDS: dict[str, int] = {
     "zero": 0,
     "one": 1,
     "two": 2,
@@ -71,6 +77,52 @@ MONTH_REGEX = (
     r"oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
 )
 
+# FIX DUP-02: Compile month-related patterns once at module load instead of
+# re-compiling on every call to _extract_dates_deterministically().
+_MONTH_DAY_RE = re.compile(
+    rf"\b({MONTH_REGEX})\s+(\d{{1,2}})(?:st|nd|rd|th)?(?:,?\s*(\d{{4}}))?\b"
+)
+_MONTH_RANGE_RE = re.compile(
+    rf"\b(?:from\s+)?(?P<month1>{MONTH_REGEX})\s+(?P<day1>\d{{1,2}})(?:st|nd|rd|th)?"
+    rf"(?:,?\s*(?P<year1>\d{{4}}))?"
+    rf"\s*(?:to|until|through|till|-)\s*"
+    rf"(?:(?P<month2>{MONTH_REGEX})\s+)?(?P<day2>\d{{1,2}})(?:st|nd|rd|th)?"
+    rf"(?:,?\s*(?P<year2>\d{{4}}))?\b"
+)
+_RELATIVE_RANGE_RE = re.compile(
+    r"\b(today|tomorrow|day after tomorrow)\b\s*(?:to|until|through|till|-)\s*"
+    r"\b(today|tomorrow|day after tomorrow)\b"
+)
+_ISO_DATE_RE = re.compile(r"\b(20\d{2}-\d{2}-\d{2})\b")
+_SINGLE_RELATIVE_RE = re.compile(r"\b(day after tomorrow|tomorrow|today)\b")
+_EXPLICIT_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+
+# FIX DUP-01 (continued): Build the night-word pattern from NUMBER_WORDS once.
+_NIGHT_WORD_PATTERN = re.compile(
+    r"\b(?:for\s+)?(" + "|".join(k for k in NUMBER_WORDS if k != "zero") + r")\s+nights?\b"
+)
+_NIGHT_DIGIT_RE = re.compile(r"\b(?:for\s+)?(\d{1,2})\s+nights?\b")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ROOM TRANSCRIPT CONSTANTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+ROOM_TRANSCRIPT_PREFIX_PATTERNS = [
+    r"^(?:i\s+want\s+to\s+book|i\s+want\s+to|i\s+want|i\s+would\s+like\s+to\s+book|i\s+would\s+like\s+to|would\s+like\s+to\s+book|would\s+like\s+to|can\s+i\s+get|can\s+i\s+have|please\s+book|please\s+choose|please\s+select|book|choose|select|take|prefer)\s+",
+]
+
+# FIX LOGIC-02: Removed "book" and "booking" — they are already stripped by
+# ROOM_TRANSCRIPT_PREFIX_PATTERNS, so including them here was redundant.
+ROOM_TRANSCRIPT_STOPWORDS = {
+    "i", "want", "to", "would", "like", "please", "can", "get", "have",
+    "need", "a", "an", "the", "for", "me", "my", "room", "rooms", "type",
+    "option", "options", "choose", "select", "take", "prefer", "another",
+    "different",
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LANGUAGE HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _response_language_instruction(language: str) -> str:
     code = (language or "en").strip().lower()
@@ -88,17 +140,17 @@ def _response_language_instruction(language: str) -> str:
     return f"Respond in {language_name} (language code: {code})."
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# ROOM MATCHING
+# ─────────────────────────────────────────────────────────────────────────────
+
 def find_best_room_match(extracted: str, valid_options: list[str]) -> Optional[str]:
     """Uses fuzzy matching to find the closest valid room type."""
     if not extracted or not valid_options:
         return None
-    
-    # Try exact match first (case-insensitive)
     for opt in valid_options:
         if extracted.lower() == opt.lower():
             return opt
-            
-    # Try fuzzy match
     matches = difflib.get_close_matches(extracted, valid_options, n=1, cutoff=0.6)
     return matches[0] if matches else None
 
@@ -115,6 +167,10 @@ def _room_prompt_catalog(room_inventory: list[RoomInventoryItem]) -> list[dict]:
         for room in room_inventory
     ]
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FORMATTING HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _join_spoken_list(items: list[str]) -> str:
     clean = [item.strip() for item in items if item and item.strip()]
@@ -157,6 +213,10 @@ def _format_date_for_speech(raw_value: Optional[str]) -> Optional[str]:
         label = f"{label}, {parsed.year}"
     return label
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ROOM PRESENTATION BUILDERS
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _build_room_presentation(room_inventory: list[RoomInventoryItem]) -> str:
     if not room_inventory:
@@ -309,7 +369,13 @@ def _build_room_comparison_prompt(compared_rooms: list[RoomInventoryItem]) -> st
     )
 
 
-def _normalize_text(value: str) -> str:
+# ─────────────────────────────────────────────────────────────────────────────
+# TEXT NORMALISATION & TOKENISATION
+# ─────────────────────────────────────────────────────────────────────────────
+
+# FIX BUG-01: Annotated as Optional[str] to match actual usage (callers pass
+# None-guarded expressions, but the type hint previously claimed plain str).
+def _normalize_text(value: Optional[str]) -> str:
     text = (value or "").strip().lower()
     return (
         text
@@ -317,16 +383,6 @@ def _normalize_text(value: str) -> str:
         .replace("sweets", "suites")
         .replace("luxary", "luxury")
     )
-
-
-ROOM_TRANSCRIPT_PREFIX_PATTERNS = [
-    r"^(?:i\s+want\s+to\s+book|i\s+want\s+to|i\s+want|i\s+would\s+like\s+to\s+book|i\s+would\s+like\s+to|would\s+like\s+to\s+book|would\s+like\s+to|can\s+i\s+get|can\s+i\s+have|please\s+book|please\s+choose|please\s+select|book|choose|select|take|prefer)\s+",
-]
-ROOM_TRANSCRIPT_STOPWORDS = {
-    "i", "want", "to", "book", "booking", "would", "like", "please", "can", "get", "have",
-    "need", "a", "an", "the", "for", "me", "my", "room", "rooms", "type", "option", "options",
-    "choose", "select", "take", "prefer", "another", "different",
-}
 
 
 def _tokenize_text(value: str) -> list[str]:
@@ -390,8 +446,12 @@ def _fallback_booking_prompt(
     return "Whenever you're ready, please share the next booking detail."
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# DATE HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+
 def _has_explicit_year(transcript: str) -> bool:
-    return bool(re.search(r"\b(?:19|20)\d{2}\b", transcript or ""))
+    return bool(_EXPLICIT_YEAR_RE.search(transcript or ""))
 
 
 def _parse_iso_date(raw_value: Optional[str]) -> Optional[date]:
@@ -411,6 +471,12 @@ def _replace_year_safely(value: date, target_year: int) -> date:
         return value.replace(year=target_year, day=28)
 
 
+# Defensive cap for _anchor_yearless_date: prevents runaway iteration on
+# malformed input. The loop is monotonically advancing for valid dates, but
+# the cap keeps behaviour bounded on unexpected edge cases.
+_MAX_YEAR_ADVANCE = 5
+
+
 def _anchor_yearless_date(raw_value: Optional[str], transcript: str, today: date) -> Optional[str]:
     parsed = _parse_iso_date(raw_value)
     if not parsed:
@@ -420,9 +486,19 @@ def _anchor_yearless_date(raw_value: Optional[str], transcript: str, today: date
         return parsed.isoformat()
 
     anchored = parsed
-    # Keep yearless dates in the present/future booking window.
-    while anchored < today:
+    for _ in range(_MAX_YEAR_ADVANCE):
+        if anchored >= today:
+            break
         anchored = _replace_year_safely(anchored, anchored.year + 1)
+
+    if anchored < today:
+        # Safety: if still behind after max advances, leave the original value
+        # and log — do not loop further.
+        print(
+            f"[DateNormalize] WARNING: Could not anchor {parsed.isoformat()} "
+            f"to a future date within {_MAX_YEAR_ADVANCE} years. Keeping original."
+        )
+        return parsed.isoformat()
 
     if anchored != parsed:
         print(
@@ -432,7 +508,9 @@ def _anchor_yearless_date(raw_value: Optional[str], transcript: str, today: date
     return anchored.isoformat()
 
 
-def _resolve_calendar_date(month_token: str, day_value: str, year_value: Optional[str], today: date) -> Optional[date]:
+def _resolve_calendar_date(
+    month_token: str, day_value: str, year_value: Optional[str], today: date
+) -> Optional[date]:
     month = MONTH_NAME_TO_NUMBER.get(str(month_token or "").strip().lower())
     day = _parse_spoken_number(day_value)
     if not month or day is None:
@@ -453,16 +531,16 @@ def _resolve_calendar_date(month_token: str, day_value: str, year_value: Optiona
 
 
 def _extract_dates_deterministically(transcript: str) -> dict[str, str]:
+    # FIX DUP-02: Uses pre-compiled patterns (_RELATIVE_RANGE_RE, _MONTH_RANGE_RE,
+    # _ISO_DATE_RE, _SINGLE_RELATIVE_RE, _MONTH_DAY_RE) instead of re-compiling
+    # on every call.
     if not transcript:
         return {}
 
     text = transcript.strip().lower()
     today = date.today()
 
-    relative_range = re.search(
-        r"\b(today|tomorrow|day after tomorrow)\b\s*(?:to|until|through|till|-)\s*\b(today|tomorrow|day after tomorrow)\b",
-        text,
-    )
+    relative_range = _RELATIVE_RANGE_RE.search(text)
     if relative_range:
         first = relative_range.group(1)
         second = relative_range.group(2)
@@ -479,11 +557,7 @@ def _extract_dates_deterministically(transcript: str) -> dict[str, str]:
                 "check_out_date": check_out.isoformat(),
             }
 
-    month_range = re.search(
-        rf"\b(?:from\s+)?(?P<month1>{MONTH_REGEX})\s+(?P<day1>\d{{1,2}})(?:st|nd|rd|th)?(?:,?\s*(?P<year1>\d{{4}}))?"
-        rf"\s*(?:to|until|through|till|-)\s*(?:(?P<month2>{MONTH_REGEX})\s+)?(?P<day2>\d{{1,2}})(?:st|nd|rd|th)?(?:,?\s*(?P<year2>\d{{4}}))?\b",
-        text,
-    )
+    month_range = _MONTH_RANGE_RE.search(text)
     if month_range:
         check_in = _resolve_calendar_date(
             month_range.group("month1"),
@@ -503,32 +577,35 @@ def _extract_dates_deterministically(transcript: str) -> dict[str, str]:
                 "check_out_date": check_out.isoformat(),
             }
 
-    iso_dates = re.findall(r"\b(20\d{2}-\d{2}-\d{2})\b", text)
+    iso_dates = _ISO_DATE_RE.findall(text)
     if len(iso_dates) >= 2:
         return {
             "check_in_date": iso_dates[0],
             "check_out_date": iso_dates[1],
         }
 
-    single_relative: Optional[date] = None
-    if re.search(r"\bday after tomorrow\b", text):
-        single_relative = today + timedelta(days=2)
-    elif re.search(r"\btomorrow\b", text):
-        single_relative = today + timedelta(days=1)
-    elif re.search(r"\btoday\b", text):
-        single_relative = today
-    if single_relative:
-        return {"check_in_date": single_relative.isoformat()}
+    single_relative_match = _SINGLE_RELATIVE_RE.search(text)
+    if single_relative_match:
+        word = single_relative_match.group(1)
+        relative_dates = {
+            "today": today,
+            "tomorrow": today + timedelta(days=1),
+            "day after tomorrow": today + timedelta(days=2),
+        }
+        single_relative = relative_dates.get(word)
+        if single_relative:
+            # FIX BUG-03: Log when only a check-in date is resolved so missing
+            # checkout is traceable rather than silently incomplete.
+            print(
+                f"[DateNormalize] Only check_in_date resolved from relative '{word}'. "
+                "check_out_date will require further input or nights derivation."
+            )
+            return {"check_in_date": single_relative.isoformat()}
 
     if iso_dates:
         return {"check_in_date": iso_dates[0]}
 
-    month_day_matches = list(
-        re.finditer(
-            rf"\b({MONTH_REGEX})\s+(\d{{1,2}})(?:st|nd|rd|th)?(?:,?\s*(\d{{4}}))?\b",
-            text,
-        )
-    )
+    month_day_matches = list(_MONTH_DAY_RE.finditer(text))
     if month_day_matches:
         parsed_dates: list[date] = []
         for match in month_day_matches[:2]:
@@ -541,43 +618,34 @@ def _extract_dates_deterministically(transcript: str) -> dict[str, str]:
                 "check_out_date": parsed_dates[1].isoformat(),
             }
         if len(parsed_dates) == 1:
+            # FIX BUG-03: Same log for single month/day match.
+            print(
+                f"[DateNormalize] Only check_in_date resolved from month/day pattern. "
+                "check_out_date will require further input or nights derivation."
+            )
             return {"check_in_date": parsed_dates[0].isoformat()}
 
     return {}
 
 
 def _extract_requested_nights(transcript: str) -> Optional[int]:
+    # FIX DUP-01: Uses module-level NUMBER_WORDS and pre-compiled _NIGHT_DIGIT_RE /
+    # _NIGHT_WORD_PATTERN instead of a re-declared inline word_to_number dict.
     if not transcript:
         return None
 
     normalized = transcript.lower()
-    digit_match = re.search(r"\b(?:for\s+)?(\d{1,2})\s+nights?\b", normalized)
+
+    digit_match = _NIGHT_DIGIT_RE.search(normalized)
     if digit_match:
         nights = int(digit_match.group(1))
         return nights if nights > 0 else None
 
-    word_to_number = {
-        "one": 1,
-        "two": 2,
-        "three": 3,
-        "four": 4,
-        "five": 5,
-        "six": 6,
-        "seven": 7,
-        "eight": 8,
-        "nine": 9,
-        "ten": 10,
-        "eleven": 11,
-        "twelve": 12,
-    }
-    word_match = re.search(
-        r"\b(?:for\s+)?(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+nights?\b",
-        normalized,
-    )
+    word_match = _NIGHT_WORD_PATTERN.search(normalized)
     if not word_match:
         return None
 
-    return word_to_number.get(word_match.group(1))
+    return NUMBER_WORDS.get(word_match.group(1))
 
 
 def _normalize_booking_dates(
@@ -588,7 +656,6 @@ def _normalize_booking_dates(
     today = date.today()
     slot_values = slots.model_dump()
 
-    # Anchor yearless model output to current/future dates.
     slot_values["check_in_date"] = _anchor_yearless_date(slot_values.get("check_in_date"), transcript, today)
     slot_values["check_out_date"] = _anchor_yearless_date(slot_values.get("check_out_date"), transcript, today)
 
@@ -602,7 +669,6 @@ def _normalize_booking_dates(
     nights_value = slot_values.get("nights")
     nights = int(nights_value) if isinstance(nights_value, int) and nights_value > 0 else None
 
-    # If user says "for N nights", derive checkout from check-in deterministically.
     if check_in and nights:
         inferred_checkout = check_in + timedelta(days=nights)
         if not check_out or requested_nights is not None:
@@ -613,7 +679,6 @@ def _normalize_booking_dates(
                 f"from check_in_date={check_in.isoformat()} + nights={nights}"
             )
 
-    # Never allow checkout to regress behind or equal check-in.
     if check_in and check_out and check_out <= check_in:
         check_out = check_in + timedelta(days=1)
         slot_values["check_out_date"] = check_out.isoformat()
@@ -622,19 +687,30 @@ def _normalize_booking_dates(
             f"to keep it after check_in_date={check_in.isoformat()}"
         )
 
-    # Keep nights coherent with final date pair.
     if check_in and check_out:
         computed_nights = max(1, (check_out - check_in).days)
         slot_values["nights"] = computed_nights
 
+    # Guard: only write total_price when price is meaningful (> 0). A zero or
+    # missing room price would store 0.0, which could cause incorrect billing
+    # display in the booking summary and wrong downstream price calculations.
+    # Note: BookingSlots.is_complete() does NOT check total_price — this guard
+    # is purely about data correctness, not completion gating.
     if selected_room and slot_values.get("nights"):
         room_price = float(selected_room.price or 0)
-        slot_values["total_price"] = round(room_price * int(slot_values["nights"]), 2)
+        if room_price > 0:
+            slot_values["total_price"] = round(room_price * int(slot_values["nights"]), 2)
 
     return BookingSlots(**slot_values)
 
 
-def _find_room_from_inventory(room_inventory: list[RoomInventoryItem], extracted: str) -> Optional[RoomInventoryItem]:
+# ─────────────────────────────────────────────────────────────────────────────
+# ROOM INVENTORY LOOKUP
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _find_room_from_inventory(
+    room_inventory: list[RoomInventoryItem], extracted: str
+) -> Optional[RoomInventoryItem]:
     if not extracted or not room_inventory:
         return None
 
@@ -668,6 +744,13 @@ def _find_room_from_inventory(room_inventory: list[RoomInventoryItem], extracted
         if not transcript_tokens:
             return None
 
+        # Token scoring: count how many of a room's alias tokens appear in the
+        # transcript. Sort by (matched_tokens desc, alias_len asc) — more matched
+        # tokens wins; among ties, prefer the shorter alias (more specific match).
+        # NOTE: The tiebreak on alias_len is intentionally conservative. Two rooms
+        # that share the same matched_tokens AND the same alias_len are genuinely
+        # ambiguous and return None. If this proves too strict for a real catalog,
+        # add regression tests before changing the tiebreak to a ratio-based sort.
         scored_matches: list[tuple[int, int, RoomInventoryItem]] = []
         for room in room_inventory:
             alias_tokens = _meaningful_room_tokens(f"{room.name} {room.code or ''}")
@@ -681,14 +764,22 @@ def _find_room_from_inventory(room_inventory: list[RoomInventoryItem], extracted
         if not scored_matches:
             return None
 
+        # Sort: most matched tokens first, then fewest alias tokens (more specific).
         scored_matches.sort(key=lambda item: (item[0], -item[1]), reverse=True)
         best_score, best_alias_len, best_room = scored_matches[0]
-        if best_score < max(1, min(2, best_alias_len)):
+
+        # Minimum quality threshold.
+        alias_tokens_best = _meaningful_room_tokens(f"{best_room.name} {best_room.code or ''}")
+        if best_score < max(1, min(2, len(alias_tokens_best))):
             return None
+
+        # Ambiguity suppressor: if top two rooms are indistinguishable on both
+        # matched count and alias length, return None rather than pick arbitrarily.
         if len(scored_matches) > 1:
             next_score, next_alias_len, _ = scored_matches[1]
             if next_score == best_score and next_alias_len == best_alias_len:
                 return None
+
         return best_room
 
     return alias_to_room.get(best_match)
@@ -702,6 +793,10 @@ def _build_room_options_text(room_inventory: list[RoomInventoryItem]) -> str:
         return "No room names available."
     return _join_spoken_list(names)
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TRACING
+# ─────────────────────────────────────────────────────────────────────────────
 
 def log_decision_trace(
     scope: str,
@@ -749,6 +844,44 @@ def log_decision_trace(
         f"transcript={json.dumps(transcript_text)} "
         f"raw_transcript={json.dumps(raw_transcript_text)}"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BOOKING STATE PREDICATES
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _record_semantic_classification(
+    state: KioskState,
+    semantic_result: object,
+    *,
+    override_intent: Optional[str] = None,
+) -> None:
+    if semantic_result is None:
+        return
+
+    try:
+        from agent.misclassification_logger import record_classification
+
+        predicted_intent = getattr(semantic_result, "intent", "") or ""
+        normalized_transcript = getattr(semantic_result, "normalized_transcript", "") or ""
+        confidence = float(getattr(semantic_result, "confidence", 0.0) or 0.0)
+        matched_phrase = getattr(semantic_result, "matched_phrase", "") or ""
+        final_override = override_intent if override_intent and override_intent != predicted_intent else None
+
+        record_classification(
+            session_id=state.session_id,
+            screen=state.current_ui_screen,
+            raw_transcript=state.latest_transcript or "",
+            normalized_transcript=normalized_transcript,
+            predicted_intent=predicted_intent,
+            similarity_score=confidence,
+            matched_example=matched_phrase,
+            was_overridden=final_override is not None,
+            override_intent=final_override,
+            language=state.language,
+        )
+    except Exception as exc:
+        print(f"[MisclassificationLogger] record failed: {exc}")
 
 
 def _should_stay_in_room_preview(
@@ -814,6 +947,10 @@ def _is_room_change_request(transcript: str) -> bool:
     return references_room and wants_change
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# TRANSCRIPT PATTERN MATCHERS
+# ─────────────────────────────────────────────────────────────────────────────
+
 def _looks_like_explicit_preview_booking_request(transcript: str) -> bool:
     text = (transcript or "").strip().lower()
     if not text:
@@ -859,7 +996,6 @@ def _looks_like_check_in_request(transcript: str) -> bool:
     text = (transcript or "").strip().lower()
     if not text:
         return False
-    # Guard: informational FAQ phrases like "what is check in time" are NOT transactional check-in.
     check_in_info_question = bool(
         (
             re.search(r"\bcheck[\s-]?in\b", text)
@@ -878,14 +1014,11 @@ def _looks_like_check_in_request(transcript: str) -> bool:
 
 
 def _looks_like_room_browsing_request(transcript: str) -> bool:
-    """Deterministic check for room exploration/browsing intent."""
     text = (transcript or "").strip().lower()
     if not text:
         return False
     if looks_like_room_discovery_repairable(text):
         return True
-    # Guard: if the user is asking an informational question about rooms
-    # (e.g. "what time can I check into my room"), that is NOT a browsing request.
     info_question = bool(
         re.search(r"\b(room)\b", text)
         and re.search(r"\b(what|when|time|timing|hours?|policy|policies|rules?)\b", text)
@@ -1018,6 +1151,10 @@ def _looks_like_room_preview_detail_request(transcript: str) -> bool:
     return mentions_feature and (mentions_room_context or asks_about_feature)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# ROUTER
+# ─────────────────────────────────────────────────────────────────────────────
+
 ROUTER_SYSTEM_PROMPT = """
 You are a highly critical intent classifier for a luxury hotel kiosk AI named "Siya".
 The user's text may contain mixed intentions, conversational filler, or mid-sentence corrections (e.g., "Wait, no, I mean check in").
@@ -1147,7 +1284,15 @@ def _route_preview_context_override(state: KioskState, transcript_text: str) -> 
 
 def _route_welcome_discovery_override(state: KioskState, transcript_text: str) -> Optional[dict]:
     current_screen = state.current_ui_screen
-    if current_screen in {"WELCOME", "IDLE", "AI_CHAT", "MANUAL_MENU", "ROOM_SELECT"} and _looks_like_room_comparison_request(transcript_text):
+
+    # FIX LOGIC-01: Scoped _looks_like_room_browsing_request to the same allowed
+    # screens as the other discovery guards. Previously it fired on ALL screens
+    # including BOOKING_COLLECT, which could incorrectly override a guest saying
+    # "show me the rooms again" mid-booking into a BOOK_ROOM intent before the
+    # check-in guard could run.
+    DISCOVERY_ALLOWED_SCREENS = {"WELCOME", "IDLE", "AI_CHAT", "MANUAL_MENU", "ROOM_SELECT"}
+
+    if current_screen in DISCOVERY_ALLOWED_SCREENS and _looks_like_room_comparison_request(transcript_text):
         print(f"[Router] Deterministic room comparison match: '{state.latest_transcript}'")
         return _router_result(
             state,
@@ -1165,7 +1310,7 @@ def _route_welcome_discovery_override(state: KioskState, transcript_text: str) -
             intent_source="welcome_room_recommendation_guard",
         )
 
-    if _looks_like_room_browsing_request(transcript_text):
+    if current_screen in DISCOVERY_ALLOWED_SCREENS and _looks_like_room_browsing_request(transcript_text):
         print(f"[Router] Deterministic room browsing match: '{state.latest_transcript}'")
         return _router_result(
             state,
@@ -1173,6 +1318,7 @@ def _route_welcome_discovery_override(state: KioskState, transcript_text: str) -
             0.95,
             intent_source="room_browsing_guard",
         )
+
     return None
 
 
@@ -1199,6 +1345,7 @@ async def route_intent(state: KioskState) -> dict:
     """Node 1: Classify the user's intent."""
     print(f"[Router] Classifying: '{state.latest_transcript}'")
     semantic_hint: Optional[str] = None
+    semantic_result = None
     transcript_text = state.latest_transcript or ""
     current_screen = state.current_ui_screen
     is_booking_context = current_screen in {"BOOKING_COLLECT", "BOOKING_SUMMARY"}
@@ -1213,15 +1360,50 @@ async def route_intent(state: KioskState) -> dict:
         if override:
             return override
 
-    # Layer 2: semantic classifier
     try:
         from agent.semantic_classifier import classify_intent_semantically
 
         semantic_result = await classify_intent_semantically(
             transcript=transcript_text,
             current_screen=current_screen,
+            session_id=state.session_id,
+            language=state.language,
         )
         if semantic_result is not None:
+            if getattr(semantic_result, "source", "") == "stt_normalizer":
+                if state.last_failed_screen == current_screen:
+                    consecutive_failures = (state.consecutive_failures or 0) + 1
+                else:
+                    consecutive_failures = 1
+                last_failed_screen = current_screen
+                _record_semantic_classification(state, semantic_result)
+                if consecutive_failures >= 2:
+                    print(f"[Router][L4] {consecutive_failures} consecutive filler turns -> escalating")
+                    return _router_result(
+                        state,
+                        "IDLE",
+                        1.0,
+                        intent_source="stt_normalizer",
+                        speech_override=(
+                            "I'm sorry, I'm having trouble understanding. "
+                            "A staff member can assist you right away - "
+                            "please approach the front desk or press the call button on this screen."
+                        ),
+                        consecutive_failures=consecutive_failures,
+                        last_failed_screen=last_failed_screen,
+                    )
+                return _router_result(
+                    state,
+                    "IDLE",
+                    1.0,
+                    intent_source="stt_normalizer",
+                    speech_override=(
+                        "I didn't quite catch that. "
+                        "You can tap the screen buttons, or try saying it again in a different way."
+                    ),
+                    consecutive_failures=consecutive_failures,
+                    last_failed_screen=last_failed_screen,
+                )
             if semantic_result.is_out_of_domain:
                 print(
                     f"[Router][L2] Out-of-domain (score={semantic_result.confidence}), escalating to LLM"
@@ -1231,6 +1413,7 @@ async def route_intent(state: KioskState) -> dict:
                     f"[Router][L2] HIGH confidence: intent={semantic_result.intent} "
                     f"score={semantic_result.confidence} phrase='{semantic_result.matched_phrase}'"
                 )
+                _record_semantic_classification(state, semantic_result)
                 return _router_result(
                     state,
                     semantic_result.intent,
@@ -1269,8 +1452,6 @@ async def route_intent(state: KioskState) -> dict:
         intent = "GENERAL_QUERY"
         confidence = 0.5
 
-    # Low-confidence fallback: if LLM classified as GENERAL_QUERY but transcript
-    # matches room browsing patterns, override to BOOK_ROOM.
     final_intent_source = "llm"
     if intent == "GENERAL_QUERY" and confidence < 0.80:
         if _looks_like_room_browsing_request(transcript_text) or (
@@ -1306,6 +1487,11 @@ async def route_intent(state: KioskState) -> dict:
     escalation_threshold = 2
     if is_failure and consecutive_failures >= escalation_threshold:
         print(f"[Router][L4] {consecutive_failures} consecutive failures -> escalating")
+        _record_semantic_classification(
+            state,
+            semantic_result,
+            override_intent="IDLE" if semantic_result and semantic_result.intent != "IDLE" else None,
+        )
         return _router_result(
             state,
             "IDLE",
@@ -1322,6 +1508,11 @@ async def route_intent(state: KioskState) -> dict:
 
     if is_failure and consecutive_failures == 1:
         print("[Router][L4] First failure -> retry guidance")
+        _record_semantic_classification(
+            state,
+            semantic_result,
+            override_intent="IDLE" if semantic_result and semantic_result.intent != "IDLE" else None,
+        )
         return _router_result(
             state,
             "IDLE",
@@ -1336,6 +1527,11 @@ async def route_intent(state: KioskState) -> dict:
         )
 
     print(f"[Router] -> Intent: {intent} (confidence: {confidence})")
+    _record_semantic_classification(
+        state,
+        semantic_result,
+        override_intent=intent if semantic_result and intent != semantic_result.intent else None,
+    )
     return _router_result(
         state,
         intent,
@@ -1345,6 +1541,10 @@ async def route_intent(state: KioskState) -> dict:
         last_failed_screen=last_failed_screen,
     )
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GENERAL CHAT NODE
+# ─────────────────────────────────────────────────────────────────────────────
 
 GENERAL_CHAT_SYSTEM_PROMPT = """
 You are "Siya", a warm and professional AI concierge at a luxury hotel kiosk.
@@ -1447,10 +1647,17 @@ async def general_chat(state: KioskState) -> dict:
     }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# BOOKING NODE
+# ─────────────────────────────────────────────────────────────────────────────
+
 def build_booking_prompt(state: KioskState) -> str:
     slots = state.booking_slots
     missing = slots.missing_required_slots()
     filled = {k: v for k, v in slots.model_dump().items() if v is not None}
+    # Pass the full room catalog so the LLM fallback sees every option.
+    # Only name, price, currency, and max_adults are included per room to keep
+    # token usage proportional — verbose fields (descriptions, images) are omitted.
     available_rooms = _room_prompt_catalog(state.tenant_room_inventory)
     today_iso = date.today().isoformat()
 
@@ -1598,7 +1805,9 @@ def _extract_guest_name_deterministically(transcript: str) -> Optional[str]:
             return None
         cleaned = text.strip(" .")
 
-    if not cleaned or len(cleaned.split()) > 4:
+    # FIX BUG-05: Raised word-count cap from 4 to 6 to accommodate longer South
+    # Asian and Spanish legal names (e.g. "Maria De La Cruz Santos" = 5 words).
+    if not cleaned or len(cleaned.split()) > 6:
         return None
     return cleaned.title()
 
@@ -1726,6 +1935,36 @@ def _make_booking_response(
     }
 
 
+def _make_booking_response_precomputed(
+    state: KioskState,
+    speech: str,
+    next_ui_screen: str,
+    updated_slots: BookingSlots,
+    resolved_selected_room: Optional[RoomInventoryItem],
+    *,
+    active_slot: Optional[str] = None,
+) -> dict:
+    """Variant of _make_booking_response for callers that have already run
+    _prepare_booking_state_update(). Accepts the pre-computed slots and room
+    directly so date normalisation is not repeated a second time.
+    Use this whenever the caller has already called _prepare_booking_state_update()
+    for validation purposes — avoids the double-compute that existed in
+    _handle_booking_detail_transition and _handle_summary_modify_transition.
+    """
+    updated_history = state.history + [
+        ConversationTurn(role="user", content=state.latest_transcript),
+        ConversationTurn(role="assistant", content=speech),
+    ]
+    return {
+        "speech_response": speech,
+        "booking_slots": updated_slots,
+        "active_slot": active_slot,
+        "selected_room": resolved_selected_room,
+        "history": updated_history,
+        "next_ui_screen": next_ui_screen,
+    }
+
+
 def _booking_response(
     state: KioskState,
     response: dict,
@@ -1835,6 +2074,8 @@ def _handle_booking_detail_transition(
     if not _has_booking_detail_updates(extracted_slots):
         return None
 
+    # Compute state once. Use _make_booking_response_precomputed for all return
+    # paths so date normalisation is not repeated inside _make_booking_response.
     preview_slots, preview_room = _prepare_booking_state_update(
         state,
         extracted_slots=extracted_slots,
@@ -1848,22 +2089,22 @@ def _handle_booking_detail_transition(
 
     if state.current_ui_screen == "BOOKING_SUMMARY":
         if not missing_required:
-            return _make_booking_response(
+            return _make_booking_response_precomputed(
                 state,
                 "I've updated those booking details. Please review them once more before payment, or tell me if anything else should change.",
                 "BOOKING_COLLECT",
+                preview_slots,
+                preview_room,
                 active_slot=None,
-                extracted_slots=extracted_slots,
-                selected_room=preview_room,
             )
         next_slot = _infer_booking_follow_up_slot(state.latest_transcript, extracted_slots) or missing_required[0]
-        return _make_booking_response(
+        return _make_booking_response_precomputed(
             state,
             _fallback_booking_prompt(next_slot, selected_room_name, room_inventory),
             "BOOKING_COLLECT",
+            preview_slots,
+            preview_room,
             active_slot=next_slot,
-            extracted_slots=extracted_slots,
-            selected_room=preview_room,
         )
 
     if not missing_required:
@@ -1873,23 +2114,23 @@ def _handle_booking_detail_transition(
             if guest_name
             else "Perfect. Let me pull up your booking summary."
         )
-        return _make_booking_response(
+        return _make_booking_response_precomputed(
             state,
             speech,
             "BOOKING_SUMMARY",
+            preview_slots,
+            preview_room,
             active_slot=None,
-            extracted_slots=extracted_slots,
-            selected_room=preview_room,
         )
 
     next_slot = missing_required[0]
-    return _make_booking_response(
+    return _make_booking_response_precomputed(
         state,
         _fallback_booking_prompt(next_slot, selected_room_name, room_inventory),
         "BOOKING_COLLECT",
+        preview_slots,
+        preview_room,
         active_slot=next_slot,
-        extracted_slots=extracted_slots,
-        selected_room=preview_room,
     )
 
 
@@ -1914,13 +2155,13 @@ def _handle_summary_modify_transition(state: KioskState, extracted_slots: dict) 
     else:
         active_slot = requested_slot or (missing_required[0] if missing_required else "guest_name")
         speech = _fallback_booking_prompt(active_slot, selected_room_name, state.tenant_room_inventory)
-    return _make_booking_response(
+    return _make_booking_response_precomputed(
         state,
         speech,
         "BOOKING_COLLECT",
+        preview_slots,
+        preview_room,
         active_slot=active_slot,
-        extracted_slots=extracted_slots,
-        selected_room=preview_room,
     )
 
 
@@ -1959,6 +2200,47 @@ def _deterministic_booking_response(
     )
     if booking_detail_transition:
         return booking_detail_transition
+
+    if state.current_ui_screen == "ROOM_SELECT" and not state.booking_slots.room_type:
+        if intent == "PROVIDE_GUESTS" and extracted_slots.get("adults") is not None:
+            adults = int(extracted_slots["adults"])
+            children = extracted_slots.get("children")
+            guest_text = f"{adults} adult{'s' if adults != 1 else ''}"
+            if isinstance(children, int) and children > 0:
+                guest_text += f" and {children} child{'ren' if children != 1 else ''}"
+            return _make_booking_response(
+                state,
+                f"Got it, {guest_text}. Which room would you like to explore?",
+                "ROOM_SELECT",
+                active_slot="room_type",
+                extracted_slots=extracted_slots,
+            )
+
+        if intent == "PROVIDE_DATES" and (
+            extracted_slots.get("check_in_date") or extracted_slots.get("check_out_date")
+        ):
+            preview_slots, _ = _prepare_booking_state_update(
+                state,
+                extracted_slots=extracted_slots,
+            )
+            check_in_text = _format_date_for_speech(preview_slots.check_in_date)
+            check_out_text = _format_date_for_speech(preview_slots.check_out_date)
+            if check_in_text and check_out_text:
+                speech = (
+                    f"Got it, check-in {check_in_text} and check-out {check_out_text}. "
+                    "Which room would you like to explore?"
+                )
+            elif check_in_text:
+                speech = f"Got it, check-in {check_in_text}. Which room would you like to explore?"
+            else:
+                speech = "Got it. Which room would you like to explore?"
+            return _make_booking_response(
+                state,
+                speech,
+                "ROOM_SELECT",
+                active_slot="room_type",
+                extracted_slots=extracted_slots,
+            )
 
     if intent == "PROVIDE_GUESTS" and extracted_slots.get("adults") is not None:
         adults = int(extracted_slots["adults"])
@@ -2045,11 +2327,13 @@ async def booking_logic(state: KioskState) -> dict:
             decision_source="speech_override",
         )
 
+    # FIX PERF-03: Run _transcript_explicitly_identifies_room once here and reuse
+    # the result. The original called it again inside booking_logic's validation
+    # block, running the full inventory scan twice per LLM-fallback turn.
     extracted = _extract_slots_deterministically(state)
+    room_inventory = state.tenant_room_inventory or []
+    transcript_room_match = _transcript_explicitly_identifies_room(state.latest_transcript, room_inventory)
 
-    # Backend-authoritative confirmation path:
-    # If the guest confirms on BOOKING_SUMMARY and all required slots are present,
-    # move to PAYMENT directly instead of looping in booking collection prompts.
     if state.resolved_intent == "CONFIRM_BOOKING":
         missing_required = state.booking_slots.missing_required_slots()
         selected_room_name = (
@@ -2132,7 +2416,7 @@ async def booking_logic(state: KioskState) -> dict:
     deterministic = _deterministic_booking_response(
         state,
         extracted,
-        state.tenant_room_inventory or [],
+        room_inventory,
     )
     if deterministic:
         print("[BookingLogic] Deterministic response (no LLM)")
@@ -2166,11 +2450,11 @@ async def booking_logic(state: KioskState) -> dict:
 
     extracted = result.get("extracted_slots", {})
     speech = result.get("speech", "Let me note that down.")
-    room_inventory = state.tenant_room_inventory or []
     selected_room = state.selected_room
-    transcript_room_match = _transcript_explicitly_identifies_room(state.latest_transcript, room_inventory)
 
     # VALIDATION LAYER: tenant-aware room check using DB-backed room inventory.
+    # FIX PERF-03 (continued): Reuse transcript_room_match computed above instead
+    # of calling _transcript_explicitly_identifies_room again here.
     transcript_room_candidate = _extract_room_candidate_from_transcript(state.latest_transcript)
     if not extracted.get("room_type") and transcript_room_match:
         extracted["room_type"] = transcript_room_match.name
@@ -2188,7 +2472,6 @@ async def booking_logic(state: KioskState) -> dict:
             extracted["room_type"] = transcript_room_match.name
             selected_room = transcript_room_match
         else:
-            # Rejection: If the room doesn't exist, we don't save it and we ask for clarification.
             print(f"[Validation] Rejected room type: '{original_room}'")
             extracted["room_type"] = None
             if room_inventory:
@@ -2213,7 +2496,6 @@ async def booking_logic(state: KioskState) -> dict:
     is_complete = result.get("is_complete", False) or updated_slots.is_complete()
     next_slot = _normalize_slot_name(result.get("next_slot_to_ask"))
 
-    # First booking turn must stay on ROOM_SELECT unless the guest actually named a valid room.
     if _is_initial_booking_turn(state) and not transcript_room_match:
         if updated_slots.room_type is not None:
             print(
@@ -2248,7 +2530,6 @@ async def booking_logic(state: KioskState) -> dict:
                 room_inventory,
             )
 
-    # Determine next screen based on what's still missing
     next_screen = _determine_next_screen(updated_slots, is_complete, stay_in_room_preview)
     history_speech = speech
     if not history_speech and next_screen == "ROOM_PREVIEW" and selected_room and selected_room.name:
@@ -2286,20 +2567,16 @@ async def booking_logic(state: KioskState) -> dict:
 
 def _determine_next_screen(slots: BookingSlots, is_complete: bool, stay_in_room_preview: bool) -> str:
     """Map missing slots to the correct UI screen.
-    
-    Flow:  ROOM_SELECT  ?  BOOKING_COLLECT  ?  BOOKING_SUMMARY
+
+    Flow:  ROOM_SELECT  →  ROOM_PREVIEW  →  BOOKING_COLLECT  →  BOOKING_SUMMARY
     """
     if is_complete:
         return "BOOKING_SUMMARY"
 
-    # If we don't know the room yet, show the room picker
     if slots.room_type is None:
         return "ROOM_SELECT"
 
     if stay_in_room_preview:
         return "ROOM_PREVIEW"
 
-    # For all other missing info (dates, guests, name), use the conversational collector
     return "BOOKING_COLLECT"
-
-
