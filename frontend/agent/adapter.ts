@@ -1505,6 +1505,9 @@ class AgentAdapterService {
             delete merged.manualBookingOverrides;
             delete merged.manualSelectedRoomOverride;
             delete merged.visualFocus;
+            delete merged.roomDisplayMode;
+            delete merged.focusRoomIds;
+            delete merged.roomIntroSequence;
             this.manualEditModeActive = false;
         }
         if (nextState === "SCAN_ID" && (intent === "RESCAN" || intent === "CHECK_IN_SELECTED")) {
@@ -1621,6 +1624,19 @@ class AgentAdapterService {
             else                     delete merged.visualFocus;
         }
 
+        if (payload && Object.prototype.hasOwnProperty.call(payload, "roomDisplayMode")) {
+            if (payload.roomDisplayMode) merged.roomDisplayMode = payload.roomDisplayMode;
+            else delete merged.roomDisplayMode;
+        }
+        if (payload && Object.prototype.hasOwnProperty.call(payload, "focusRoomIds")) {
+            if (Array.isArray(payload.focusRoomIds)) merged.focusRoomIds = payload.focusRoomIds;
+            else delete merged.focusRoomIds;
+        }
+        if (payload && Object.prototype.hasOwnProperty.call(payload, "roomIntroSequence")) {
+            if (Array.isArray(payload.roomIntroSequence)) merged.roomIntroSequence = payload.roomIntroSequence;
+            else delete merged.roomIntroSequence;
+        }
+
         // ── 10. Booking IDs ───────────────────────────────────────────────────
         if (payload && Object.prototype.hasOwnProperty.call(payload, "persistedBookingId")) merged.persistedBookingId = payload.persistedBookingId || null;
         if (payload && Object.prototype.hasOwnProperty.call(payload, "assignedRoomId"))     merged.assignedRoomId     = payload.assignedRoomId     || null;
@@ -1656,6 +1672,7 @@ class AgentAdapterService {
             const STAY_INTENTS = new Set([
                 "ASK_ROOM_DETAIL","ASK_PRICE","COMPARE_ROOMS","GENERAL_QUERY","HELP_SELECTED",
                 "PROVIDE_GUESTS","PROVIDE_DATES","PROVIDE_NAME","CONFIRM_BOOKING","MODIFY_BOOKING",
+                "FILTER_ROOMS",
             ]);
             if (STAY_INTENTS.has(intent)) return "ROOM_SELECT";
         }

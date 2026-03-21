@@ -40,6 +40,7 @@ FRONTEND_PRESENTATION_SCREENS = {"AI_CHAT", "MANUAL_MENU"}
 IntentType = Literal[
     "GENERAL_QUERY",
     "BOOK_ROOM",
+    "FILTER_ROOMS",
     "CHECK_IN",
     "SELECT_ROOM",
     "PROVIDE_GUESTS",
@@ -95,6 +96,7 @@ class RoomInventoryItem(BaseModel):
     code: Optional[str] = None
     price: Optional[float] = None
     currency: str = "INR"
+    features: list[str] = Field(default_factory=list)
     max_adults: Optional[int] = Field(default=None, alias="maxAdults")
     max_children: Optional[int] = Field(default=None, alias="maxChildren")
     max_total_guests: Optional[int] = Field(default=None, alias="maxTotalGuests")

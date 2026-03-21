@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useUIState } from '../state/uiContext';
 import { RoomCard } from '../components/RoomCard';
 import { ProgressBar } from '../components/ProgressBar';
@@ -6,15 +6,30 @@ import { Loader2 } from 'lucide-react';
 import AnimatedGradientBackground from '../components/ui/animated-gradient-background';
 import { RoomDTO, RoomService, RoomServiceError } from '../services/room.service';
 
+const CHARS_PER_MS = 14 / 1000;
+
+type DisplayMode = "intro" | "browse" | "filter";
+
+interface IntroStep {
+  roomId: string;
+  charOffset: number;
+}
+
 export const RoomSelectPage: React.FC = () => {
   const { data, emit, loading } = useUIState();
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [liveRooms, setLiveRooms] = useState<RoomDTO[]>([]);
   const [isLoadingRooms, setIsLoadingRooms] = useState<boolean>(true);
   const [roomsError, setRoomsError] = useState<string | null>(null);
+  const [displayMode, setDisplayMode] = useState<DisplayMode>("browse");
+  const [focusRoomIds, setFocusRoomIds] = useState<string[] | null>(null);
+  const introTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+
   const rooms = liveRooms;
   const progress = data.progress || { currentStep: 2, totalSteps: 4, steps: ['Room'] };
-  const selectedRoom = selectedRoomId ? rooms.find((room) => room.id === selectedRoomId) || null : null;
+  const selectedRoom = selectedRoomId
+    ? rooms.find((room) => room.id === selectedRoomId) || null
+    : null;
 
   useEffect(() => {
     if (data?.selectedRoom?.id) {
@@ -54,11 +69,61 @@ export const RoomSelectPage: React.FC = () => {
     };
   }, [emit]);
 
+  useEffect(() => {
+    const mode: DisplayMode = data?.roomDisplayMode ?? "browse";
+    const ids: string[] | null = data?.focusRoomIds ?? null;
+    const sequence: IntroStep[] = data?.roomIntroSequence ?? [];
+
+    introTimersRef.current.forEach(clearTimeout);
+    introTimersRef.current = [];
+
+    setDisplayMode(mode);
+    setFocusRoomIds(ids);
+
+    if (mode === "intro" && sequence.length > 0) {
+      sequence.forEach((step, index) => {
+        const delayMs = Math.round(step.charOffset / CHARS_PER_MS);
+        const timer = setTimeout(() => {
+          setFocusRoomIds([step.roomId]);
+
+          if (index === sequence.length - 1) {
+            const browseTimer = setTimeout(() => {
+              setDisplayMode("browse");
+              setFocusRoomIds(null);
+            }, 3000);
+            introTimersRef.current.push(browseTimer);
+          }
+        }, delayMs);
+
+        introTimersRef.current.push(timer);
+      });
+    }
+  }, [data?.roomDisplayMode, data?.focusRoomIds, data?.roomIntroSequence]);
+
+  useEffect(() => {
+    return () => {
+      introTimersRef.current.forEach(clearTimeout);
+    };
+  }, []);
+
   const handleContinue = () => {
     if (selectedRoomId) {
-      const room = rooms.find((r: any) => r.id === selectedRoomId);
+      const room = rooms.find((r) => r.id === selectedRoomId);
       emit('ROOM_SELECTED', { room });
     }
+  };
+
+  const getRoomOpacity = (roomId: string): number => {
+    if (displayMode === "browse") return 1;
+    if (!focusRoomIds) return 1;
+    return focusRoomIds.includes(roomId) ? 1 : 0.2;
+  };
+
+  const getRoomPointerEvents = (roomId: string): "auto" | "none" => {
+    if (displayMode === "intro" && focusRoomIds && !focusRoomIds.includes(roomId)) {
+      return "none";
+    }
+    return "auto";
   };
 
   return (
@@ -75,7 +140,11 @@ export const RoomSelectPage: React.FC = () => {
           <header className="mb-8 md:mb-10 text-center">
             <h2 className="text-3xl md:text-5xl font-light tracking-[-0.04em] text-white mb-3">Choose A Room That Feels Right</h2>
             <p className="text-base md:text-xl text-slate-300">Explore the rooms, compare the atmosphere, and select the one that suits your guest best.</p>
-            <p className="text-sm md:text-base text-white/60 mt-3">Siya can describe each room using the live room details, images, and amenities.</p>
+            {displayMode === "filter" && focusRoomIds && (
+              <p className="text-sm text-cyan-300 mt-3">
+                Showing {focusRoomIds.length} matching room{focusRoomIds.length !== 1 ? "s" : ""} - say "show all rooms" to reset
+              </p>
+            )}
             {roomsError && <p className="text-amber-300 text-base mt-4">{roomsError}</p>}
           </header>
 
@@ -97,17 +166,24 @@ export const RoomSelectPage: React.FC = () => {
             </div>
           ) : rooms.length === 0 ? (
             <div className="flex-1 flex flex-col items-center justify-center text-center text-slate-300">
-              <p className="mb-3 text-xl">No rooms are configured for this hotel yet.</p>
-              <p className="text-base text-slate-400">Please contact front desk support.</p>
+              <p className="mb-3 text-xl">No rooms configured for this hotel yet.</p>
             </div>
           ) : (
-            <div className={`grid grid-cols-1 lg:grid-cols-2 gap-8 overflow-y-auto pb-40 px-2 transition-opacity ${loading ? 'opacity-50 pointer-events-none' : ''}`}>
-              {rooms.map((room: any) => (
+            <div className={`grid grid-cols-1 lg:grid-cols-2 gap-8 overflow-y-auto pb-40 px-2 ${loading ? "opacity-50 pointer-events-none" : ""}`}>
+              {rooms.map((room) => (
                 <RoomCard
                   key={room.id}
                   room={room}
                   selected={selectedRoomId === room.id}
-                  onSelect={(r) => setSelectedRoomId(r.id)}
+                  onSelect={(selected) => {
+                    introTimersRef.current.forEach(clearTimeout);
+                    introTimersRef.current = [];
+                    setDisplayMode("browse");
+                    setFocusRoomIds(null);
+                    setSelectedRoomId(selected.id);
+                  }}
+                  opacity={getRoomOpacity(room.id)}
+                  pointerEvents={getRoomPointerEvents(room.id)}
                 />
               ))}
             </div>
@@ -118,12 +194,7 @@ export const RoomSelectPage: React.FC = () => {
               <div className="text-center sm:text-left">
                 <p className="text-xs uppercase tracking-[0.22em] text-white/45">Selected Room</p>
                 <p className="mt-1 text-lg md:text-xl text-white">
-                  {selectedRoom ? selectedRoom.name : 'Choose a room to continue'}
-                </p>
-                <p className="mt-1 text-xs md:text-sm text-slate-400 hidden sm:block">
-                  {selectedRoom
-                    ? 'Preview the room details before moving into the booking form.'
-                    : 'Tap any card to select it, or keep exploring the room details.'}
+                  {selectedRoom ? selectedRoom.name : "Choose a room to continue"}
                 </p>
               </div>
               <button

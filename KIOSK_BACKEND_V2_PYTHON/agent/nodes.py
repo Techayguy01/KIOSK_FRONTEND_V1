@@ -257,6 +257,109 @@ def _build_room_presentation(room_inventory: list[RoomInventoryItem]) -> str:
     )
 
 
+def _build_room_intro_with_sequence(
+    room_inventory: list[RoomInventoryItem],
+) -> tuple[str, list[dict]]:
+    """Build the room intro speech plus a character-offset sequence per room."""
+    if not room_inventory:
+        return "I can help you with a room booking whenever you're ready.", []
+
+    if len(room_inventory) == 1:
+        room = room_inventory[0]
+        price_text = _format_price_for_speech(room.price, room.currency) or "our current rate"
+        speech = f"We have the {room.name}, available at {price_text}. Would you like to take a look?"
+        return speech, [{"roomId": room.id, "charOffset": 10}]
+
+    intro_sequence: list[dict] = []
+    parts: list[str] = []
+    prefix = f"We have {len(room_inventory)} room options. "
+    running_offset = len(prefix)
+
+    for room in room_inventory:
+        price_text = _format_price_for_speech(room.price, room.currency)
+        features = list(room.features or [])[:2]
+
+        segment = f"The {room.name}"
+        if price_text:
+            segment += f" at {price_text} per night"
+        if room.max_adults:
+            segment += f" for up to {room.max_adults} guest{'s' if room.max_adults != 1 else ''}"
+        if features:
+            segment += f", featuring {', '.join(features)}"
+        segment += ". "
+
+        intro_sequence.append({
+            "roomId": room.id,
+            "charOffset": running_offset,
+        })
+
+        parts.append(segment)
+        running_offset += len(segment)
+
+    full_speech = prefix + "".join(parts) + "Which room would you like to explore?"
+    return full_speech, intro_sequence
+
+
+def _resolve_room_filter(
+    transcript: str,
+    room_inventory: list[RoomInventoryItem],
+) -> tuple[list[str] | str | None, str | None]:
+    """Resolve room-feature filtering against the tenant's actual room features."""
+    text = (transcript or "").strip().lower()
+    if not text:
+        return None, None
+
+    show_all_pattern = re.compile(
+        r"\b(show|see|view|display)\b.{0,15}\ball\b.{0,10}\brooms?\b"
+        r"|\ball\b.{0,10}\brooms?\b.{0,10}\b(please|again|back)?\b"
+        r"|\breset\b|\bno filter\b|\bclear filter\b",
+        re.IGNORECASE,
+    )
+    if show_all_pattern.search(text):
+        return "SHOW_ALL", None
+
+    filter_patterns = [
+        re.compile(r"\brooms?\s+with\s+(.+)$", re.IGNORECASE),
+        re.compile(r"\bonly\s+(.+?)\s+rooms?\b", re.IGNORECASE),
+        re.compile(r"\b(?:show(?:\s+me)?|see|find|filter)\s+(.+?)\s+rooms?\b", re.IGNORECASE),
+        re.compile(r"\bwith\s+(.+)$", re.IGNORECASE),
+    ]
+
+    candidate: Optional[str] = None
+    for pattern in filter_patterns:
+        match = pattern.search(text)
+        if match:
+            candidate = match.group(1).strip(" .?!")
+            break
+    if not candidate:
+        return None, None
+
+    candidate = re.sub(
+        r"^(?:a|an|the|any|only|just)\s+|"
+        r"\s+(?:please|available|option|options|room|rooms)$",
+        "",
+        candidate,
+        flags=re.IGNORECASE,
+    ).strip()
+    if not candidate:
+        return None, None
+
+    matched_ids: list[str] = []
+    best_label: Optional[str] = None
+
+    for room in room_inventory:
+        features = [str(feature or "").strip() for feature in (room.features or []) if str(feature or "").strip()]
+        for feature in features:
+            feature_lower = feature.lower()
+            if candidate in feature_lower or feature_lower in candidate:
+                matched_ids.append(room.id)
+                if not best_label:
+                    best_label = feature
+                break
+
+    return matched_ids, best_label
+
+
 def _build_room_confirmation(room: RoomInventoryItem) -> str:
     parts = [f"Great choice. {room.name}"]
     price_text = _format_price_for_speech(room.price, room.currency)
@@ -1203,6 +1306,7 @@ The user's text may contain mixed intentions, conversational filler, or mid-sent
 Your job is to read the ENTIRE message carefully before deciding the final intent.
 
 - BOOK_ROOM: User wants to start a NEW reservation, explore rooms, see room options, take a virtual tour, view available rooms, or browse what's available. Any expression of interest in seeing, exploring, or choosing rooms counts as BOOK_ROOM.
+- FILTER_ROOMS: Guest wants to filter rooms by a feature or amenity while browsing ROOM_SELECT. Examples: "show me AC rooms", "rooms with bathtub", "only sea view rooms", "show all rooms", "clear filter".
 - CHECK_IN: User is at the kiosk to get their room key for an EXISTING booking.
 - GENERAL_QUERY: User is asking about amenities (pool, gym, etc.), prices, or just greeting.
 - PROVIDE_GUESTS: User is giving the number of people staying.
@@ -1222,7 +1326,7 @@ Rules:
 ## Screen Context Rules
 A "Current UI screen" message is provided. Use it to disambiguate ambiguous intents:
 - WELCOME / IDLE: Opening screen. Any mention of rooms, availability, booking, wanting to see/explore rooms, family-fit room advice, cheapest/affordable rooms, or room comparisons -> BOOK_ROOM. Greetings, amenity questions, hotel info -> GENERAL_QUERY.
-- ROOM_SELECT: User is browsing the room catalog. Selecting or asking about a specific room -> BOOK_ROOM. Feature questions -> GENERAL_QUERY.
+- ROOM_SELECT: User is browsing the room catalog. Selecting or asking about a specific room -> BOOK_ROOM. Feature-filter requests like "show me AC rooms", "rooms with bathtub", "only sea view rooms", "show all rooms" -> FILTER_ROOMS. General hotel info -> GENERAL_QUERY.
 - ROOM_PREVIEW: User is viewing a SPECIFIC room's image carousel.
   * "show me bathroom", "I want to see the balcony", "show me the view", "does this room have a balcony", or ANY request to focus on a room feature/area -> GENERAL_QUERY (this is a visual focus request, NOT a new booking).
   * "book this room", "I'll take it", "I want this one" -> BOOK_ROOM.
@@ -2059,6 +2163,54 @@ def _handle_room_request_transition(
     extracted_slots: dict,
     room_inventory: list[RoomInventoryItem],
 ) -> Optional[dict]:
+    if state.resolved_intent == "FILTER_ROOMS":
+        matched_ids, category_label = _resolve_room_filter(state.latest_transcript, room_inventory)
+        if matched_ids == "SHOW_ALL":
+            return _make_booking_response(
+                state,
+                "Certainly. Here are all available rooms.",
+                "ROOM_SELECT",
+                active_slot="room_type",
+            ) | {
+                "roomDisplayMode": "browse",
+                "focusRoomIds": None,
+                "roomIntroSequence": [],
+            }
+
+        if matched_ids is not None and len(matched_ids) == 0:
+            speech = (
+                f"I'm sorry, none of our rooms have {category_label or 'that feature'}. "
+                "Here are all the available options."
+            )
+            return _make_booking_response(
+                state,
+                speech,
+                "ROOM_SELECT",
+                active_slot="room_type",
+            ) | {
+                "roomDisplayMode": "browse",
+                "focusRoomIds": None,
+                "roomIntroSequence": [],
+            }
+
+        if matched_ids:
+            count = len(matched_ids)
+            speech = (
+                f"We have {count} room{'s' if count != 1 else ''} "
+                f"with {category_label or 'that feature'}. "
+                "They're highlighted on screen."
+            )
+            return _make_booking_response(
+                state,
+                speech,
+                "ROOM_SELECT",
+                active_slot="room_type",
+            ) | {
+                "roomDisplayMode": "filter",
+                "focusRoomIds": matched_ids,
+                "roomIntroSequence": [],
+            }
+
     if state.current_ui_screen in {"WELCOME", "IDLE", "AI_CHAT", "MANUAL_MENU", "ROOM_SELECT"} and _looks_like_room_comparison_request(state.latest_transcript):
         compared_rooms = _rooms_mentioned_in_transcript(state.latest_transcript, room_inventory)
         comparison_prompt = _build_room_comparison_prompt(compared_rooms or room_inventory[:2])
@@ -2068,7 +2220,11 @@ def _handle_room_request_transition(
             "ROOM_SELECT",
             active_slot="room_type",
             clear_room_selection=True,
-        )
+        ) | {
+            "roomDisplayMode": "browse",
+            "focusRoomIds": None,
+            "roomIntroSequence": [],
+        }
 
     room: Optional[RoomInventoryItem] = None
     if extracted_slots.get("room_type"):
@@ -2100,18 +2256,40 @@ def _handle_room_request_transition(
             active_slot=None,
             extracted_slots=extracted,
             selected_room=room,
-        )
+        ) | {
+            "roomDisplayMode": "browse",
+            "focusRoomIds": None,
+            "roomIntroSequence": [],
+        }
 
     if not state.booking_slots.room_type:
         if not room_inventory:
             return None
+        is_initial_presentation = state.current_ui_screen in {"WELCOME", "IDLE", "AI_CHAT", "MANUAL_MENU", "ROOM_SELECT"}
+        if is_initial_presentation and not extracted_slots.get("room_type"):
+            speech, intro_sequence = _build_room_intro_with_sequence(room_inventory)
+            return _make_booking_response(
+                state,
+                speech,
+                "ROOM_SELECT",
+                active_slot="room_type",
+                clear_room_selection=True,
+            ) | {
+                "roomDisplayMode": "intro",
+                "focusRoomIds": [room_inventory[0].id],
+                "roomIntroSequence": intro_sequence,
+            }
         return _make_booking_response(
             state,
             _build_room_presentation(room_inventory),
             "ROOM_SELECT",
             active_slot="room_type",
             clear_room_selection=True,
-        )
+        ) | {
+            "roomDisplayMode": "browse",
+            "focusRoomIds": None,
+            "roomIntroSequence": [],
+        }
 
     return None
 
@@ -2242,7 +2420,7 @@ def _deterministic_booking_response(
     ):
         return _build_preview_booking_gate_response(state)
 
-    if intent == "BOOK_ROOM":
+    if intent in {"BOOK_ROOM", "FILTER_ROOMS"}:
         return _handle_room_request_transition(state, extracted_slots, room_inventory)
 
     booking_detail_transition = _handle_booking_detail_transition(

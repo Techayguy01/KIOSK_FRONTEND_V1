@@ -8,18 +8,19 @@ export const CompletePage: React.FC = () => {
   const { data, emit, loading } = useUIState();
   const progress = data.progress || { currentStep: 4, totalSteps: 4, steps: ['Key'] };
   const persistedBookingId = String(data?.persistedBookingId || '').trim();
-  const assignedRoomNumber = String(
-    data?.assignedRoomNumber ||
-    data?.matchedBooking?.assignedRoomNumber ||
-    ''
-  ).trim();
-  const resolvedRoomLabel = String(
-    data?.matchedBooking?.roomName ||
+  const resolvedRoomName = String(
     data?.selectedRoom?.displayName ||
     data?.selectedRoom?.name ||
+    data?.matchedBooking?.roomName ||
+    ''
+  ).trim();
+  const fallbackRoomLabel = String(
+    data?.assignedRoomNumber ||
+    data?.matchedBooking?.assignedRoomNumber ||
     data?.selectedRoom?.code ||
     ''
   ).trim();
+  const resolvedRoomLabel = resolvedRoomName || fallbackRoomLabel;
   const looksLikeRoomNumber = /^[A-Za-z]?\d+[A-Za-z0-9-]*$/.test(resolvedRoomLabel);
 
   return (
@@ -38,13 +39,13 @@ export const CompletePage: React.FC = () => {
            </div>
 
            <h2 className="text-4xl font-light text-white mb-4">You're All Set!</h2>
-           {assignedRoomNumber ? (
+           {resolvedRoomLabel ? (
              <p className="text-xl text-slate-400 mb-2">
-               Room <span className="text-white font-bold">{assignedRoomNumber}</span> is ready for you.
-             </p>
-           ) : resolvedRoomLabel ? (
-             <p className="text-xl text-slate-400 mb-2">
-               {looksLikeRoomNumber ? (
+               {resolvedRoomName ? (
+                 <>
+                   <span className="text-white font-bold">{resolvedRoomName}</span> is ready for you.
+                 </>
+               ) : looksLikeRoomNumber ? (
                  <>
                    Room <span className="text-white font-bold">{resolvedRoomLabel}</span> is ready for you.
                  </>

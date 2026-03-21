@@ -7,6 +7,8 @@ interface RoomCardProps {
   room: RoomDTO;
   onSelect: (room: RoomDTO) => void;
   selected: boolean;
+  opacity?: number;
+  pointerEvents?: "auto" | "none";
 }
 
 function formatPrice(room: RoomDTO): string {
@@ -124,7 +126,13 @@ function buildRoomNarrative(room: RoomDTO): { headline: string; details: string[
   };
 }
 
-export const RoomCard: React.FC<RoomCardProps> = ({ room, onSelect, selected }) => {
+export const RoomCard: React.FC<RoomCardProps> = ({
+  room,
+  onSelect,
+  selected,
+  opacity = 1,
+  pointerEvents = "auto",
+}) => {
   const [activeImageIndex, setActiveImageIndex] = useState(0);
   const [failedOptimizedIndexes, setFailedOptimizedIndexes] = useState<Record<number, boolean>>({});
   const touchStartX = useRef<number | null>(null);
@@ -213,9 +221,14 @@ export const RoomCard: React.FC<RoomCardProps> = ({ room, onSelect, selected }) 
   return (
     <div
       role="button"
-      tabIndex={0}
+      tabIndex={pointerEvents === "none" ? -1 : 0}
       onClick={activateCard}
       onKeyDown={onCardKeyDown}
+      style={{
+        opacity,
+        pointerEvents,
+        transition: "opacity 300ms ease",
+      }}
       className={`group relative overflow-hidden rounded-[2rem] border text-left transition-all duration-300 ${
         selected
           ? 'border-amber-200/80 bg-slate-950/95 shadow-[0_26px_70px_rgba(250,204,21,0.16)]'

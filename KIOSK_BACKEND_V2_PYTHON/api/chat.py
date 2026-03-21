@@ -945,6 +945,8 @@ async def _load_room_inventory(session: AsyncSession, resolved_tenant_id: Option
     available_columns = {row[0] for row in cols_result.all()}
 
     select_fields = ["id", "name", "code", "price"]
+    if "amenities" in available_columns:
+        select_fields.append("amenities")
     for optional_col in ("max_adults", "max_children", "max_total_guests"):
         if optional_col in available_columns:
             select_fields.append(optional_col)
@@ -960,6 +962,7 @@ async def _load_room_inventory(session: AsyncSession, resolved_tenant_id: Option
             "code": row._mapping.get("code"),
             "price": float(row._mapping.get("price")),
             "currency": "INR",
+            "features": list(row._mapping.get("amenities") or []),
             "maxAdults": row._mapping.get("max_adults"),
             "maxChildren": row._mapping.get("max_children"),
             "maxTotalGuests": row._mapping.get("max_total_guests"),
@@ -1178,6 +1181,9 @@ class ChatResponse(BaseModel):
     normalizedQuery: Optional[str] = None
     sessionId: str
     language: str
+    roomDisplayMode: Optional[str] = None
+    focusRoomIds: Optional[list[str]] = None
+    roomIntroSequence: Optional[list[dict]] = None
 
     class Config:
         populate_by_name = True
@@ -1707,6 +1713,9 @@ async def chat(
             faqId=None,
             sessionId=req.session_id,
             language=updated_state.language,
+            roomDisplayMode=result.get("roomDisplayMode"),
+            focusRoomIds=result.get("focusRoomIds"),
+            roomIntroSequence=result.get("roomIntroSequence"),
         )
 
     except Exception as e:
