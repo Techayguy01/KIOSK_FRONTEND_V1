@@ -155,6 +155,36 @@ export const RoomPreviewPage: React.FC = () => {
             <p className="mt-3 md:mt-4 max-w-3xl text-sm md:text-base leading-relaxed text-white/68">
               This preview stays voice-first and guest-friendly. Let Siya walk through the real room visuals, comfort details, and spaces before you move into booking.
             </p>
+            <div className="mt-5 flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={() => emit('GENERAL_QUERY', { transcript: 'tell me the price of this room' })}
+                className="rounded-full border border-white/12 bg-white/[0.05] px-4 py-2.5 text-sm text-white/84 transition hover:bg-white/[0.12]"
+              >
+                Tell me the price
+              </button>
+              <button
+                type="button"
+                onClick={() => emit('GENERAL_QUERY', { transcript: 'show amenities for this room' })}
+                className="rounded-full border border-white/12 bg-white/[0.05] px-4 py-2.5 text-sm text-white/84 transition hover:bg-white/[0.12]"
+              >
+                Show amenities
+              </button>
+              <button
+                type="button"
+                onClick={() => emit('CONFIRM_BOOKING')}
+                className="rounded-full border border-cyan-300/30 bg-cyan-300/14 px-4 py-2.5 text-sm text-cyan-50 transition hover:bg-cyan-300/22"
+              >
+                Proceed to booking
+              </button>
+              <button
+                type="button"
+                onClick={() => window.dispatchEvent(new Event('voice-open-fullscreen'))}
+                className="rounded-full border border-white/12 bg-white/[0.05] px-4 py-2.5 text-sm text-white/84 transition hover:bg-white/[0.12]"
+              >
+                See more photos
+              </button>
+            </div>
           </header>
 
           <div className="flex-1 min-h-0">

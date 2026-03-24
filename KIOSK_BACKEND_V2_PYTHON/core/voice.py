@@ -14,17 +14,51 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# We will initialize Sarvam globally
+# Avoid initializing provider SDK clients at import-time. Import-time network/SSL
+# setup can block the whole API boot. We lazily create clients only when STT/TTS
+# is invoked.
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "").strip() or os.getenv("YOUR_SARVAM_API_KEY", "").strip()
 
-try:
-    from sarvamai import SarvamAI, AsyncSarvamAI
-    sarvam_client = SarvamAI(api_subscription_key=SARVAM_API_KEY)
-    sarvam_async_client = AsyncSarvamAI(api_subscription_key=SARVAM_API_KEY)
-except Exception as e:
-    print(f"[Voice] Failed to init Sarvam client: {e}")
-    sarvam_client = None
-    sarvam_async_client = None
+SarvamAI = None
+AsyncSarvamAI = None
+sarvam_client = None
+sarvam_async_client = None
+
+
+def _get_sarvam_client():
+    global SarvamAI, sarvam_client
+    if sarvam_client is not None:
+        return sarvam_client
+    if not SARVAM_API_KEY:
+        return None
+    try:
+        if SarvamAI is None:
+            from sarvamai import SarvamAI as _SarvamAI  # type: ignore
+            SarvamAI = _SarvamAI
+        sarvam_client = SarvamAI(api_subscription_key=SARVAM_API_KEY)
+        return sarvam_client
+    except Exception as e:
+        print(f"[Voice] Failed to init Sarvam client (lazy): {e}")
+        sarvam_client = None
+        return None
+
+
+def _get_sarvam_async_client():
+    global AsyncSarvamAI, sarvam_async_client
+    if sarvam_async_client is not None:
+        return sarvam_async_client
+    if not SARVAM_API_KEY:
+        return None
+    try:
+        if AsyncSarvamAI is None:
+            from sarvamai import AsyncSarvamAI as _AsyncSarvamAI  # type: ignore
+            AsyncSarvamAI = _AsyncSarvamAI
+        sarvam_async_client = AsyncSarvamAI(api_subscription_key=SARVAM_API_KEY)
+        return sarvam_async_client
+    except Exception as e:
+        print(f"[Voice] Failed to init AsyncSarvamAI client (lazy): {e}")
+        sarvam_async_client = None
+        return None
 
 LANGUAGE_ALIASES = {
     "english": "en",
@@ -85,14 +119,15 @@ class VoiceProvider:
         We stream the audio in one go, flush it, and wait for the result.
         Returns the transcribed text string.
         """
-        if not sarvam_async_client:
+        client = _get_sarvam_async_client()
+        if not client:
             raise ValueError("[Voice] AsyncSarvamAI client not initialized")
             
         lang_code = resolve_sarvam_language_code(language)
         transcript = ""
         
         try:
-            async with sarvam_async_client.speech_to_text_streaming.connect(
+            async with client.speech_to_text_streaming.connect(
                 model="saaras:v3",
                 mode="codemix",          # Perfect for Hindi + English mix
                 language_code=lang_code,

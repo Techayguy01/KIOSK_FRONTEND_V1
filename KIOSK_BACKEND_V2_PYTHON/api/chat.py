@@ -1183,7 +1183,10 @@ class ChatResponse(BaseModel):
     language: str
     roomDisplayMode: Optional[str] = None
     focusRoomIds: Optional[list[str]] = None
-    roomIntroSequence: Optional[list[dict]] = None
+    roomIntroSequence: Optional[list[str]] = None
+    roomIntroSpeechQueue: Optional[list[str]] = None
+    compareRoomIds: Optional[list[str]] = None
+    targetIntroIndex: Optional[int] = None
 
     class Config:
         populate_by_name = True
@@ -1716,6 +1719,9 @@ async def chat(
             roomDisplayMode=result.get("roomDisplayMode"),
             focusRoomIds=result.get("focusRoomIds"),
             roomIntroSequence=result.get("roomIntroSequence"),
+            roomIntroSpeechQueue=result.get("roomIntroSpeechQueue"),
+            compareRoomIds=result.get("compareRoomIds"),
+            targetIntroIndex=result.get("targetIntroIndex"),
         )
 
     except Exception as e:

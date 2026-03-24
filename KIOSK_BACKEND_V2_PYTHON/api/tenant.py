@@ -4,6 +4,7 @@ api/tenant.py
 Endpoint to resolve tenant info by slug — replaces the old Node.js /api/:slug/tenant route.
 """
 
+import socket
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel import select
@@ -59,7 +60,19 @@ async def get_tenant(
         }
     except HTTPException:
         raise
+    except socket.gaierror as e:
+        print(f"[TenantAPI] Database host resolution failed: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Database host could not be resolved. Please check network or database host settings.",
+        )
     except Exception as e:
+        if "getaddrinfo failed" in str(e).lower() or "name or service not known" in str(e).lower():
+            print(f"[TenantAPI] Wrapped database host resolution failure: {e}")
+            raise HTTPException(
+                status_code=503,
+                detail="Database host could not be resolved. Please check network or database host settings.",
+            )
         import traceback
         print(f"[TenantAPI] ❌ Error: {e}")
         traceback.print_exc()

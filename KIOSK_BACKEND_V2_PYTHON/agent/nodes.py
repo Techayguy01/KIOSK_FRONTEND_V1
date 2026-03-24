@@ -382,6 +382,134 @@ def _build_room_preview_intro(room: RoomInventoryItem) -> str:
     return ". ".join(parts)
 
 
+def _build_room_intro_speech_single(room: RoomInventoryItem) -> str:
+    price = f"INR {int(room.price):,}" if room.price else "price on request"
+    features = room.features[:3] if room.features else []
+    feature_text = ", ".join(features) if features else "comfortable amenities"
+    capacity = f"for up to {room.max_adults} adults" if room.max_adults else ""
+    capacity = f" {capacity}" if capacity else ""
+    return f"{room.name} — available at {price} per night{capacity}. It features {feature_text}."
+
+
+def _levenshtein_distance(a: str, b: str) -> int:
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+
+    previous = list(range(len(b) + 1))
+    for i, char_a in enumerate(a, start=1):
+        current = [i]
+        for j, char_b in enumerate(b, start=1):
+            cost = 0 if char_a == char_b else 1
+            current.append(
+                min(
+                    previous[j] + 1,
+                    current[j - 1] + 1,
+                    previous[j - 1] + cost,
+                )
+            )
+        previous = current
+    return previous[-1]
+
+
+def _best_fuzzy_room_alias_match(
+    normalized: str,
+    room_inventory: list[RoomInventoryItem],
+) -> Optional[RoomInventoryItem]:
+    if not normalized or not room_inventory:
+        return None
+
+    best_room: Optional[RoomInventoryItem] = None
+    best_distance: Optional[int] = None
+
+    for room in room_inventory:
+        aliases = [
+            _normalize_text(room.name),
+            _normalize_text(room.code or ""),
+        ]
+        for alias in aliases:
+            if not alias:
+                continue
+            distance = _levenshtein_distance(normalized, alias)
+            threshold = 1 if len(alias) <= 5 else 2 if len(alias) <= 10 else 3
+            if distance > threshold:
+                continue
+            if best_distance is None or distance < best_distance:
+                best_room = room
+                best_distance = distance
+
+    return best_room
+
+
+def _extract_intro_target_index(transcript: str, room_inventory: list[RoomInventoryItem]) -> Optional[int]:
+    text = _normalize_text(transcript)
+    if not text or not room_inventory:
+        return None
+
+    room_count = len(room_inventory)
+
+    direct_patterns = [
+        (r"\b(first|1st)\b", 0),
+        (r"\b(second|2nd)\b", 1),
+        (r"\b(third|3rd)\b", 2),
+        (r"\b(fourth|4th)\b", 3),
+        (r"\b(last)\b", room_count - 1),
+        (r"\b(next)\b", 1),
+        (r"\b(previous|again|back)\b", 0),
+    ]
+    for pattern, index in direct_patterns:
+        if re.search(pattern, text):
+            return max(0, min(room_count - 1, index))
+
+    ordinal_match = re.search(r"\b(?:room|option)\s+(\d+)\b", text)
+    if ordinal_match:
+        requested = int(ordinal_match.group(1)) - 1
+        return max(0, min(room_count - 1, requested))
+
+    if not re.search(r"\b(show|tell|repeat|again|replay|next|previous|back|last|first)\b", text):
+        return None
+
+    matched_room = _find_room_from_inventory(room_inventory, transcript)
+    if matched_room:
+        for index, room in enumerate(room_inventory):
+            if str(room.id) == str(matched_room.id):
+                return index
+
+    return None
+
+
+def _build_unknown_room_detail_reply(room: RoomInventoryItem, transcript: str) -> Optional[str]:
+    text = _normalize_text(transcript)
+    if not text or not room:
+        return None
+
+    detail_match = re.search(
+        r"\b(?:does\s+(?:it|this room)|is\s+there|do\s+you\s+have|has\s+(?:it|this room)|what about)\s+(?:a|an|the)?\s*([a-z][a-z\s]{2,40})\b",
+        text,
+    )
+    if not detail_match:
+        return None
+
+    requested = re.sub(r"\b(?:in|with|for|here|there)\b.*$", "", detail_match.group(1)).strip()
+    if not requested:
+        return None
+
+    normalized_features = [_normalize_text(feature) for feature in (room.features or []) if feature]
+    if any(requested in feature or feature in requested for feature in normalized_features):
+        return None
+
+    if requested in {"room", "suite", "price", "cost", "rate", "adults", "children"}:
+        return None
+
+    return (
+        f"I do not have that specific detail for {room.name}. "
+        "Would you like me to show all amenities for this room instead?"
+    )
+
+
 def _build_room_recommendation_prompt(room_inventory: list[RoomInventoryItem]) -> str:
     if not room_inventory:
         return (
@@ -457,7 +585,12 @@ def _rooms_mentioned_in_transcript(
         matches.append((best_index, room))
 
     matches.sort(key=lambda item: item[0])
-    return [room for _, room in matches]
+    ordered_matches = [room for _, room in matches]
+    if ordered_matches:
+        return ordered_matches
+
+    fuzzy_match = _best_fuzzy_room_alias_match(normalized_transcript, room_inventory)
+    return [fuzzy_match] if fuzzy_match else []
 
 
 def _build_room_comparison_prompt(compared_rooms: list[RoomInventoryItem]) -> str:
@@ -498,6 +631,9 @@ def _normalize_text(value: Optional[str]) -> str:
         text
         .replace("sweet", "suite")
         .replace("sweets", "suites")
+        .replace("swit", "suite")
+        .replace("swite", "suite")
+        .replace("delux", "deluxe")
         .replace("luxary", "luxury")
     )
 
@@ -870,6 +1006,10 @@ def _find_room_from_inventory(
             return room
         if room.code and _normalize_text(room.code) == normalized:
             return room
+
+    fuzzy_match = _best_fuzzy_room_alias_match(normalized, room_inventory)
+    if fuzzy_match:
+        return fuzzy_match
 
     alias_to_room: dict[str, RoomInventoryItem] = {}
     candidates: list[str] = []
@@ -1257,6 +1397,9 @@ def _looks_like_room_comparison_request(transcript: str) -> bool:
             r"difference\s+between|"
             r"which\s+is\s+better|"
             r"which\s+(?:one|room|suite)?\s*is\s+better|"
+            r"which\s+one|"
+            r"better\s+for|"
+            r"best\s+for|"
             r"versus|vs\.?"
             r")\b",
             text,
@@ -1767,6 +1910,24 @@ async def general_chat(state: KioskState) -> dict:
             "next_ui_screen": "SCAN_ID",
         }
 
+    current_room = state.selected_room
+    if not current_room and state.booking_slots.room_type:
+        current_room = _find_room_from_inventory(state.tenant_room_inventory, state.booking_slots.room_type)
+    if state.current_ui_screen in {"ROOM_SELECT", "ROOM_PREVIEW"} and current_room:
+        unknown_detail_reply = _build_unknown_room_detail_reply(current_room, state.latest_transcript)
+        if unknown_detail_reply:
+            updated_history = state.history + [
+                ConversationTurn(role="user", content=state.latest_transcript),
+                ConversationTurn(role="assistant", content=unknown_detail_reply),
+            ]
+            return {
+                "speech_response": unknown_detail_reply,
+                "speech_override": None,
+                "history": updated_history,
+                "next_ui_screen": state.current_ui_screen,
+                "selected_room": current_room,
+            }
+
     history_messages = [
         {"role": turn.role, "content": turn.content}
         for turn in state.history[-6:]
@@ -2163,6 +2324,9 @@ def _handle_room_request_transition(
     extracted_slots: dict,
     room_inventory: list[RoomInventoryItem],
 ) -> Optional[dict]:
+    show_all_intro = bool(
+        re.search(r"\b(show all rooms|skip (?:the )?intro|browse all rooms)\b", _normalize_text(state.latest_transcript))
+    )
     if state.resolved_intent == "FILTER_ROOMS":
         matched_ids, category_label = _resolve_room_filter(state.latest_transcript, room_inventory)
         if matched_ids == "SHOW_ALL":
@@ -2211,19 +2375,59 @@ def _handle_room_request_transition(
                 "roomIntroSequence": [],
             }
 
-    if state.current_ui_screen in {"WELCOME", "IDLE", "AI_CHAT", "MANUAL_MENU", "ROOM_SELECT"} and _looks_like_room_comparison_request(state.latest_transcript):
+    if state.resolved_intent == "COMPARE_ROOMS":
+        compared = _rooms_mentioned_in_transcript(state.latest_transcript, room_inventory)
+        if len(compared) >= 2:
+            compared_subset = compared[:3]
+            ids = [r.id for r in compared_subset]
+            speech = _build_room_comparison_prompt(compared_subset[:2])
+            return _make_booking_response(state, speech, "ROOM_SELECT", active_slot="room_type") | {
+                "roomDisplayMode": "compare",
+                "compareRoomIds": ids,
+                "roomIntroSequence": [],
+                "focusRoomIds": None,
+            }
+
+    if state.current_ui_screen in {"WELCOME", "IDLE", "AI_CHAT", "MANUAL_MENU", "ROOM_SELECT", "ROOM_PREVIEW"} and _looks_like_room_comparison_request(state.latest_transcript):
         compared_rooms = _rooms_mentioned_in_transcript(state.latest_transcript, room_inventory)
-        comparison_prompt = _build_room_comparison_prompt(compared_rooms or room_inventory[:2])
+        if len(compared_rooms) >= 2:
+            compared_subset = compared_rooms[:3]
+            ids = [r.id for r in compared_subset]
+            comparison_prompt = _build_room_comparison_prompt(compared_subset[:2])
+            return _make_booking_response(
+                state,
+                comparison_prompt,
+                "ROOM_SELECT",
+                active_slot="room_type",
+                clear_room_selection=True,
+            ) | {
+                "roomDisplayMode": "compare",
+                "compareRoomIds": ids,
+                "focusRoomIds": None,
+                "roomIntroSequence": [],
+            }
+
+    target_intro_index = _extract_intro_target_index(state.latest_transcript, room_inventory)
+    if (
+        state.current_ui_screen == "ROOM_SELECT"
+        and target_intro_index is not None
+        and not extracted_slots.get("room_type")
+        and room_inventory
+    ):
+        target_room = room_inventory[target_intro_index]
+        speech_queue = [_build_room_intro_speech_single(room) for room in room_inventory]
         return _make_booking_response(
             state,
-            comparison_prompt,
+            _build_room_intro_speech_single(target_room),
             "ROOM_SELECT",
             active_slot="room_type",
             clear_room_selection=True,
         ) | {
-            "roomDisplayMode": "browse",
-            "focusRoomIds": None,
-            "roomIntroSequence": [],
+            "roomIntroSequence": [room.id for room in room_inventory],
+            "roomIntroSpeechQueue": speech_queue,
+            "roomDisplayMode": "intro",
+            "focusRoomIds": [target_room.id],
+            "targetIntroIndex": target_intro_index,
         }
 
     room: Optional[RoomInventoryItem] = None
@@ -2249,9 +2453,18 @@ def _handle_room_request_transition(
                 extracted_slots=extracted,
                 selected_room=room,
             )
+        is_fresh_preview_entry = (
+            state.current_ui_screen != "ROOM_PREVIEW"
+            and state.current_ui_screen == "ROOM_SELECT"
+        )
+        preview_speech = (
+            "Would you like any information about this room, or shall I proceed with your booking?"
+            if is_fresh_preview_entry
+            else _build_room_preview_intro(room)
+        )
         return _make_booking_response(
             state,
-            _build_room_preview_intro(room),
+            preview_speech,
             "ROOM_PREVIEW",
             active_slot=None,
             extracted_slots=extracted,
@@ -2265,9 +2478,23 @@ def _handle_room_request_transition(
     if not state.booking_slots.room_type:
         if not room_inventory:
             return None
-        is_initial_presentation = state.current_ui_screen in {"WELCOME", "IDLE", "AI_CHAT", "MANUAL_MENU", "ROOM_SELECT"}
+        is_initial_presentation = state.current_ui_screen in {"WELCOME", "IDLE", "AI_CHAT", "MANUAL_MENU"}
+        if state.current_ui_screen == "ROOM_SELECT" and show_all_intro:
+            return _make_booking_response(
+                state,
+                "Certainly. Here are all available rooms. Please select a room, or ask any question regarding them.",
+                "ROOM_SELECT",
+                active_slot="room_type",
+                clear_room_selection=True,
+            ) | {
+                "roomIntroSequence": [],
+                "roomDisplayMode": "browse",
+                "focusRoomIds": None,
+            }
         if is_initial_presentation and not extracted_slots.get("room_type"):
-            speech, intro_sequence = _build_room_intro_with_sequence(room_inventory)
+            first_room = room_inventory[0]
+            speech = _build_room_intro_speech_single(first_room)
+            speech_queue = [_build_room_intro_speech_single(room) for room in room_inventory]
             return _make_booking_response(
                 state,
                 speech,
@@ -2275,9 +2502,24 @@ def _handle_room_request_transition(
                 active_slot="room_type",
                 clear_room_selection=True,
             ) | {
+                "roomIntroSequence": [room.id for room in room_inventory],
+                "roomIntroSpeechQueue": speech_queue,
                 "roomDisplayMode": "intro",
-                "focusRoomIds": [room_inventory[0].id],
-                "roomIntroSequence": intro_sequence,
+                "focusRoomIds": [first_room.id],
+                "targetIntroIndex": 0,
+            }
+
+        if state.current_ui_screen == "ROOM_SELECT":
+            return _make_booking_response(
+                state,
+                "Please select a room, or do you have any questions regarding the rooms?",
+                "ROOM_SELECT",
+                active_slot="room_type",
+                clear_room_selection=True,
+            ) | {
+                "roomIntroSequence": [],
+                "roomDisplayMode": "browse",
+                "focusRoomIds": None,
             }
         return _make_booking_response(
             state,

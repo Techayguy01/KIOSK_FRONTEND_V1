@@ -9,6 +9,7 @@ interface RoomCardProps {
   selected: boolean;
   opacity?: number;
   pointerEvents?: "auto" | "none";
+  compact?: boolean;
 }
 
 function formatPrice(room: RoomDTO): string {
@@ -132,6 +133,7 @@ export const RoomCard: React.FC<RoomCardProps> = ({
   selected,
   opacity = 1,
   pointerEvents = "auto",
+  compact = false,
 }) => {
   const [activeImageIndex, setActiveImageIndex] = useState(0);
   const [failedOptimizedIndexes, setFailedOptimizedIndexes] = useState<Record<number, boolean>>({});
@@ -218,6 +220,175 @@ export const RoomCard: React.FC<RoomCardProps> = ({
     }
   };
 
+  if (compact) {
+    return (
+      <div
+        role="button"
+        tabIndex={pointerEvents === "none" ? -1 : 0}
+        onClick={activateCard}
+        onKeyDown={onCardKeyDown}
+        style={{
+          opacity,
+          pointerEvents,
+          transition: "opacity 300ms ease",
+        }}
+        className={`group relative flex h-full w-full min-h-[420px] flex-col overflow-hidden rounded-[2rem] border text-left transition-all duration-300 ${
+          selected
+            ? 'border-amber-200/80 bg-slate-950/95 shadow-[0_26px_70px_rgba(250,204,21,0.16)]'
+            : 'border-white/10 bg-slate-950/72 hover:border-sky-200/35 hover:bg-slate-950/88'
+        }`}
+      >
+        <div
+          className="relative aspect-[16/8.2] overflow-hidden"
+          onTouchStart={onTouchStart}
+          onTouchEnd={onTouchEnd}
+        >
+          {currentImageSrc ? (
+            <img
+              src={currentImageSrc}
+              alt={room.name}
+              className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-[1.03]"
+              onError={() => {
+                const entry = imageEntries[activeImageIndex];
+                if (!entry) return;
+                const isUsingOptimized = !failedOptimizedIndexes[activeImageIndex] && entry.optimizedUrl !== entry.rawUrl;
+                if (isUsingOptimized) {
+                  setFailedOptimizedIndexes((prev) => ({ ...prev, [activeImageIndex]: true }));
+                }
+              }}
+            />
+          ) : (
+            <div className="flex h-full w-full items-center justify-center bg-slate-800 text-sm text-slate-300">
+              No image available
+            </div>
+          )}
+
+          <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/15 to-transparent" />
+
+          <div className="absolute inset-x-0 top-0 flex items-start justify-between p-4">
+            <div className="flex flex-wrap gap-2">
+              <span className="rounded-full border border-white/15 bg-slate-950/65 px-3 py-1 text-[10px] font-medium uppercase tracking-[0.2em] text-white/85">
+                {guestsLine}
+              </span>
+              {imageCount > 1 && (
+                <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-slate-950/65 px-3 py-1 text-[10px] text-white/78">
+                  <ImageIcon size={12} />
+                  {imageCount} photos
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="absolute inset-x-0 bottom-0 p-4">
+            <div className="max-w-[82%] rounded-2xl border border-white/10 bg-slate-950/58 px-4 py-3 backdrop-blur-sm">
+              <p className="text-[10px] uppercase tracking-[0.22em] text-amber-100/70">Room Snapshot</p>
+              <p className="mt-1 line-clamp-2 text-sm leading-6 text-white/92">
+                {selectedImageCaption || narrative.details[0] || narrative.headline}
+              </p>
+            </div>
+          </div>
+
+          {imageEntries.length > 1 && (
+            <>
+              <button
+                type="button"
+                onClick={goToPreviousImage}
+                className="absolute left-3 top-1/2 -translate-y-1/2 rounded-full border border-white/15 bg-slate-950/55 p-2.5 text-white transition-colors hover:bg-slate-950/72"
+                aria-label="Previous room image"
+              >
+                <ChevronLeft size={18} />
+              </button>
+              <button
+                type="button"
+                onClick={goToNextImage}
+                className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full border border-white/15 bg-slate-950/55 p-2.5 text-white transition-colors hover:bg-slate-950/72"
+                aria-label="Next room image"
+              >
+                <ChevronRight size={18} />
+              </button>
+            </>
+          )}
+        </div>
+
+        <div className="flex flex-1 flex-col px-5 pb-5 pt-4">
+          <div className="min-w-0">
+            <h3 className="text-[1.65rem] font-semibold tracking-[-0.04em] text-white leading-[1.05]">
+              {room.name}
+            </h3>
+            <p className="mt-3 line-clamp-3 text-[15px] leading-7 text-slate-300">
+              {narrative.headline}
+            </p>
+          </div>
+
+          <div className="mt-4">
+            <div className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-left">
+              <p className="text-[10px] uppercase tracking-[0.22em] text-white/45">From</p>
+              <p className="mt-1 text-[1.9rem] font-semibold tracking-[-0.04em] text-cyan-200">{formatPrice(room)}</p>
+              <p className="text-xs text-slate-400">per night</p>
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-3">
+            <div className="rounded-[1.35rem] border border-white/10 bg-white/[0.035] px-4 py-4">
+              <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.22em] text-white/45">
+                <Sparkles size={13} />
+                Inside The Room
+              </div>
+              <div className="mt-3 space-y-2">
+                {(narrative.details.length > 0 ? narrative.details : [narrative.headline]).slice(0, 2).map((detail) => (
+                  <p key={detail} className="line-clamp-3 text-sm leading-6 text-white/88">
+                    {detail.charAt(0).toUpperCase() + detail.slice(1)}
+                  </p>
+                ))}
+              </div>
+            </div>
+
+            <div className="rounded-[1.35rem] border border-white/10 bg-white/[0.035] px-4 py-4">
+              <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.22em] text-white/45">
+                <Users size={13} />
+                Stay Details
+              </div>
+              <div className="mt-3 space-y-2 text-sm leading-6 text-white/88">
+                <p>Ideal for {guestsLine.toLowerCase()}.</p>
+                <p>{typeof room.maxChildren === 'number' ? `Children: ${supportLine.toLowerCase()}.` : `${supportLine}.`}</p>
+              </div>
+            </div>
+          </div>
+
+          {narrative.amenities.length > 0 && (
+            <div className="mt-4">
+              <div className="mb-2 text-[11px] uppercase tracking-[0.22em] text-white/45">Included Comforts</div>
+              <div className="flex flex-wrap gap-2">
+                {narrative.amenities.slice(0, 3).map((feature) => (
+                  <span
+                    key={feature}
+                    className="rounded-full border border-sky-200/20 bg-sky-300/10 px-3 py-1.5 text-xs text-sky-50"
+                  >
+                    {feature}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="mt-auto pt-4">
+            <div className="flex items-center justify-between gap-4 rounded-[1.3rem] border border-white/10 bg-slate-900/78 px-4 py-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-white">{selected ? 'This room is selected' : 'Tap to select this room'}</p>
+                <p className="mt-1 line-clamp-2 text-xs text-slate-400">
+                  {selected ? 'Continue when this feels right for the guest.' : 'You can still ask Siya to describe another room before continuing.'}
+                </p>
+              </div>
+              <div className={`shrink-0 rounded-full px-4 py-2 text-sm font-semibold ${selected ? 'bg-amber-200 text-slate-950' : 'bg-white/8 text-white/88'}`}>
+                {selected ? 'Selected' : 'Choose Room'}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       role="button"
@@ -229,7 +400,7 @@ export const RoomCard: React.FC<RoomCardProps> = ({
         pointerEvents,
         transition: "opacity 300ms ease",
       }}
-      className={`group relative overflow-hidden rounded-[2rem] border text-left transition-all duration-300 ${
+      className={`group relative w-full h-full overflow-hidden rounded-[2rem] border text-left transition-all duration-300 ${
         selected
           ? 'border-amber-200/80 bg-slate-950/95 shadow-[0_26px_70px_rgba(250,204,21,0.16)]'
           : 'border-white/10 bg-slate-950/72 hover:border-sky-200/35 hover:bg-slate-950/88'

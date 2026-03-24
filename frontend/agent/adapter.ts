@@ -32,6 +32,7 @@ const DELAY = {
 
 const TIMEOUT = {
     INACTIVITY:               2 * 60 * 1000,
+    ROOM_INTRO_INACTIVITY:    8 * 60 * 1000,
     SCAN_ID_INACTIVITY:       60 * 1000,
     COMPLEX_SCREEN_NO_SPEECH: 10000,
     COMPLEX_SCREEN_NO_RESULT: 15000,
@@ -360,17 +361,20 @@ class AgentAdapterService {
             if (event.type === "TTS_STARTED") {
                 this.clearListeningRestartTimer("tts_started");
                 this.clearSilenceReengageTimer("tts_started");
+                this.resetInactivityTimer();
                 if (event.text?.trim()) this.emitTranscript(event.text, true, 'ai');
                 this.pendingAiSpeechText = null;
             }
             if (event.type === "TTS_ENDED") {
                 this.pendingAiSpeechText = null;
+                this.resetInactivityTimer();
                 this.handleTTSEnded("ended");
             }
             if (event.type === "TTS_ERROR") {
                 const fallback = (event.text || this.pendingAiSpeechText || "").trim();
                 if (fallback) this.emitTranscript(fallback, true, 'ai');
                 this.pendingAiSpeechText = null;
+                this.resetInactivityTimer();
                 this.handleTTSEnded("error");
             }
             if (event.type === "TTS_CANCELLED") {
@@ -532,10 +536,29 @@ class AgentAdapterService {
     private resetInactivityTimer(): void {
         if (this.inactivityTimer) { clearTimeout(this.inactivityTimer); this.inactivityTimer = null; }
         if (this.state === "IDLE") return;
+        const isRoomIntroActive = this.state === "ROOM_SELECT" && (
+            this.viewData?.roomDisplayMode === "intro"
+            || (Array.isArray(this.viewData?.roomIntroSequence) && this.viewData.roomIntroSequence.length > 0)
+            || TTSController.isSpeaking()
+            || VoiceRuntime.getMode() === "speaking"
+        );
         const ms = this.state === "SCAN_ID"
             ? Math.max(TIMEOUT.INACTIVITY, TIMEOUT.SCAN_ID_INACTIVITY)
-            : TIMEOUT.INACTIVITY;
+            : isRoomIntroActive
+                ? TIMEOUT.ROOM_INTRO_INACTIVITY
+                : TIMEOUT.INACTIVITY;
         this.inactivityTimer = setTimeout(() => {
+            const shouldDeferRoomIntroTimeout = this.state === "ROOM_SELECT" && (
+                this.viewData?.roomDisplayMode === "intro"
+                || (Array.isArray(this.viewData?.roomIntroSequence) && this.viewData.roomIntroSequence.length > 0)
+                || TTSController.isSpeaking()
+                || VoiceRuntime.getMode() === "speaking"
+            );
+            if (shouldDeferRoomIntroTimeout) {
+                console.log("[AgentAdapter] Inactivity timeout deferred during active room intro.");
+                this.resetInactivityTimer();
+                return;
+            }
             console.warn("[AgentAdapter] Inactivity timeout. Returning to IDLE.");
             this.hardStopAll();
             this.state = "IDLE";
@@ -692,10 +715,39 @@ class AgentAdapterService {
             .toLowerCase()
             .replace(/\bsweet\b/g, "suite")
             .replace(/\bsweets\b/g, "suites")
+            .replace(/\bswit\b/g, "suite")
+            .replace(/\bswite\b/g, "suite")
+            .replace(/\bdelux\b/g, "deluxe")
             .replace(/\bluxary\b/g, "luxury")
             .replace(/\blux\b/g, "luxury")
             .replace(/\s+/g, " ")
             .trim();
+    }
+
+    private levenshteinDistance(a: string, b: string): number {
+        if (a === b) return 0;
+        if (!a) return b.length;
+        if (!b) return a.length;
+
+        const prev = new Array<number>(b.length + 1).fill(0);
+        const curr = new Array<number>(b.length + 1).fill(0);
+
+        for (let j = 0; j <= b.length; j += 1) prev[j] = j;
+
+        for (let i = 1; i <= a.length; i += 1) {
+            curr[0] = i;
+            for (let j = 1; j <= b.length; j += 1) {
+                const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+                curr[j] = Math.min(
+                    prev[j] + 1,
+                    curr[j - 1] + 1,
+                    prev[j - 1] + cost,
+                );
+            }
+            for (let j = 0; j <= b.length; j += 1) prev[j] = curr[j];
+        }
+
+        return prev[b.length];
     }
 
     private getCanonicalSelectedRoomLabel(roomLike?: any): string | null {
@@ -740,6 +792,25 @@ class AgentAdapterService {
             return name && (name.includes(normalized) || normalized.includes(name));
         });
         if (byName) return byName;
+
+        // Lightweight fuzzy matching for common STT / accent errors before token scoring.
+        let fuzzyRoom: any = null;
+        let fuzzyDistance = Number.POSITIVE_INFINITY;
+        for (const room of rooms) {
+            const aliases = [
+                this.normalizeRoomHintText(room?.name || ""),
+                this.normalizeRoomHintText(room?.code || ""),
+            ].filter(Boolean);
+            for (const alias of aliases) {
+                const distance = this.levenshteinDistance(normalized, alias);
+                const threshold = alias.length <= 5 ? 1 : alias.length <= 10 ? 2 : 3;
+                if (distance <= threshold && distance < fuzzyDistance) {
+                    fuzzyRoom = room;
+                    fuzzyDistance = distance;
+                }
+            }
+        }
+        if (fuzzyRoom) return fuzzyRoom;
 
         // Token scoring
         const IGNORED_TOKENS = new Set([
@@ -1508,6 +1579,9 @@ class AgentAdapterService {
             delete merged.roomDisplayMode;
             delete merged.focusRoomIds;
             delete merged.roomIntroSequence;
+            delete merged.roomIntroSpeechQueue;
+            delete merged.compareRoomIds;
+            delete merged.targetIntroIndex;
             this.manualEditModeActive = false;
         }
         if (nextState === "SCAN_ID" && (intent === "RESCAN" || intent === "CHECK_IN_SELECTED")) {
@@ -1635,6 +1709,18 @@ class AgentAdapterService {
         if (payload && Object.prototype.hasOwnProperty.call(payload, "roomIntroSequence")) {
             if (Array.isArray(payload.roomIntroSequence)) merged.roomIntroSequence = payload.roomIntroSequence;
             else delete merged.roomIntroSequence;
+        }
+        if (payload && Object.prototype.hasOwnProperty.call(payload, "roomIntroSpeechQueue")) {
+            if (Array.isArray(payload.roomIntroSpeechQueue)) merged.roomIntroSpeechQueue = payload.roomIntroSpeechQueue;
+            else delete merged.roomIntroSpeechQueue;
+        }
+        if (payload && Object.prototype.hasOwnProperty.call(payload, "compareRoomIds")) {
+            if (Array.isArray(payload.compareRoomIds)) merged.compareRoomIds = payload.compareRoomIds;
+            else delete merged.compareRoomIds;
+        }
+        if (payload && Object.prototype.hasOwnProperty.call(payload, "targetIntroIndex")) {
+            if (typeof payload.targetIntroIndex === "number") merged.targetIntroIndex = payload.targetIntroIndex;
+            else delete merged.targetIntroIndex;
         }
 
         // ── 10. Booking IDs ───────────────────────────────────────────────────
@@ -2130,7 +2216,7 @@ class AgentAdapterService {
     private transitionTo(nextState: UiState, intent?: string, payload?: any): void {
         console.log(`[Mediator] Requesting: ${this.state} -> ${nextState}`);
 
-        if (nextState === "ROOM_SELECT" || nextState === "ROOM_PREVIEW") {
+        if (nextState === "WELCOME" || nextState === "ROOM_SELECT" || nextState === "ROOM_PREVIEW") {
             if (typeof RoomService.prefetchAvailableRooms === "function") {
                 void RoomService.prefetchAvailableRooms();
             } else {
