@@ -23,7 +23,7 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from agent.graph import kiosk_agent
-from agent.nodes import _is_room_change_request, log_decision_trace
+from agent.nodes import _is_room_change_request, booking_logic, general_chat, log_decision_trace, route_intent
 from agent.state import (
     BookingSlots,
     ConversationTurn,
@@ -1432,8 +1432,18 @@ async def chat(
         # LangGraph agent
         # ------------------------------------------------------------------
         if not updated_state:
-            result: dict = await kiosk_agent.ainvoke(state.model_dump())
-            updated_state = KioskState(**result)
+            routed_updates = await route_intent(state)
+            routed_state = state.model_copy(update=routed_updates)
+            next_node = (
+                "booking_logic"
+                if routed_state.resolved_intent in {
+                    "BOOK_ROOM", "PROVIDE_GUESTS", "PROVIDE_DATES", "PROVIDE_NAME",
+                    "CONFIRM_BOOKING", "MODIFY_BOOKING", "CANCEL_BOOKING",
+                } or routed_state.current_ui_screen in {"ROOM_SELECT", "ROOM_PREVIEW", "BOOKING_COLLECT", "BOOKING_SUMMARY"}
+                else "general_chat"
+            )
+            result = await (booking_logic(routed_state) if next_node == "booking_logic" else general_chat(routed_state))
+            updated_state = routed_state.model_copy(update=result)
             _sessions[req.session_id] = updated_state
 
         slots_dict = updated_state.booking_slots.model_dump()

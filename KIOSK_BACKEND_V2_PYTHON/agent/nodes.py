@@ -371,6 +371,13 @@ def _build_room_confirmation(room: RoomInventoryItem) -> str:
     return ". ".join(parts)
 
 
+def _build_room_feature_summary(room: RoomInventoryItem, limit: int = 3) -> str:
+    features = [str(feature or "").strip() for feature in (room.features or []) if str(feature or "").strip()]
+    if not features:
+        return ""
+    return _join_spoken_list(features[:limit])
+
+
 def _build_room_preview_intro(room: RoomInventoryItem) -> str:
     parts = [f"Here is the {room.name}"]
     price_text = _format_price_for_speech(room.price, room.currency)
@@ -378,7 +385,12 @@ def _build_room_preview_intro(room: RoomInventoryItem) -> str:
         parts[-1] += f", available at {price_text} per night"
     if room.max_adults:
         parts[-1] += f" for up to {room.max_adults} adult{'s' if room.max_adults != 1 else ''}"
-    parts.append("Take a look and let me know if you'd like to book it or see another option.")
+    if room.max_children:
+        parts[-1] += f" and {room.max_children} child{'ren' if room.max_children != 1 else ''}"
+    feature_summary = _build_room_feature_summary(room)
+    if feature_summary:
+        parts.append(f"It includes {feature_summary}.")
+    parts.append("Take a look and let me know if you'd like more details, want to compare it, book it, or see another option.")
     return ". ".join(parts)
 
 
@@ -564,6 +576,15 @@ def _rooms_mentioned_in_transcript(
     matches: list[tuple[int, RoomInventoryItem]] = []
     seen_ids: set[str] = set()
 
+    def room_position(room: RoomInventoryItem) -> int:
+        alias_tokens = _meaningful_room_tokens(f"{room.name or ''} {room.code or ''}")
+        positions = [
+            normalized_transcript.find(token)
+            for token in alias_tokens
+            if normalized_transcript.find(token) >= 0
+        ]
+        return min(positions) if positions else len(normalized_transcript)
+
     for room in room_inventory:
         aliases = [
             _normalize_text(room.name or ""),
@@ -586,11 +607,54 @@ def _rooms_mentioned_in_transcript(
 
     matches.sort(key=lambda item: item[0])
     ordered_matches = [room for _, room in matches]
-    if ordered_matches:
+    if len(ordered_matches) >= 2:
         return ordered_matches
 
+    transcript_tokens = _meaningful_room_tokens(transcript)
+    if transcript_tokens:
+        scored_matches: list[tuple[int, int, int, RoomInventoryItem]] = []
+        for room in room_inventory:
+            alias_tokens = _meaningful_room_tokens(f"{room.name or ''} {room.code or ''}")
+            if not alias_tokens:
+                continue
+            matched_tokens = sum(1 for token in alias_tokens if token in transcript_tokens)
+            if matched_tokens <= 0:
+                continue
+
+            token_positions = [
+                normalized_transcript.find(token)
+                for token in alias_tokens
+                if token in transcript_tokens and normalized_transcript.find(token) >= 0
+            ]
+            earliest_position = min(token_positions) if token_positions else len(normalized_transcript)
+            scored_matches.append((matched_tokens, -len(alias_tokens), earliest_position, room))
+
+        if scored_matches:
+            scored_matches.sort(key=lambda item: (-item[0], item[1], item[2]))
+            filtered_matches: list[RoomInventoryItem] = []
+            for matched_tokens, _alias_len, _position, room in scored_matches:
+                threshold = 2 if matched_tokens >= 2 else 1
+                if matched_tokens < threshold:
+                    continue
+                room_key = str(room.id or room.name or room.code or "")
+                if room_key in seen_ids:
+                    continue
+                seen_ids.add(room_key)
+                filtered_matches.append(room)
+
+            merged_matches = ordered_matches + filtered_matches
+            merged_matches.sort(key=room_position)
+            if len(merged_matches) >= 2:
+                return merged_matches
+
     fuzzy_match = _best_fuzzy_room_alias_match(normalized_transcript, room_inventory)
-    return [fuzzy_match] if fuzzy_match else []
+    if fuzzy_match:
+        room_key = str(fuzzy_match.id or fuzzy_match.name or fuzzy_match.code or "")
+        if room_key not in seen_ids:
+            merged_matches = ordered_matches + [fuzzy_match]
+            merged_matches.sort(key=room_position)
+            return merged_matches
+    return ordered_matches
 
 
 def _build_room_comparison_prompt(compared_rooms: list[RoomInventoryItem]) -> str:
@@ -606,12 +670,15 @@ def _build_room_comparison_prompt(compared_rooms: list[RoomInventoryItem]) -> st
             if room.max_adults
             else "a comfortable stay"
         )
-        if price_text:
-            described_rooms.append(
-                f"{room_name} is available for {price_text} and suits {occupancy_text}"
-            )
-        else:
-            described_rooms.append(f"{room_name} suits {occupancy_text}")
+        feature_summary = _build_room_feature_summary(room, limit=2)
+        description = (
+            f"{room_name} is available for {price_text} and suits {occupancy_text}"
+            if price_text
+            else f"{room_name} suits {occupancy_text}"
+        )
+        if feature_summary:
+            description += f", with {feature_summary}"
+        described_rooms.append(description)
 
     return (
         f"{described_rooms[0]}. {described_rooms[1]}. "
@@ -627,15 +694,19 @@ def _build_room_comparison_prompt(compared_rooms: list[RoomInventoryItem]) -> st
 # None-guarded expressions, but the type hint previously claimed plain str).
 def _normalize_text(value: Optional[str]) -> str:
     text = (value or "").strip().lower()
-    return (
-        text
-        .replace("sweet", "suite")
-        .replace("sweets", "suites")
-        .replace("swit", "suite")
-        .replace("swite", "suite")
-        .replace("delux", "deluxe")
-        .replace("luxary", "luxury")
+    replacements = (
+        (r"\bsweets\b", "suites"),
+        (r"\bsweet\b", "suite"),
+        (r"\bsuit\b", "suite"),
+        (r"\bswit\b", "suite"),
+        (r"\bswite\b", "suite"),
+        (r"\bdelux\b", "deluxe"),
+        (r"\bluxary\b", "luxury"),
+        (r"\bluxurious\b", "luxury"),
     )
+    for pattern, replacement in replacements:
+        text = re.sub(pattern, replacement, text)
+    return text
 
 
 def _tokenize_text(value: str) -> list[str]:
@@ -2319,6 +2390,87 @@ def _build_preview_booking_gate_response(state: KioskState) -> dict:
     }
 
 
+def _comparison_partner_for_implicit_request(
+    transcript: str,
+    room_inventory: list[RoomInventoryItem],
+    primary_room: Optional[RoomInventoryItem],
+    selected_room: Optional[RoomInventoryItem],
+) -> Optional[RoomInventoryItem]:
+    text = _normalize_text(transcript)
+    if not text or not room_inventory or not primary_room:
+        return None
+
+    if not re.search(r"\b(another|other|different)\s+(room|one|option|suite)\b", text):
+        return None
+
+    if selected_room and str(selected_room.id) != str(primary_room.id):
+        return selected_room
+
+    primary_index = next(
+        (index for index, room in enumerate(room_inventory) if str(room.id) == str(primary_room.id)),
+        None,
+    )
+    if primary_index is None:
+        return next((room for room in room_inventory if str(room.id) != str(primary_room.id)), None)
+
+    return next(
+        (room for room in room_inventory if str(room.id) != str(primary_room.id)),
+        None,
+    )
+
+
+def _extract_primary_room_candidate_from_comparison(transcript: str) -> str:
+    text = _normalize_text(transcript)
+    if not text:
+        return ""
+    text = re.sub(r"^(?:i\s+want\s+to\s+)?compare\s+", "", text).strip()
+    text = re.sub(
+        r"\s+(?:with|and|versus|vs\.?)\s+(?:another|other|different)\s+(?:room|suite|one|option)\b.*$",
+        "",
+        text,
+    ).strip()
+    text = re.sub(
+        r"\s+(?:with|and|versus|vs\.?)\s+(?:this|that|it|current)\s+(?:room|suite|one)\b.*$",
+        "",
+        text,
+    ).strip()
+    return text
+
+
+def _resolve_rooms_for_comparison_request(
+    state: KioskState,
+    room_inventory: list[RoomInventoryItem],
+) -> list[RoomInventoryItem]:
+    compared_rooms = _rooms_mentioned_in_transcript(state.latest_transcript, room_inventory)
+    text = _normalize_text(state.latest_transcript)
+    selected_room = state.selected_room
+
+    if len(compared_rooms) == 0 and room_inventory:
+        primary_candidate = _extract_primary_room_candidate_from_comparison(state.latest_transcript)
+        if primary_candidate:
+            primary_room = _find_room_from_inventory(room_inventory, primary_candidate)
+            if primary_room:
+                compared_rooms = [primary_room]
+
+    if (
+        len(compared_rooms) == 0
+        and selected_room
+        and re.search(r"\b(this|it|current)\s+(room|one|suite)\b|\bcompare\s+this\b|\bcompare\s+it\b", text)
+    ):
+        compared_rooms = [selected_room]
+
+    if len(compared_rooms) == 1:
+        implicit_partner = _comparison_partner_for_implicit_request(
+            state.latest_transcript,
+            room_inventory,
+            compared_rooms[0],
+            selected_room,
+        )
+        if implicit_partner:
+            compared_rooms = [compared_rooms[0], implicit_partner]
+    return compared_rooms
+
+
 def _handle_room_request_transition(
     state: KioskState,
     extracted_slots: dict,
@@ -2376,7 +2528,7 @@ def _handle_room_request_transition(
             }
 
     if state.resolved_intent == "COMPARE_ROOMS":
-        compared = _rooms_mentioned_in_transcript(state.latest_transcript, room_inventory)
+        compared = _resolve_rooms_for_comparison_request(state, room_inventory)
         if len(compared) >= 2:
             compared_subset = compared[:3]
             ids = [r.id for r in compared_subset]
@@ -2389,7 +2541,7 @@ def _handle_room_request_transition(
             }
 
     if state.current_ui_screen in {"WELCOME", "IDLE", "AI_CHAT", "MANUAL_MENU", "ROOM_SELECT", "ROOM_PREVIEW"} and _looks_like_room_comparison_request(state.latest_transcript):
-        compared_rooms = _rooms_mentioned_in_transcript(state.latest_transcript, room_inventory)
+        compared_rooms = _resolve_rooms_for_comparison_request(state, room_inventory)
         if len(compared_rooms) >= 2:
             compared_subset = compared_rooms[:3]
             ids = [r.id for r in compared_subset]
@@ -2399,7 +2551,7 @@ def _handle_room_request_transition(
                 comparison_prompt,
                 "ROOM_SELECT",
                 active_slot="room_type",
-                clear_room_selection=True,
+                clear_room_selection=not bool(state.selected_room),
             ) | {
                 "roomDisplayMode": "compare",
                 "compareRoomIds": ids,

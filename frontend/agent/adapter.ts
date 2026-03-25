@@ -24,7 +24,7 @@ const DELAY = {
     VOICE_MODE_LISTEN:        120,
     BOOKING_FIELDS_LISTEN:    300,
     CANCEL_SPEAK_DELAY:       3000,
-    CONFIRM_TIMEOUT:          2200,
+    CONFIRM_TIMEOUT:          10000,
     POST_BRAIN_IDLE:          500,
     KEY_DISPENSE_SIM:         3500,
     SILENCE_REENGAGE_COOLDOWN: 12000,
@@ -1145,9 +1145,13 @@ class AgentAdapterService {
         const detailLine = this.buildRoomDetailsLine(room);
         const capLine    = typeof room?.maxAdults === "number"
             ? `It is well suited for up to ${room.maxAdults} adult${room.maxAdults === 1 ? "" : "s"}.` : "";
+        const childLine  = typeof room?.maxChildren === "number"
+            ? `It can also accommodate ${room.maxChildren} child${room.maxChildren === 1 ? "" : "ren"}.` : "";
         const priceLine  = (() => { const p = this.formatRoomPrice(room); return p ? `It is priced at ${p}.` : ""; })();
-        return [`This is our ${name}.`, detailLine, capLine, priceLine,
-            "Would you like to continue with this room, or shall I show you another option?",
+        const featureLine = Array.isArray(room?.features) && room.features.length > 0
+            ? `Key features include ${room.features.slice(0, 4).join(", ")}.` : "";
+        return [`This is our ${name}.`, detailLine, capLine, childLine, priceLine, featureLine,
+            "Would you like more details about this room, would you like to compare it, or shall I continue with this option?",
         ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
     }
 
@@ -2008,6 +2012,18 @@ class AgentAdapterService {
             if (!decision) {
                 this.currentLLMAbort?.abort();
                 this.currentLLMAbort = new AbortController();
+                let outboundRoomCatalog = Array.isArray(this.viewData.rooms) ? this.viewData.rooms : [];
+                if (outboundRoomCatalog.length === 0) {
+                    try {
+                        outboundRoomCatalog = await RoomService.getAvailableRooms();
+                        if (outboundRoomCatalog.length > 0) {
+                            this.viewData = { ...this.viewData, rooms: outboundRoomCatalog };
+                            console.log(`[AgentAdapter] Loaded room catalog fallback for /api/chat: ${outboundRoomCatalog.length} rooms`);
+                        }
+                    } catch (roomCatalogError) {
+                        console.warn("[AgentAdapter] Failed to load room catalog fallback for /api/chat:", roomCatalogError);
+                    }
+                }
                 const res = await fetch(targetUrl, {
                     method: 'POST',
                     signal: this.currentLLMAbort.signal,
@@ -2022,7 +2038,7 @@ class AgentAdapterService {
                         lastSystemPrompt: this.slotContext.promptAsked || undefined,
                         filledSlots:      this.viewData.bookingSlots || {},
                         selectedRoom:     this.viewData.selectedRoom || undefined,
-                        roomCatalog:      Array.isArray(this.viewData.rooms) ? this.viewData.rooms : undefined,
+                        roomCatalog:      outboundRoomCatalog.length > 0 ? outboundRoomCatalog : undefined,
                     }),
                 });
                 if (!res.ok) throw new Error(`LLM API error: ${res.status}`);
@@ -2045,6 +2061,9 @@ class AgentAdapterService {
                 return;
             }
             if (decision.language) this.language = decision.language;
+            if (requestState === "BOOKING_SUMMARY" && this.pendingConfirmToken !== null) {
+                this.pendingConfirmToken = null;
+            }
 
             // ── Intent + room resolution ──────────────────────────────────────
             const rawIntent          = decision.intent;
@@ -2511,3 +2530,4 @@ export const AgentAdapter = new AgentAdapterService();
 if (import.meta.hot) {
     import.meta.hot.dispose(() => { AgentAdapter.destroy(); });
 }
+

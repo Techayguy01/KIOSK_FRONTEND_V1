@@ -62,6 +62,7 @@ async def health_check():
     return {"status": "ok", "version": "2.0.0", "model": "LangGraph + LiteLLM"}
 
 if __name__ == "__main__":
-    print("🚀 Starting Kiosk AI Backend V2 on port 8000...")
+    print("Starting Kiosk AI Backend V2 on port 8000...")
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
 

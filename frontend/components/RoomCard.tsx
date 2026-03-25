@@ -10,6 +10,9 @@ interface RoomCardProps {
   opacity?: number;
   pointerEvents?: "auto" | "none";
   compact?: boolean;
+  secondaryActionLabel?: string;
+  onSecondaryAction?: (room: RoomDTO) => void;
+  secondaryActionActive?: boolean;
 }
 
 function formatPrice(room: RoomDTO): string {
@@ -134,6 +137,9 @@ export const RoomCard: React.FC<RoomCardProps> = ({
   opacity = 1,
   pointerEvents = "auto",
   compact = false,
+  secondaryActionLabel,
+  onSecondaryAction,
+  secondaryActionActive = false,
 }) => {
   const [activeImageIndex, setActiveImageIndex] = useState(0);
   const [failedOptimizedIndexes, setFailedOptimizedIndexes] = useState<Record<number, boolean>>({});
@@ -218,6 +224,10 @@ export const RoomCard: React.FC<RoomCardProps> = ({
       event.preventDefault();
       activateCard();
     }
+  };
+  const handleSecondaryAction = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    onSecondaryAction?.(room);
   };
 
   if (compact) {
@@ -379,8 +389,23 @@ export const RoomCard: React.FC<RoomCardProps> = ({
                   {selected ? 'Continue when this feels right for the guest.' : 'You can still ask Siya to describe another room before continuing.'}
                 </p>
               </div>
-              <div className={`shrink-0 rounded-full px-4 py-2 text-sm font-semibold ${selected ? 'bg-amber-200 text-slate-950' : 'bg-white/8 text-white/88'}`}>
-                {selected ? 'Selected' : 'Choose Room'}
+              <div className="flex shrink-0 items-center gap-2">
+                {secondaryActionLabel && onSecondaryAction && (
+                  <button
+                    type="button"
+                    onClick={handleSecondaryAction}
+                    className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                      secondaryActionActive
+                        ? 'bg-cyan-200 text-slate-950'
+                        : 'bg-white/8 text-white/88 hover:bg-white/14'
+                    }`}
+                  >
+                    {secondaryActionActive ? 'Comparing' : secondaryActionLabel}
+                  </button>
+                )}
+                <div className={`rounded-full px-4 py-2 text-sm font-semibold ${selected ? 'bg-amber-200 text-slate-950' : 'bg-white/8 text-white/88'}`}>
+                  {selected ? 'Selected' : 'Choose Room'}
+                </div>
               </div>
             </div>
           </div>

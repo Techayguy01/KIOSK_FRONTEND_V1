@@ -126,6 +126,7 @@ export const RoomSelectPage: React.FC = () => {
   const [localRoomDisplayMode, setLocalRoomDisplayMode] = useState<DisplayMode | null>(null);
   const [localIntroSequence, setLocalIntroSequence] = useState<string[]>([]);
   const [localSpeechQueue, setLocalSpeechQueue] = useState<string[]>([]);
+  const [manualCompareIds, setManualCompareIds] = useState<string[]>([]);
   const activeIntroIndexRef = useRef(0);
   const speechQueueRef = useRef<string[]>([]);
   const introSequenceRef = useRef<string[]>([]);
@@ -151,6 +152,7 @@ export const RoomSelectPage: React.FC = () => {
   const backendSpeechQueue: string[] = Array.isArray((data as any)?.roomIntroSpeechQueue) ? (data as any).roomIntroSpeechQueue : [];
   const compareRoomIds: string[] = Array.isArray((data as any)?.compareRoomIds) ? (data as any).compareRoomIds : [];
   const targetIntroIndex: number | null = typeof (data as any)?.targetIntroIndex === 'number' ? (data as any).targetIntroIndex : null;
+  const effectiveCompareRoomIds = isManualMode && manualCompareIds.length >= 2 ? manualCompareIds : compareRoomIds;
   const effectiveIntroSequence = localRoomDisplayMode === "intro" && localIntroSequence.length > 0
     ? localIntroSequence
     : backendIntroSequence;
@@ -169,12 +171,24 @@ export const RoomSelectPage: React.FC = () => {
   }, [roomDisplayMode]);
 
   useEffect(() => {
-    if (roomDisplayModeFromBackend === "intro" && backendIntroSequence.length > 0) {
+    if (roomDisplayModeFromBackend !== "browse") {
       setLocalRoomDisplayMode(null);
       setLocalIntroSequence([]);
       setLocalSpeechQueue([]);
+      if (roomDisplayModeFromBackend !== "intro") {
+        setIntroFinished(false);
+        pendingSpeakIndexRef.current = null;
+        postIntroPromptKeyRef.current = "";
+        spokenIntroKeyRef.current = "";
+      }
     }
   }, [backendIntroSequence.length, roomDisplayModeFromBackend]);
+
+  useEffect(() => {
+    if (!isManualMode) {
+      setManualCompareIds([]);
+    }
+  }, [isManualMode]);
 
   useEffect(() => {
     let active = true;
@@ -213,7 +227,7 @@ export const RoomSelectPage: React.FC = () => {
     // run the sequential intro locally so the guest still gets the guided experience.
     if (rooms.length === 0) return;
     if (introInitializedRef.current !== "") return;
-    if (roomDisplayModeFromBackend === "intro" && backendIntroSequence.length > 0) return;
+    if (roomDisplayModeFromBackend !== "browse") return;
 
     const localSequence = rooms.map((r) => String((r as any)?.id || "")).filter(Boolean);
     if (localSequence.length === 0) return;
@@ -411,9 +425,9 @@ export const RoomSelectPage: React.FC = () => {
   }, [activeIntroImages.length, roomDisplayMode]);
 
   const compareRooms: RoomDTO[] = (() => {
-    if (roomDisplayMode !== "compare" || compareRoomIds.length < 2) return [];
+    if (roomDisplayMode !== "compare" || effectiveCompareRoomIds.length < 2) return [];
     const byId = new Map(rooms.map((r) => [r.id, r]));
-    return compareRoomIds.slice(0, 3).map((id) => byId.get(id)).filter(Boolean) as RoomDTO[];
+    return effectiveCompareRoomIds.slice(0, 3).map((id) => byId.get(id)).filter(Boolean) as RoomDTO[];
   })();
   const comparisonFeatureUniverse = Array.from(
     new Set(
@@ -444,6 +458,24 @@ export const RoomSelectPage: React.FC = () => {
     setActiveIntroVisualIndex(0);
     pendingSpeakIndexRef.current = clamped;
     spokenIntroKeyRef.current = '';
+  };
+
+  const toggleManualCompare = (room: RoomDTO) => {
+    if (!isManualMode) return;
+    setManualCompareIds((current) => {
+      if (current.includes(room.id)) {
+        const next = current.filter((id) => id !== room.id);
+        if (next.length < 2 && localRoomDisplayMode === 'compare') {
+          setLocalRoomDisplayMode('browse');
+        }
+        return next;
+      }
+      const next = [...current, room.id].slice(-3);
+      if (next.length >= 2) {
+        setLocalRoomDisplayMode('compare');
+      }
+      return next;
+    });
   };
 
   return (
@@ -491,6 +523,24 @@ export const RoomSelectPage: React.FC = () => {
           ) : (
             <div className={`flex-1 w-full ${loading ? "opacity-50 pointer-events-none" : ""}`}>
               {roomDisplayMode === "compare" && compareRooms.length >= 2 ? (
+                <div>
+                  {isManualMode && manualCompareIds.length >= 2 && (
+                    <div className="mb-5 flex items-center justify-between gap-4 rounded-[1.4rem] border border-white/10 bg-slate-950/62 px-5 py-4">
+                      <p className="text-sm text-white/84">
+                        Comparing {manualCompareIds.length} selected room{manualCompareIds.length > 1 ? 's' : ''}.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setManualCompareIds([]);
+                          setLocalRoomDisplayMode('browse');
+                        }}
+                        className="rounded-full border border-white/12 bg-white/[0.05] px-4 py-2 text-sm text-white/84 transition hover:bg-white/[0.12]"
+                      >
+                        Exit compare
+                      </button>
+                    </div>
+                  )}
                 <div className={`grid grid-cols-1 ${!isPortrait && compareRooms.length === 3 ? "xl:grid-cols-3" : !isPortrait ? "lg:grid-cols-2" : ""} gap-6 lg:gap-8 pb-10`}>
                   {compareRooms.map((room) => {
                     const img = getPrimaryImageUrl(room);
@@ -564,6 +614,7 @@ export const RoomSelectPage: React.FC = () => {
                       </div>
                     );
                   })}
+                </div>
                 </div>
               ) : roomDisplayMode === "intro" && effectiveIntroSequence.length > 0 && !introFinished ? (
                 <div className="flex min-h-[68vh] items-stretch justify-center py-4 md:py-6">
@@ -794,6 +845,9 @@ export const RoomSelectPage: React.FC = () => {
                             room={room}
                             compact
                             selected={selectedRoomId === room.id}
+                            secondaryActionLabel={isManualMode ? (manualCompareIds.includes(room.id) ? 'Comparing' : 'Compare') : undefined}
+                            secondaryActionActive={manualCompareIds.includes(room.id)}
+                            onSecondaryAction={isManualMode ? toggleManualCompare : undefined}
                             onSelect={(selected) => {
                               setSelectedRoomId(selected.id);
                               emit("ROOM_SELECTED", { room: selected });

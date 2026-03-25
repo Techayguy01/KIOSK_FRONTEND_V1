@@ -5,12 +5,16 @@ Tests for room name matching and fuzzy resolution in agent/nodes.py.
 import pytest
 
 from agent.nodes import (
+    _comparison_partner_for_implicit_request,
+    _extract_primary_room_candidate_from_comparison,
     _extract_room_candidate_from_transcript,
     _find_room_from_inventory,
     _normalize_text,
+    _resolve_rooms_for_comparison_request,
+    _rooms_mentioned_in_transcript,
     find_best_room_match,
 )
-from agent.state import RoomInventoryItem
+from agent.state import KioskState, RoomInventoryItem
 
 
 def _make_room(name: str, code: str = "", room_id: str = "test-id") -> RoomInventoryItem:
@@ -30,6 +34,11 @@ class TestNormalizeText:
 
     def test_luxary_to_luxury(self):
         assert "luxury" in _normalize_text("Luxary Room")
+
+    def test_suit_to_suite_and_luxurious_to_luxury(self):
+        normalized = _normalize_text("Luxurious Suit")
+        assert "luxury" in normalized
+        assert "suite" in normalized
 
     def test_lowercases(self):
         assert _normalize_text("HELLO") == "hello"
@@ -154,6 +163,55 @@ class TestPartialRoomNames:
         result = _find_room_from_inventory(MOCK_INVENTORY, "Sq")
         assert result is not None
         assert result.name == "Standard Queen"
+
+
+class TestCompareRoomResolution:
+    def test_returns_two_rooms_from_partial_comparison_transcript(self):
+        result = _rooms_mentioned_in_transcript(
+            "I want to compare deluxe ocean and executive suit",
+            MOCK_INVENTORY,
+        )
+        assert [room.name for room in result[:2]] == ["Deluxe Ocean View", "Executive Suite"]
+
+    def test_picks_fallback_partner_for_another_room_request(self):
+        primary_room = MOCK_INVENTORY[0]
+        result = _comparison_partner_for_implicit_request(
+            "can you compare deluxe ocean view with another room",
+            MOCK_INVENTORY,
+            primary_room,
+            None,
+        )
+        assert result is not None
+        assert result.name == "Executive Suite"
+
+    def test_extracts_primary_room_candidate_without_explicit_room_word(self):
+        result = _extract_primary_room_candidate_from_comparison(
+            "i want to compare budget deluxe with another room"
+        )
+        assert result == "budget deluxe"
+
+    def test_uses_selected_room_memory_for_this_room_comparison(self):
+        state = KioskState(
+            session_id="test-session",
+            tenant_id="test-tenant",
+            latest_transcript="compare this room with another room",
+            current_ui_screen="ROOM_PREVIEW",
+            tenantRoomInventory=MOCK_INVENTORY,
+            selectedRoom=MOCK_INVENTORY[1],
+        )
+        result = _resolve_rooms_for_comparison_request(state, MOCK_INVENTORY)
+        assert [room.name for room in result[:2]] == ["Executive Suite", "Deluxe Ocean View"]
+
+    def test_resolves_compare_when_room_word_is_omitted(self):
+        state = KioskState(
+            session_id="test-session",
+            tenant_id="test-tenant",
+            latest_transcript="i want to compare deluxe ocean with another room",
+            current_ui_screen="ROOM_SELECT",
+            tenantRoomInventory=MOCK_INVENTORY,
+        )
+        result = _resolve_rooms_for_comparison_request(state, MOCK_INVENTORY)
+        assert [room.name for room in result[:2]] == ["Deluxe Ocean View", "Executive Suite"]
 
 
 class TestExtractRoomCandidateEdgeCases:
