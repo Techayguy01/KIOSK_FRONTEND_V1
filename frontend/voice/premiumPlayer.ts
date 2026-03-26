@@ -15,6 +15,66 @@ class PremiumAudioPlayerService {
     private activeAbortReasons = new Map<number, "timeout" | "superseded" | "stop">();
     private requestSequence = 0;
 
+    // Pre-fetch cache: store audio object URLs keyed by "language::text"
+    private prefetchCache = new Map<string, string>();
+    private prefetchInflight = new Map<string, Promise<void>>();
+
+    private getCacheKey(text: string, language: string): string {
+        return `${language}::${text.trim()}`;
+    }
+
+    /**
+     * Pre-fetch TTS audio in the background. The audio blob is cached as an
+     * object URL so that a subsequent play() call for the same text skips the
+     * network round-trip entirely.
+     */
+    public async prefetch(text: string, language: string): Promise<void> {
+        if (!text?.trim()) return;
+        const key = this.getCacheKey(text, language);
+        if (this.prefetchCache.has(key)) return;
+        if (this.prefetchInflight.has(key)) return this.prefetchInflight.get(key);
+
+        const work = (async () => {
+            try {
+                const url = buildTenantApiUrl("voice/tts");
+                const response = await fetch(url, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        ...getTenantHeaders(),
+                    },
+                    body: JSON.stringify({ text: text.trim(), language }),
+                });
+                if (!response.ok) return;
+                const blob = await response.blob();
+                if (blob.size > 0) {
+                    this.prefetchCache.set(key, URL.createObjectURL(blob));
+                    console.log(`[PremiumPlayer] Prefetched TTS audio (${blob.size} bytes): "${text.trim().substring(0, 40)}..."`);
+                }
+            } catch {
+                // Silently ignore — play() will fall back to live fetch
+            } finally {
+                this.prefetchInflight.delete(key);
+            }
+        })();
+
+        this.prefetchInflight.set(key, work);
+        return work;
+    }
+
+    /**
+     * Revoke all pre-fetched object URLs and clear the cache.
+     * Call on page unmount or when room data changes.
+     */
+    public clearPrefetchCache(): void {
+        for (const objectUrl of this.prefetchCache.values()) {
+            URL.revokeObjectURL(objectUrl);
+        }
+        this.prefetchCache.clear();
+        this.prefetchInflight.clear();
+        console.log("[PremiumPlayer] Prefetch cache cleared");
+    }
+
     /**
      * Fetch and play TTS audio from the backend.
      */
@@ -42,31 +102,44 @@ class PremiumAudioPlayerService {
         }, PREMIUM_TTS_TIMEOUT_MS);
 
         try {
-            const url = buildTenantApiUrl("voice/tts");
-            const response = await fetch(url, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    ...getTenantHeaders(),
-                },
-                body: JSON.stringify({ text, language }),
-                signal: controller.signal,
-            });
+            // Check prefetch cache first
+            const cacheKey = this.getCacheKey(text.trim(), language);
+            let audioUrl: string;
+            const cachedUrl = this.prefetchCache.get(cacheKey);
 
-            console.log(
-                `[PremiumPlayer][${requestId}] Response received status=${response.status} elapsedMs=${Date.now() - startedAt}`
-            );
-            this.clearPendingRequest();
+            if (cachedUrl) {
+                console.log(
+                    `[PremiumPlayer][${requestId}] Cache hit, skipping fetch elapsedMs=${Date.now() - startedAt}: "${text.trim().substring(0, 40)}..."`
+                );
+                this.clearPendingRequest();
+                audioUrl = cachedUrl;
+            } else {
+                const url = buildTenantApiUrl("voice/tts");
+                const response = await fetch(url, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        ...getTenantHeaders(),
+                    },
+                    body: JSON.stringify({ text, language }),
+                    signal: controller.signal,
+                });
 
-            if (!response.ok) {
-                throw new Error(`TTS API failed: ${response.status}`);
+                console.log(
+                    `[PremiumPlayer][${requestId}] Response received status=${response.status} elapsedMs=${Date.now() - startedAt}`
+                );
+                this.clearPendingRequest();
+
+                if (!response.ok) {
+                    throw new Error(`TTS API failed: ${response.status}`);
+                }
+
+                const audioBlob = await response.blob();
+                audioUrl = URL.createObjectURL(audioBlob);
+                console.log(
+                    `[PremiumPlayer][${requestId}] Audio blob ready bytes=${audioBlob.size} elapsedMs=${Date.now() - startedAt}`
+                );
             }
-
-            const audioBlob = await response.blob();
-            const audioUrl = URL.createObjectURL(audioBlob);
-            console.log(
-                `[PremiumPlayer][${requestId}] Audio blob ready bytes=${audioBlob.size} elapsedMs=${Date.now() - startedAt}`
-            );
 
             return new Promise((resolve, reject) => {
                 const audio = new Audio(audioUrl);

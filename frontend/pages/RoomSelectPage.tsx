@@ -8,6 +8,9 @@ import { RoomDTO, RoomImageDTO, RoomService, RoomServiceError } from '../service
 import { AnimatePresence, motion } from 'framer-motion';
 import { VoiceRuntime } from '../voice/VoiceRuntime';
 import { TTSController } from '../voice/TTSController';
+import { PremiumAudioPlayer } from '../voice/premiumPlayer';
+import { getCurrentTenantLanguage } from '../services/tenantContext';
+import { buildSiyaIntro } from '../mocks/room-narrations.mock';
 
 type DisplayMode = "intro" | "browse" | "filter" | "compare";
 
@@ -156,7 +159,9 @@ export const RoomSelectPage: React.FC = () => {
   const effectiveIntroSequence = localRoomDisplayMode === "intro" && localIntroSequence.length > 0
     ? localIntroSequence
     : backendIntroSequence;
-  const effectiveSpeechQueue = localRoomDisplayMode === "intro" && localSpeechQueue.length > 0
+  // Always prefer locally-built speech queue (built from room data via buildIntroSpeech)
+  // so the automatic intro never waits for the backend's LLM-generated descriptions.
+  const effectiveSpeechQueue = localSpeechQueue.length > 0
     ? localSpeechQueue
     : backendSpeechQueue;
 
@@ -171,16 +176,17 @@ export const RoomSelectPage: React.FC = () => {
   }, [roomDisplayMode]);
 
   useEffect(() => {
-    if (roomDisplayModeFromBackend !== "browse") {
+    // When backend switches to "intro" mode, keep the local intro intact
+    // so we continue using locally-built speech (no LLM latency).
+    // Only clear local state for filter/compare/other non-intro modes.
+    if (roomDisplayModeFromBackend !== "browse" && roomDisplayModeFromBackend !== "intro") {
       setLocalRoomDisplayMode(null);
       setLocalIntroSequence([]);
       setLocalSpeechQueue([]);
-      if (roomDisplayModeFromBackend !== "intro") {
-        setIntroFinished(false);
-        pendingSpeakIndexRef.current = null;
-        postIntroPromptKeyRef.current = "";
-        spokenIntroKeyRef.current = "";
-      }
+      setIntroFinished(false);
+      pendingSpeakIndexRef.current = null;
+      postIntroPromptKeyRef.current = "";
+      spokenIntroKeyRef.current = "";
     }
   }, [backendIntroSequence.length, roomDisplayModeFromBackend]);
 
@@ -232,16 +238,14 @@ export const RoomSelectPage: React.FC = () => {
     const localSequence = rooms.map((r) => String((r as any)?.id || "")).filter(Boolean);
     if (localSequence.length === 0) return;
 
-    let localQueue = rooms.map((room: any) => {
-      const price = Number.isFinite(Number(room?.price)) && Number(room.price) > 0
-        ? `INR ${Math.round(Number(room.price)).toLocaleString("en-IN")}`
-        : "price on request";
-      const features = Array.isArray(room?.features) ? room.features.slice(0, 3).filter(Boolean) : [];
-      const featureText = features.length > 0 ? features.join(", ") : "comfortable amenities";
-      const cap = typeof room?.maxAdults === "number" ? ` for up to ${room.maxAdults} adults` : "";
-      return `${room?.name || "This room"} — available at ${price} per night${cap}. It features ${featureText}.`;
+    // Build warm Siya narrations instead of robotic templates
+    const localQueue = rooms.map((room, idx) => buildSiyaIntro(room, idx, rooms.length));
+
+    // Pre-fetch all TTS audio in parallel so playback is instant
+    const ttsLanguage = getCurrentTenantLanguage();
+    localQueue.forEach((speech) => {
+      PremiumAudioPlayer.prefetch(speech, ttsLanguage);
     });
-    localQueue = rooms.map((room: any) => buildIntroSpeech(room));
 
     VoiceRuntime.stopSpeaking();
     TTSController.hardStop("state_change");
@@ -258,6 +262,11 @@ export const RoomSelectPage: React.FC = () => {
     pendingSpeakIndexRef.current = localQueue.length > 0 ? 0 : null;
     postIntroPromptKeyRef.current = "";
     spokenIntroKeyRef.current = "";
+
+    // Cleanup: revoke cached audio object URLs when rooms change or on unmount
+    return () => {
+      PremiumAudioPlayer.clearPrefetchCache();
+    };
   }, [backendIntroSequence.length, roomDisplayModeFromBackend, rooms]);
 
   useEffect(() => {
