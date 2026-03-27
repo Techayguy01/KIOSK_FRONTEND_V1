@@ -23,6 +23,20 @@ class PremiumAudioPlayerService {
         return `${language}::${text.trim()}`;
     }
 
+    public hasPrefetched(text: string, language: string): boolean {
+        if (!text?.trim()) return false;
+        return this.prefetchCache.has(this.getCacheKey(text, language));
+    }
+
+    private isPrefetchedObjectUrl(url: string): boolean {
+        for (const cachedUrl of this.prefetchCache.values()) {
+            if (cachedUrl === url) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /**
      * Pre-fetch TTS audio in the background. The audio blob is cached as an
      * object URL so that a subsequent play() call for the same text skips the
@@ -233,7 +247,9 @@ class PremiumAudioPlayerService {
 
     private cleanup(): void {
         if (this.currentAudio) {
-            URL.revokeObjectURL(this.currentAudio.src);
+            if (this.currentAudio.src && !this.isPrefetchedObjectUrl(this.currentAudio.src)) {
+                URL.revokeObjectURL(this.currentAudio.src);
+            }
             this.currentAudio = null;
         }
     }

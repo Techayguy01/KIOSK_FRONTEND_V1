@@ -120,16 +120,18 @@ async def text_to_speech(
             f"chars={len(req.text.strip())}"
         )
         from fastapi.concurrency import run_in_threadpool
-        audio_bytes = await run_in_threadpool(
+        tts_result = await run_in_threadpool(
             VoiceProvider.generate_speech,
             text=req.text,
             language=effective_language,
             request_id=request_id,
         )
+        audio_bytes = tts_result.audio_bytes
         duration_ms = round((perf_counter() - started_at) * 1000, 1)
         print(
             "[VoiceAPI] TTS success "
             f"id={request_id} "
+            f"cache={tts_result.cache_status} "
             f"bytes={len(audio_bytes)} "
             f"durationMs={duration_ms}"
         )

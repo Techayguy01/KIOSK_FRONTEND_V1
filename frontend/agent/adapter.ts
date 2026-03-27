@@ -510,6 +510,19 @@ class AgentAdapterService {
                 return;
             }
             if (!this.hasVoiceAuthority()) return;
+            const isRoomIntroActive = this.state === "ROOM_SELECT" && (
+                this.viewData?.roomDisplayMode === "intro"
+                || (Array.isArray(this.viewData?.roomIntroSequence) && this.viewData.roomIntroSequence.length > 0)
+                || (Array.isArray((this.viewData as any)?.roomIntroSpeechQueue) && (this.viewData as any).roomIntroSpeechQueue.length > 0)
+            );
+            if (isRoomIntroActive) {
+                console.debug("[AgentAdapter] Listening restart deferred during room intro.");
+                return;
+            }
+            if (source === "tts_lifecycle" && this.state === "ROOM_SELECT" && !this.viewData?.selectedRoom) {
+                console.debug("[AgentAdapter] Listening restart deferred while RoomSelectPage owns room narration.");
+                return;
+            }
             if (VoiceRuntime.getMode() !== "idle") return;
             if (TTSController.isSpeaking()) return;
             if (this.manualEditModeActive) return;
@@ -570,6 +583,15 @@ class AgentAdapterService {
     private handleTTSEnded(cause: "ended" | "error"): void {
         if (!this.hasVoiceAuthority()) {
             console.log("[AgentAdapter] TTS ended, but state doesn't allow voice");
+            return;
+        }
+        const isRoomIntroActive = this.state === "ROOM_SELECT" && (
+            this.viewData?.roomDisplayMode === "intro"
+            || (Array.isArray(this.viewData?.roomIntroSequence) && this.viewData.roomIntroSequence.length > 0)
+            || (Array.isArray((this.viewData as any)?.roomIntroSpeechQueue) && (this.viewData as any).roomIntroSpeechQueue.length > 0)
+        );
+        if (isRoomIntroActive || (this.state === "ROOM_SELECT" && !this.viewData?.selectedRoom)) {
+            console.debug("[AgentAdapter] TTS ended during room intro; RoomSelectPage will control the next step.");
             return;
         }
         const delay = cause === "error" ? DELAY.TTS_ERROR_RESTART : DELAY.TTS_ENDED_RESTART;
@@ -1269,6 +1291,16 @@ class AgentAdapterService {
         if (this.state !== "ROOM_SELECT" || !this.hasVoiceAuthority() || TTSController.isSpeaking() || payload?.suppressSpeech) return false;
         const speech  = String(payload?.speech || "").trim();
         const rooms   = Array.isArray(payload?.rooms) ? payload.rooms : [];
+        const introOwnedByRoomPage = payload?.roomDisplayMode === "intro"
+            || (Array.isArray(payload?.roomIntroSequence) && payload.roomIntroSequence.length > 0)
+            || (Array.isArray(payload?.roomIntroSpeechQueue) && payload.roomIntroSpeechQueue.length > 0)
+            || this.viewData?.roomDisplayMode === "intro"
+            || (Array.isArray(this.viewData?.roomIntroSequence) && this.viewData.roomIntroSequence.length > 0)
+            || (Array.isArray((this.viewData as any)?.roomIntroSpeechQueue) && (this.viewData as any).roomIntroSpeechQueue.length > 0);
+        if (rooms.length > 0 || introOwnedByRoomPage) {
+            console.debug("[AgentAdapter] Room selection guidance deferred to RoomSelectPage intro.");
+            return false;
+        }
         const prompt  = rooms.length > 0 ? this.buildRoomSelectionPrompt(rooms) : speech;
         if (!prompt) return false;
         this.hasAnnouncedRoomOptions = true;

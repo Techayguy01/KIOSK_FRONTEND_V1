@@ -1,5 +1,6 @@
 import { buildTenantApiUrl, getNodeApiBaseUrl, getTenantHeaders, getTenantSlug } from "./tenantContext";
 import type { RoomDTO, RoomImageDTO } from "@contracts/api.contract";
+import { warmRoomIntroNarrations } from "../voice/roomIntroWarmup";
 
 export type { RoomDTO, RoomImageDTO };
 
@@ -337,7 +338,10 @@ export const RoomService = {
 
   async prefetchAvailableRooms(): Promise<void> {
     try {
-      await this.getAvailableRooms();
+      const rooms = await this.getAvailableRooms();
+      void warmRoomIntroNarrations(rooms).catch((error) => {
+        console.warn("[RoomService] Room intro TTS warm-up failed:", error);
+      });
     } catch (error) {
       console.warn("[RoomService] Room prefetch failed:", error);
     }

@@ -10,9 +10,11 @@ import { VoiceRuntime } from '../voice/VoiceRuntime';
 import { TTSController } from '../voice/TTSController';
 import { PremiumAudioPlayer } from '../voice/premiumPlayer';
 import { getCurrentTenantLanguage } from '../services/tenantContext';
-import { buildSiyaIntro } from '../mocks/room-narrations.mock';
+import { buildRoomIntroQueue, ensureWarmNarration, ROOM_SELECT_POST_INTRO_PROMPT, warmRoomIntroQueue } from '../voice/roomIntroWarmup';
 
 type DisplayMode = "intro" | "browse" | "filter" | "compare";
+type IntroPhase = "fetching_rooms" | "preparing_first_room_audio" | "showing_room" | "intro_complete";
+const INTRO_SPEAK_DELAY_MS = 550;
 
 function humanize(value: unknown): string {
   const raw = String(value || '').trim();
@@ -130,14 +132,16 @@ export const RoomSelectPage: React.FC = () => {
   const [localIntroSequence, setLocalIntroSequence] = useState<string[]>([]);
   const [localSpeechQueue, setLocalSpeechQueue] = useState<string[]>([]);
   const [manualCompareIds, setManualCompareIds] = useState<string[]>([]);
+  const [introPhase, setIntroPhase] = useState<IntroPhase>("fetching_rooms");
+  const [visibleIntroIndex, setVisibleIntroIndex] = useState<number | null>(null);
   const activeIntroIndexRef = useRef(0);
   const speechQueueRef = useRef<string[]>([]);
   const introSequenceRef = useRef<string[]>([]);
   const introInitializedRef = useRef<string>("");
-  const pendingSpeakIndexRef = useRef<number | null>(null);
   const roomDisplayModeRef = useRef<DisplayMode>("browse");
   const postIntroPromptKeyRef = useRef<string>("");
   const spokenIntroKeyRef = useRef<string>("");
+  const introSpeakAttemptRef = useRef(0);
   const introTouchStartXRef = useRef<number | null>(null);
   const [currentSpeechText, setCurrentSpeechText] = useState('');
   const [isPortrait, setIsPortrait] = useState<boolean>(() => window.innerHeight > window.innerWidth);
@@ -184,11 +188,13 @@ export const RoomSelectPage: React.FC = () => {
       setLocalIntroSequence([]);
       setLocalSpeechQueue([]);
       setIntroFinished(false);
-      pendingSpeakIndexRef.current = null;
+      setVisibleIntroIndex(null);
+      setIntroPhase(isLoadingRooms ? "fetching_rooms" : "intro_complete");
       postIntroPromptKeyRef.current = "";
       spokenIntroKeyRef.current = "";
+      introSpeakAttemptRef.current += 1;
     }
-  }, [backendIntroSequence.length, roomDisplayModeFromBackend]);
+  }, [backendIntroSequence.length, isLoadingRooms, roomDisplayModeFromBackend]);
 
   useEffect(() => {
     if (!isManualMode) {
@@ -200,11 +206,14 @@ export const RoomSelectPage: React.FC = () => {
     let active = true;
     setRoomsError(null);
     setIsLoadingRooms(true);
+    setIntroPhase("fetching_rooms");
+    setVisibleIntroIndex(null);
 
-    RoomService.getAvailableRooms()
+    RoomService.getAvailableRooms({ forceRefresh: true })
       .then((fetchedRooms) => {
         if (!active) return;
         setLiveRooms(fetchedRooms);
+        console.debug(`[RoomSelectPage] Rooms fetched successfully count=${fetchedRooms.length}`);
         emit('GENERAL_QUERY', { rooms: fetchedRooms, suppressSpeech: true });
         setIsLoadingRooms(false);
       })
@@ -212,6 +221,8 @@ export const RoomSelectPage: React.FC = () => {
         console.error("[RoomSelectPage] Failed to load live rooms:", error);
         if (!active) return;
         setIsLoadingRooms(false);
+        setIntroPhase("fetching_rooms");
+        setVisibleIntroIndex(null);
         if (error instanceof RoomServiceError) {
           if (error.status === 404 || error.code === "TENANT_NOT_FOUND") {
             setRoomsError("Tenant not found. Please verify the kiosk URL.");
@@ -239,13 +250,13 @@ export const RoomSelectPage: React.FC = () => {
     if (localSequence.length === 0) return;
 
     // Build warm Siya narrations instead of robotic templates
-    const localQueue = rooms.map((room, idx) => buildSiyaIntro(room, idx, rooms.length));
+    const localQueue = buildRoomIntroQueue(rooms);
+    const warmQueue = [...localQueue, ROOM_SELECT_POST_INTRO_PROMPT];
 
-    // Pre-fetch all TTS audio in parallel so playback is instant
+    // Warm intro audio in a steady sequence so later rooms are ready by the
+    // time Siya reaches them, even if the provider slows parallel requests.
     const ttsLanguage = getCurrentTenantLanguage();
-    localQueue.forEach((speech) => {
-      PremiumAudioPlayer.prefetch(speech, ttsLanguage);
-    });
+    void warmRoomIntroQueue(warmQueue, ttsLanguage, { sequential: true });
 
     VoiceRuntime.stopSpeaking();
     TTSController.hardStop("state_change");
@@ -258,10 +269,12 @@ export const RoomSelectPage: React.FC = () => {
     setActiveIntroIndex(0);
     setActiveIntroVisualIndex(0);
     setIntroFinished(false);
+    setVisibleIntroIndex(null);
+    setIntroPhase("preparing_first_room_audio");
     setLocalRoomDisplayMode("intro");
-    pendingSpeakIndexRef.current = localQueue.length > 0 ? 0 : null;
     postIntroPromptKeyRef.current = "";
     spokenIntroKeyRef.current = "";
+    introSpeakAttemptRef.current += 1;
 
     // Cleanup: revoke cached audio object URLs when rooms change or on unmount
     return () => {
@@ -285,42 +298,22 @@ export const RoomSelectPage: React.FC = () => {
     setActiveIntroIndex(0);
     setActiveIntroVisualIndex(0);
     setIntroFinished(false);
+    setVisibleIntroIndex(null);
+    setIntroPhase(isLoadingRooms ? "fetching_rooms" : "preparing_first_room_audio");
 
-    // Speak only after the first card finishes fading in.
-    pendingSpeakIndexRef.current = effectiveSpeechQueue.length > 0 ? 0 : null;
     postIntroPromptKeyRef.current = "";
     spokenIntroKeyRef.current = "";
-  }, [effectiveIntroSequence.join(","), effectiveSpeechQueue.join("|")]);
+    introSpeakAttemptRef.current += 1;
+  }, [effectiveIntroSequence.join(","), effectiveSpeechQueue.join("|"), isLoadingRooms]);
 
   useEffect(() => {
-    if (effectiveIntroSequence.length === 0) return;
+    if (roomDisplayMode !== "intro") return;
+    if (effectiveSpeechQueue.length === 0) return;
 
-    const unsubscribe = TTSController.subscribe((event: any) => {
-      if (roomDisplayModeRef.current !== "intro") return;
-      if (event?.type !== "TTS_ENDED") return;
-
-      const currentQueue = speechQueueRef.current;
-      const currentSequence = introSequenceRef.current;
-      const currentIndex = activeIntroIndexRef.current;
-      const nextIndex = currentIndex + 1;
-
-      if (nextIndex < currentSequence.length) {
-        activeIntroIndexRef.current = nextIndex;
-        setActiveIntroIndex(nextIndex);
-        // Speak only after the next card has animated in.
-        pendingSpeakIndexRef.current = nextIndex < currentQueue.length ? nextIndex : null;
-        spokenIntroKeyRef.current = "";
-      } else {
-        setIntroFinished(true);
-        setLocalRoomDisplayMode("browse");
-        pendingSpeakIndexRef.current = null;
-      }
-      // If nextIndex >= currentSequence.length, all rooms are described.
-      // Backend will switch to browse on the next interaction.
-    });
-
-    return () => unsubscribe();
-  }, [effectiveIntroSequence.length]);
+    const language = getCurrentTenantLanguage();
+    const warmQueue = [...effectiveSpeechQueue, ROOM_SELECT_POST_INTRO_PROMPT];
+    void warmRoomIntroQueue(warmQueue, language, { sequential: true });
+  }, [effectiveSpeechQueue.join("|"), roomDisplayMode]);
 
   useEffect(() => {
     if (!introFinished || roomDisplayMode !== "browse") return;
@@ -329,7 +322,17 @@ export const RoomSelectPage: React.FC = () => {
     if (postIntroPromptKeyRef.current === sequenceKey) return;
 
     postIntroPromptKeyRef.current = sequenceKey;
-    void VoiceRuntime.speak("Please select a room, or do you have any questions regarding the rooms?");
+    void (async () => {
+      const language = getCurrentTenantLanguage();
+      await ensureWarmNarration(ROOM_SELECT_POST_INTRO_PROMPT, language);
+      if (roomDisplayModeRef.current !== "browse") return;
+      await VoiceRuntime.speak(ROOM_SELECT_POST_INTRO_PROMPT, language);
+      if (roomDisplayModeRef.current !== "browse") return;
+      if (VoiceRuntime.getMode() !== "idle") return;
+      await VoiceRuntime.startListening(language).catch((error) => {
+        console.warn("[RoomSelectPage] Failed to restart listening after intro prompt:", error);
+      });
+    })();
   }, [effectiveIntroSequence, introFinished, roomDisplayMode]);
 
   useEffect(() => {
@@ -337,7 +340,7 @@ export const RoomSelectPage: React.FC = () => {
       if (event?.type === 'TTS_STARTED') {
         setCurrentSpeechText(String(event.text || '').trim());
       }
-      if (event?.type === 'TTS_ENDED' || event?.type === 'TTS_CANCELLED') {
+      if (event?.type === 'TTS_ENDED' || event?.type === 'TTS_CANCELLED' || event?.type === 'TTS_ERROR') {
         setCurrentSpeechText('');
       }
     });
@@ -357,9 +360,104 @@ export const RoomSelectPage: React.FC = () => {
     activeIntroIndexRef.current = clamped;
     setActiveIntroIndex(clamped);
     setActiveIntroVisualIndex(0);
-    pendingSpeakIndexRef.current = clamped;
+    setVisibleIntroIndex(null);
+    setIntroPhase("preparing_first_room_audio");
     spokenIntroKeyRef.current = '';
+    introSpeakAttemptRef.current += 1;
   }, [effectiveIntroSequence.length, roomDisplayMode, targetIntroIndex]);
+
+  useEffect(() => {
+    if (roomDisplayMode !== "intro" || introFinished) return;
+
+    const idx = activeIntroIndexRef.current;
+    const queue = speechQueueRef.current;
+    const sequence = introSequenceRef.current;
+    const roomId = sequence[idx] ?? effectiveIntroSequence[idx];
+    const speech = queue[idx] ?? effectiveSpeechQueue[idx];
+
+    if (!roomId || !speech) return;
+
+    const speakKey = `${roomId}:${idx}`;
+    if (spokenIntroKeyRef.current === speakKey) return;
+    spokenIntroKeyRef.current = speakKey;
+
+    const attemptId = ++introSpeakAttemptRef.current;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        const language = getCurrentTenantLanguage();
+        const isFirstRoom = idx === 0 && visibleIntroIndex == null;
+        const isReady = PremiumAudioPlayer.hasPrefetched(speech, language);
+        if (!isReady && isFirstRoom) {
+          setIntroPhase("preparing_first_room_audio");
+          setVisibleIntroIndex(null);
+        } else {
+          setIntroPhase("showing_room");
+        }
+        console.debug(`[RoomSelectPage] Intro prepare current=${idx} room=${roomId} ready=${isReady} first=${isFirstRoom}`);
+        await ensureWarmNarration(speech, language);
+
+        if (introSpeakAttemptRef.current !== attemptId) return;
+        if (roomDisplayModeRef.current !== "intro") return;
+        if (activeIntroIndexRef.current !== idx) return;
+        if (spokenIntroKeyRef.current !== speakKey) return;
+
+        setVisibleIntroIndex(idx);
+        setIntroPhase("showing_room");
+        console.debug(`[RoomSelectPage] Intro ready current=${idx} room=${roomId}`);
+
+        const nextSpeech = queue[idx + 1];
+        const nextRoomId = sequence[idx + 1] ?? effectiveIntroSequence[idx + 1];
+        const nextWarmPromise = nextSpeech?.trim()
+          ? ensureWarmNarration(nextSpeech, language)
+          : Promise.resolve();
+        if (nextSpeech?.trim() && nextRoomId) {
+          console.debug(`[RoomSelectPage] Next room prepare started current=${idx} next=${idx + 1} room=${nextRoomId}`);
+        }
+
+        console.debug(`[RoomSelectPage] Intro speak current=${idx} room=${roomId}`);
+        await VoiceRuntime.speak(speech, language);
+
+        if (introSpeakAttemptRef.current !== attemptId) return;
+        if (roomDisplayModeRef.current !== "intro") return;
+        if (activeIntroIndexRef.current !== idx) return;
+
+        await nextWarmPromise;
+
+        if (introSpeakAttemptRef.current !== attemptId) return;
+        if (roomDisplayModeRef.current !== "intro") return;
+        if (activeIntroIndexRef.current !== idx) return;
+
+        const nextIndex = idx + 1;
+        console.debug(`[RoomSelectPage] Intro advance via speak current=${idx} next=${nextIndex} room=${roomId}`);
+
+        if (nextIndex < sequence.length) {
+          activeIntroIndexRef.current = nextIndex;
+          setActiveIntroIndex(nextIndex);
+          setVisibleIntroIndex(nextIndex);
+          setIntroPhase("showing_room");
+          setActiveIntroVisualIndex(0);
+          spokenIntroKeyRef.current = "";
+          return;
+        }
+
+        setIntroFinished(true);
+        setIntroPhase("intro_complete");
+        setLocalRoomDisplayMode("browse");
+        setVisibleIntroIndex(idx);
+        spokenIntroKeyRef.current = "";
+      })();
+    }, INTRO_SPEAK_DELAY_MS);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [
+    activeIntroIndex,
+    effectiveIntroSequence.join(","),
+    effectiveSpeechQueue.join("|"),
+    introFinished,
+    roomDisplayMode,
+  ]);
 
   const formatPrice = (room: RoomDTO): string => {
     const currency = String(room.currency || "INR").toUpperCase();
@@ -410,7 +508,8 @@ export const RoomSelectPage: React.FC = () => {
     return Array.from(new Set([...fromImages, ...fallbackUrls, ...(directImage ? [directImage] : [])]));
   };
 
-  const activeRoomId = introSequenceRef.current[activeIntroIndex] ?? effectiveIntroSequence[activeIntroIndex];
+  const resolvedVisibleIntroIndex = visibleIntroIndex ?? activeIntroIndex;
+  const activeRoomId = introSequenceRef.current[resolvedVisibleIntroIndex] ?? effectiveIntroSequence[resolvedVisibleIntroIndex];
   const activeIntroRoom = rooms.find((r: any) => String(r?.id) === String(activeRoomId)) ?? null;
   const activeIntroImages = getRoomImageUrls(activeIntroRoom);
   const activeIntroImage = activeIntroImages[activeIntroVisualIndex] || getPrimaryImageUrl(activeIntroRoom);
@@ -452,8 +551,11 @@ export const RoomSelectPage: React.FC = () => {
     VoiceRuntime.stopSpeaking();
     TTSController.hardStop('state_change');
     setIntroFinished(true);
+    setIntroPhase("intro_complete");
+    setVisibleIntroIndex(null);
     setLocalRoomDisplayMode('browse');
-    pendingSpeakIndexRef.current = null;
+    spokenIntroKeyRef.current = '';
+    introSpeakAttemptRef.current += 1;
     emit('GENERAL_QUERY', { transcript: 'show all rooms' });
   };
 
@@ -465,8 +567,10 @@ export const RoomSelectPage: React.FC = () => {
     activeIntroIndexRef.current = clamped;
     setActiveIntroIndex(clamped);
     setActiveIntroVisualIndex(0);
-    pendingSpeakIndexRef.current = clamped;
+    setVisibleIntroIndex(null);
+    setIntroPhase("preparing_first_room_audio");
     spokenIntroKeyRef.current = '';
+    introSpeakAttemptRef.current += 1;
   };
 
   const toggleManualCompare = (room: RoomDTO) => {
@@ -675,26 +779,37 @@ export const RoomSelectPage: React.FC = () => {
                       </div>
                     )}
                     <AnimatePresence mode="wait">
-                      {activeIntroRoom && (
+                      {introPhase === "preparing_first_room_audio" ? (
+                        <motion.div
+                          key={`intro-loader-${activeIntroIndex}`}
+                          initial={{ opacity: 0, scale: 0.985, y: 28 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, scale: 0.985, y: -28 }}
+                          transition={{ duration: 0.35, ease: "easeInOut" }}
+                          className="mx-auto h-full w-full max-w-7xl"
+                        >
+                          <div className="grid min-h-[68vh] overflow-hidden rounded-[2rem] border border-white/15 bg-slate-950/72 shadow-[0_35px_120px_rgba(15,23,42,0.55)] backdrop-blur-xl">
+                            <div className="flex h-full min-h-[68vh] flex-col items-center justify-center gap-5 px-8 text-center text-slate-200">
+                              <Loader2 className="animate-spin" size={42} />
+                              <div>
+                                <p className="text-xs uppercase tracking-[0.28em] text-cyan-100/72">Preparing Siya Voice</p>
+                                <h3 className="mt-3 text-2xl md:text-4xl font-light tracking-[-0.04em] text-white">
+                                  {activeIntroRoom ? `Loading ${activeIntroRoom.name}` : "Preparing room introduction"}
+                                </h3>
+                                <p className="mt-3 max-w-xl text-sm md:text-base leading-7 text-white/70">
+                                  Fetching the room details and waiting for Sarvam audio to be ready before showing this room.
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+                        </motion.div>
+                      ) : activeIntroRoom ? (
                         <motion.div
                           key={activeIntroRoom.id}
                           initial={{ opacity: 0, scale: 0.985, y: 28 }}
                           animate={{ opacity: 1, y: 0 }}
                           exit={{ opacity: 0, scale: 0.985, y: -28 }}
                           transition={{ duration: 0.55, ease: "easeInOut" }}
-                          onAnimationComplete={() => {
-                            const idx = pendingSpeakIndexRef.current;
-                            if (idx == null) return;
-                            if (idx !== activeIntroIndexRef.current) return;
-                            const q = speechQueueRef.current;
-                            if (idx >= 0 && idx < q.length) {
-                              const speakKey = `${activeIntroRoom.id}:${idx}`;
-                              if (spokenIntroKeyRef.current === speakKey) return;
-                              spokenIntroKeyRef.current = speakKey;
-                              pendingSpeakIndexRef.current = null;
-                              void VoiceRuntime.speak(q[idx]);
-                            }
-                          }}
                           className="mx-auto h-full w-full max-w-7xl"
                           onTouchStart={(event) => {
                             introTouchStartXRef.current = event.changedTouches[0]?.clientX ?? null;
@@ -819,7 +934,7 @@ export const RoomSelectPage: React.FC = () => {
                             </div>
                           </div>
                         </motion.div>
-                      )}
+                      ) : null}
                     </AnimatePresence>
 
                     {effectiveIntroSequence.length > 1 && (
