@@ -73,6 +73,7 @@ class BookingSlots(BaseModel):
         required = {
             "room_type": self.room_type,
             "adults": self.adults,
+            "children": self.children,
             "check_in_date": self.check_in_date,
             "check_out_date": self.check_out_date,
             "guest_name": self.guest_name,

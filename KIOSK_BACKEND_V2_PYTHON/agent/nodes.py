@@ -394,6 +394,51 @@ def _build_room_preview_intro(room: RoomInventoryItem) -> str:
     return ". ".join(parts)
 
 
+def _build_room_select_exploratory_reply(
+    room: RoomInventoryItem,
+    transcript: str,
+    room_inventory: list[RoomInventoryItem],
+) -> str:
+    text = (transcript or "").strip().lower()
+    if _looks_like_budget_room_request(text):
+        price_text = _format_price_for_speech(room.price, room.currency) or "our current rate"
+        return (
+            f"The most affordable option right now is {room.name}, available at {price_text}. "
+            "Would you like more details about it, compare it with another room, or proceed with this option?"
+        )
+    if re.search(r"\b(price|cost|rate|tariff)\b", text):
+        price_text = _format_price_for_speech(room.price, room.currency)
+        if price_text:
+            return f"{room.name} is available at {price_text} per night."
+        return f"I do not have the exact price for {room.name} right now."
+    if _looks_like_room_comparison_request(text):
+        return _build_room_preview_intro(room)
+    detail_speech = _build_unknown_room_detail_reply(room, transcript)
+    if detail_speech:
+        return detail_speech
+    if _looks_like_room_information_request(text):
+        price_text = _format_price_for_speech(room.price, room.currency)
+        feature_summary = _build_room_feature_summary(room)
+        if price_text and feature_summary:
+            return f"{room.name} is available at {price_text} per night and includes {feature_summary}."
+        if price_text:
+            return f"{room.name} is available at {price_text} per night."
+        if feature_summary:
+            return f"{room.name} includes {feature_summary}."
+    return _build_room_preview_intro(room)
+
+
+def _build_room_select_multi_room_clarifier(rooms: list[RoomInventoryItem]) -> str:
+    room_names = [room.name for room in rooms if room and room.name][:3]
+    mentioned = _join_spoken_list(room_names)
+    if not mentioned:
+        return "I heard more than one room mentioned. Would you like me to compare them, or would you like details about one specific room?"
+    return (
+        f"I heard {mentioned}. I will not pick one yet. "
+        "Would you like me to compare them, or would you like details about one specific room?"
+    )
+
+
 def _build_room_intro_speech_single(room: RoomInventoryItem) -> str:
     price = f"INR {int(room.price):,}" if room.price else "price on request"
     features = room.features[:3] if room.features else []
@@ -761,6 +806,8 @@ def _fallback_booking_prompt(
         if selected_room_name:
             return f"Certainly. {selected_room_name} is a lovely choice. How many adults will be staying?"
         return "Certainly. How many adults will be staying?"
+    if slot == "children":
+        return "And how many children will be staying?"
     if slot == "check_in_date":
         return "Certainly. What is your check in date?"
     if slot == "check_out_date":
@@ -1303,6 +1350,119 @@ def _is_room_change_request(transcript: str) -> bool:
     return references_room and wants_change
 
 
+def _looks_like_budget_room_request(transcript: str) -> bool:
+    text = (transcript or "").strip().lower()
+    if not text:
+        return False
+    if re.search(r"\bbudget\s+deluxe(?:\s+room)?\b", text):
+        return False
+    return bool(
+        re.search(
+            r"\b("
+            r"cheapest|"
+            r"lowest\s+price|"
+            r"most\s+affordable|"
+            r"affordable\s+room|"
+            r"budget\s+(?:room|option|suite|one)"
+            r")\b",
+            text,
+        )
+    )
+
+
+def _pick_cheapest_room(room_inventory: list[RoomInventoryItem]) -> Optional[RoomInventoryItem]:
+    priced_rooms = [room for room in room_inventory if room.price is not None]
+    if priced_rooms:
+        return min(priced_rooms, key=lambda room: (float(room.price or 0), (room.name or "").lower()))
+    return room_inventory[0] if room_inventory else None
+
+
+def _looks_like_room_information_request(transcript: str) -> bool:
+    text = (transcript or "").strip().lower()
+    if not text or _looks_like_explicit_preview_booking_request(text):
+        return False
+    return bool(
+        re.search(
+            r"\b("
+            r"tell\s+me\s+about|"
+            r"about\s+this|"
+            r"details?|"
+            r"detail|"
+            r"price|cost|rate|tariff|"
+            r"amenit(?:y|ies)|"
+            r"feature|features|"
+            r"wifi|tv|balcony|bath(?:room| tub)|bathtub|view|"
+            r"occupancy|capacity|"
+            r"does\s+(?:it|this\s+room)|"
+            r"what\s+does|"
+            r"what\s+about"
+            r")\b",
+            text,
+        )
+    )
+
+
+def _build_booking_modify_prompt() -> str:
+    return (
+        "Sure. Tell me what you would like to change: room, adults, children, dates, or guest name."
+    )
+
+
+def _looks_like_explicit_room_selection_request(
+    transcript: str,
+    room_inventory: Optional[list[RoomInventoryItem]] = None,
+) -> bool:
+    text = (transcript or "").strip().lower()
+    if not text:
+        return False
+    if _looks_like_room_information_request(text) or _looks_like_room_comparison_request(text):
+        return False
+    if re.search(r"\b(this|that|current)\s+(room|suite|one)\b", text):
+        return True
+
+    prefix_match = re.match(
+        r"^(?:i\s+want\s+to|i(?:'d|\s+would)?\s+like\s+to|can\s+i|please)?\s*"
+        r"(?:book|choose|select|take|prefer|go\s+ahead\s+with|proceed\s+with)\s+(.+)$",
+        text,
+    )
+    if not prefix_match:
+        return False
+
+    candidate = prefix_match.group(1).strip()
+    if not candidate or re.search(r"\b(compare|with|versus|vs\.?|and)\b", candidate):
+        return False
+    if room_inventory is None:
+        return True
+
+    ignored = {
+        "room", "rooms", "suite", "type", "please", "book", "booking",
+        "want", "need", "for", "the", "and", "with", "a", "an",
+        "would", "like", "select", "choose", "take", "prefer",
+        "go", "ahead", "proceed", "option",
+    }
+    candidate_tokens = [
+        token
+        for token in re.split(r"[^a-z0-9]+", _normalize_text(candidate))
+        if len(token) >= 3 and token not in ignored
+    ]
+    if not candidate_tokens:
+        return False
+
+    for room in room_inventory:
+        alias_tokens = [
+            token
+            for token in re.split(r"[^a-z0-9]+", _normalize_text(f"{room.name or ''} {room.code or ''}"))
+            if len(token) >= 3 and token not in ignored
+        ]
+        if not alias_tokens:
+            continue
+        overlap = sum(1 for token in candidate_tokens if token in alias_tokens)
+        threshold = max(1, min(2, len(alias_tokens)))
+        if overlap >= threshold:
+            return True
+    return False
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # TRANSCRIPT PATTERN MATCHERS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1540,7 +1700,7 @@ Rules:
 ## Screen Context Rules
 A "Current UI screen" message is provided. Use it to disambiguate ambiguous intents:
 - WELCOME / IDLE: Opening screen. Any mention of rooms, availability, booking, wanting to see/explore rooms, family-fit room advice, cheapest/affordable rooms, or room comparisons -> BOOK_ROOM. Greetings, amenity questions, hotel info -> GENERAL_QUERY.
-- ROOM_SELECT: User is browsing the room catalog. Selecting or asking about a specific room -> BOOK_ROOM. Feature-filter requests like "show me AC rooms", "rooms with bathtub", "only sea view rooms", "show all rooms" -> FILTER_ROOMS. General hotel info -> GENERAL_QUERY.
+- ROOM_SELECT: User is browsing the room catalog. Exploratory questions, recommendations, prices, amenities, suitability, or asking about a specific room should stay exploratory and still map to BOOK_ROOM so booking context is preserved, but they are NOT an explicit room selection by themselves. Only explicit choice/proceed language like "select this room", "book Budget Deluxe", "I'll take this one" should count as a concrete room selection. Feature-filter requests like "show me AC rooms", "rooms with bathtub", "only sea view rooms", "show all rooms" -> FILTER_ROOMS. General hotel info -> GENERAL_QUERY.
 - ROOM_PREVIEW: User is viewing a SPECIFIC room's image carousel.
   * "show me bathroom", "I want to see the balcony", "show me the view", "does this room have a balcony", or ANY request to focus on a room feature/area -> GENERAL_QUERY (this is a visual focus request, NOT a new booking).
   * "book this room", "I'll take it", "I want this one" -> BOOK_ROOM.
@@ -2093,7 +2253,7 @@ Rules:
 - Dates must be in YYYY-MM-DD format.
 - If user says month/day without year, choose the nearest upcoming future date from current kiosk date.
 - If room_type is present, normalize it to one of the available tenant room names when possible.
-- is_complete is true ONLY when all required slots (room_type, adults, check_in_date, check_out_date, guest_name) are available (combining already collected + newly extracted).
+- is_complete is true ONLY when all required slots (room_type, adults, children, check_in_date, check_out_date, guest_name) are available (combining already collected + newly extracted).
 - next_slot_to_ask is null if is_complete is true.
 """
 
@@ -2122,13 +2282,13 @@ def _extract_guest_counts_deterministically(transcript: str) -> dict[str, int]:
         return {}
 
     slots: dict[str, int] = {}
-    child_match = re.search(r"\b(\d+|one|two|to|too|three|four|for|five|six)\s*(?:child|children|kid|kids)\b", text)
+    child_match = re.search(r"\b(\d+|zero|one|two|to|too|three|four|for|five|six)\s*(?:child|children|kid|kids)\b", text)
     if child_match:
         child_count = _parse_spoken_number(child_match.group(1))
         if child_count is not None:
             slots["children"] = child_count
 
-    adult_match = re.search(r"\b(\d+|one|two|to|too|three|four|for|five|six)\s*adults?\b", text)
+    adult_match = re.search(r"\b(\d+|zero|one|two|to|too|three|four|for|five|six)\s*adults?\b", text)
     if adult_match:
         adult_count = _parse_spoken_number(adult_match.group(1))
         if adult_count is not None and adult_count >= 1:
@@ -2139,9 +2299,9 @@ def _extract_guest_counts_deterministically(transcript: str) -> dict[str, int]:
         slots["adults"] = 1
         return slots
 
-    total_match = re.search(r"\b(\d+|one|two|to|too|three|four|for|five|six)\s*(?:people|guests?|persons?)\b", text)
+    total_match = re.search(r"\b(\d+|zero|one|two|to|too|three|four|for|five|six)\s*(?:people|guests?|persons?)\b", text)
     if not total_match:
-        total_match = re.search(r"\bwe are\s+(\d+|one|two|to|too|three|four|for|five|six)\b", text)
+        total_match = re.search(r"\bwe are\s+(\d+|zero|one|two|to|too|three|four|for|five|six)\b", text)
     if total_match:
         total_count = _parse_spoken_number(total_match.group(1))
         if total_count is not None and total_count >= 1:
@@ -2210,8 +2370,12 @@ def _has_booking_detail_updates(extracted_slots: dict) -> bool:
 def _infer_booking_follow_up_slot(transcript: str, extracted_slots: dict) -> Optional[str]:
     text = (transcript or "").strip().lower()
 
+    if re.search(r"\b(room|suite)\b", text):
+        return "room_type"
     if extracted_slots.get("guest_name") or re.search(r"\b(name|guest name)\b", text):
         return "guest_name"
+    if extracted_slots.get("children") is not None or re.search(r"\b(children|child|kids?)\b", text):
+        return "children"
     if (
         extracted_slots.get("check_in_date")
         or extracted_slots.get("check_out_date")
@@ -2232,6 +2396,7 @@ def _extract_slots_deterministically(state: KioskState) -> dict:
     room_inventory = state.tenant_room_inventory or []
     slots: dict[str, object] = {}
     should_extract_booking_slots = state.current_ui_screen in {"BOOKING_COLLECT", "BOOKING_SUMMARY"}
+    active_slot = _normalize_slot_name(state.active_slot)
 
     if state.resolved_intent == "BOOK_ROOM" or should_extract_booking_slots:
         matched_room = _transcript_explicitly_identifies_room(text, room_inventory)
@@ -2245,12 +2410,38 @@ def _extract_slots_deterministically(state: KioskState) -> dict:
             slots["room_type"] = state.selected_room.name
 
     if state.resolved_intent == "PROVIDE_GUESTS" or should_extract_booking_slots:
-        slots.update(_extract_guest_counts_deterministically(text))
+        guest_counts = _extract_guest_counts_deterministically(text)
+        if active_slot == "children":
+            if "children" in guest_counts:
+                slots["children"] = guest_counts["children"]
+        elif active_slot == "adults":
+            if "adults" in guest_counts:
+                slots["adults"] = guest_counts["adults"]
+            if "children" in guest_counts:
+                slots["children"] = guest_counts["children"]
+        else:
+            slots.update(guest_counts)
 
     if state.resolved_intent == "PROVIDE_DATES" or should_extract_booking_slots:
-        slots.update(_extract_dates_deterministically(text))
+        extracted_dates = _extract_dates_deterministically(text)
+        if active_slot == "check_out_date":
+            if extracted_dates.get("check_out_date"):
+                slots["check_out_date"] = extracted_dates["check_out_date"]
+                if extracted_dates.get("check_in_date"):
+                    slots["check_in_date"] = extracted_dates["check_in_date"]
+            elif extracted_dates.get("check_in_date"):
+                # On a checkout turn, a single bare date answer almost always
+                # refers to checkout, not a replacement check-in date.
+                slots["check_out_date"] = extracted_dates["check_in_date"]
+        elif active_slot == "check_in_date":
+            if extracted_dates.get("check_in_date"):
+                slots["check_in_date"] = extracted_dates["check_in_date"]
+            if extracted_dates.get("check_out_date"):
+                slots["check_out_date"] = extracted_dates["check_out_date"]
+        else:
+            slots.update(extracted_dates)
 
-    if state.resolved_intent == "PROVIDE_NAME" or should_extract_booking_slots:
+    if active_slot != "children" and active_slot != "adults" and (state.resolved_intent == "PROVIDE_NAME" or should_extract_booking_slots):
         guest_name = _extract_guest_name_deterministically(text)
         if guest_name:
             slots["guest_name"] = guest_name
@@ -2437,10 +2628,98 @@ def _extract_primary_room_candidate_from_comparison(transcript: str) -> str:
     return text
 
 
+def _extract_comparison_segments(transcript: str) -> list[str]:
+    text = _normalize_text(transcript)
+    if not text:
+        return []
+    stripped = re.sub(r"^(?:i\s+want\s+to\s+)?compare\s+", "", text).strip()
+    if not stripped:
+        return []
+    segments = [
+        re.sub(r"\b\d+\b$", "", segment).strip(" .?!,-")
+        for segment in re.split(r"\b(?:with|and|versus|vs\.?)\b", stripped)
+    ]
+    return [segment for segment in segments if segment]
+
+
+def _resolve_explicit_rooms_from_comparison_segments(
+    transcript: str,
+    room_inventory: list[RoomInventoryItem],
+) -> list[RoomInventoryItem]:
+    if not room_inventory:
+        return []
+    segments = _extract_comparison_segments(transcript)
+    if len(segments) < 2:
+        return []
+
+    def resolve_segment(segment: str) -> Optional[RoomInventoryItem]:
+        normalized_segment = _normalize_text(segment)
+        if not normalized_segment:
+            return None
+
+        strict_match: Optional[RoomInventoryItem] = None
+        for room in room_inventory:
+            normalized_name = _normalize_text(room.name or "")
+            normalized_code = _normalize_text(room.code or "")
+            if (
+                normalized_name == normalized_segment
+                or normalized_code == normalized_segment
+                or normalized_name.startswith(f"{normalized_segment} ")
+                or normalized_segment.startswith(f"{normalized_name} ")
+            ):
+                strict_match = room
+                break
+
+        candidates: list[tuple[int, int, int, RoomInventoryItem]] = []
+        segment_tokens = _meaningful_room_tokens(segment)
+        for room in room_inventory:
+            normalized_name = _normalize_text(room.name or "")
+            normalized_code = _normalize_text(room.code or "")
+            alias_tokens = _meaningful_room_tokens(f"{room.name or ''} {room.code or ''}")
+            starts_with = int(
+                normalized_name.startswith(normalized_segment)
+                or normalized_code.startswith(normalized_segment)
+            )
+            overlap = sum(1 for token in alias_tokens if token in segment_tokens)
+            contains = int(
+                normalized_segment in normalized_name
+                or normalized_segment in normalized_code
+                or normalized_name in normalized_segment
+            )
+            if not starts_with and not contains and overlap < 2:
+                continue
+            candidates.append((starts_with, overlap, -len(alias_tokens), room))
+
+        if not candidates:
+            return strict_match
+
+        candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+        return candidates[0][3]
+
+    resolved: list[RoomInventoryItem] = []
+    seen_ids: set[str] = set()
+    for segment in segments:
+        room = resolve_segment(segment)
+        if not room:
+            continue
+        room_id = str(room.id or room.name or room.code or "")
+        if room_id in seen_ids:
+            continue
+        seen_ids.add(room_id)
+        resolved.append(room)
+
+    return resolved[:2]
+
+
 def _resolve_rooms_for_comparison_request(
     state: KioskState,
     room_inventory: list[RoomInventoryItem],
 ) -> list[RoomInventoryItem]:
+    comparison_segments = _extract_comparison_segments(state.latest_transcript)
+    explicit_rooms = _resolve_explicit_rooms_from_comparison_segments(state.latest_transcript, room_inventory)
+    if len(comparison_segments) >= 2:
+        return explicit_rooms[:2]
+
     compared_rooms = _rooms_mentioned_in_transcript(state.latest_transcript, room_inventory)
     text = _normalize_text(state.latest_transcript)
     selected_room = state.selected_room
@@ -2528,9 +2807,23 @@ def _handle_room_request_transition(
             }
 
     if state.resolved_intent == "COMPARE_ROOMS":
+        comparison_segments = _extract_comparison_segments(state.latest_transcript)
         compared = _resolve_rooms_for_comparison_request(state, room_inventory)
+        if len(comparison_segments) >= 2 and len(compared) < 2:
+            return _make_booking_response(
+                state,
+                "I caught more than one room in your comparison request, but I could not confidently identify both of them. Please say the two room names again so I can compare them correctly.",
+                "ROOM_SELECT",
+                active_slot="room_type",
+                clear_room_selection=True,
+            ) | {
+                "roomDisplayMode": "browse",
+                "compareRoomIds": [],
+                "focusRoomIds": None,
+                "roomIntroSequence": [],
+            }
         if len(compared) >= 2:
-            compared_subset = compared[:3]
+            compared_subset = compared[:2]
             ids = [r.id for r in compared_subset]
             speech = _build_room_comparison_prompt(compared_subset[:2])
             return _make_booking_response(state, speech, "ROOM_SELECT", active_slot="room_type") | {
@@ -2541,9 +2834,23 @@ def _handle_room_request_transition(
             }
 
     if state.current_ui_screen in {"WELCOME", "IDLE", "AI_CHAT", "MANUAL_MENU", "ROOM_SELECT", "ROOM_PREVIEW"} and _looks_like_room_comparison_request(state.latest_transcript):
+        comparison_segments = _extract_comparison_segments(state.latest_transcript)
         compared_rooms = _resolve_rooms_for_comparison_request(state, room_inventory)
+        if len(comparison_segments) >= 2 and len(compared_rooms) < 2:
+            return _make_booking_response(
+                state,
+                "I caught more than one room in your comparison request, but I could not confidently identify both of them. Please say the two room names again so I can compare them correctly.",
+                "ROOM_SELECT",
+                active_slot="room_type",
+                clear_room_selection=True,
+            ) | {
+                "roomDisplayMode": "browse",
+                "compareRoomIds": [],
+                "focusRoomIds": None,
+                "roomIntroSequence": [],
+            }
         if len(compared_rooms) >= 2:
-            compared_subset = compared_rooms[:3]
+            compared_subset = compared_rooms[:2]
             ids = [r.id for r in compared_subset]
             comparison_prompt = _build_room_comparison_prompt(compared_subset[:2])
             return _make_booking_response(
@@ -2555,6 +2862,21 @@ def _handle_room_request_transition(
             ) | {
                 "roomDisplayMode": "compare",
                 "compareRoomIds": ids,
+                "focusRoomIds": None,
+                "roomIntroSequence": [],
+            }
+
+    if state.current_ui_screen == "ROOM_SELECT" and not _looks_like_explicit_room_selection_request(state.latest_transcript, room_inventory):
+        mentioned_rooms = _rooms_mentioned_in_transcript(state.latest_transcript, room_inventory)
+        if len(mentioned_rooms) >= 2:
+            return _make_booking_response(
+                state,
+                _build_room_select_multi_room_clarifier(mentioned_rooms[:3]),
+                "ROOM_SELECT",
+                active_slot="room_type",
+                clear_room_selection=True,
+            ) | {
+                "roomDisplayMode": "browse",
                 "focusRoomIds": None,
                 "roomIntroSequence": [],
             }
@@ -2585,6 +2907,8 @@ def _handle_room_request_transition(
     room: Optional[RoomInventoryItem] = None
     if extracted_slots.get("room_type"):
         room = _find_room_from_inventory(room_inventory, str(extracted_slots["room_type"]))
+    elif _looks_like_budget_room_request(state.latest_transcript):
+        room = _pick_cheapest_room(room_inventory)
     elif state.current_ui_screen == "ROOM_PREVIEW" and state.selected_room:
         room = state.selected_room
     elif state.booking_slots.room_type and state.current_ui_screen in {"ROOM_PREVIEW", "BOOKING_COLLECT"}:
@@ -2593,6 +2917,19 @@ def _handle_room_request_transition(
     if room:
         extracted = dict(extracted_slots)
         extracted["room_type"] = room.name
+        if state.current_ui_screen == "ROOM_SELECT" and not _looks_like_explicit_room_selection_request(state.latest_transcript, room_inventory):
+            detail_speech = _build_room_select_exploratory_reply(room, state.latest_transcript, room_inventory)
+            return _make_booking_response(
+                state,
+                detail_speech,
+                "ROOM_SELECT",
+                active_slot="room_type",
+                clear_room_selection=True,
+            ) | {
+                "roomDisplayMode": "browse",
+                "focusRoomIds": None,
+                "roomIntroSequence": [],
+            }
         if (
             state.current_ui_screen == "ROOM_PREVIEW"
             and _looks_like_explicit_preview_booking_request(state.latest_transcript)
@@ -2777,8 +3114,12 @@ def _handle_summary_modify_transition(state: KioskState, extracted_slots: dict) 
         )
         active_slot = None
     else:
-        active_slot = requested_slot or (missing_required[0] if missing_required else "guest_name")
-        speech = _fallback_booking_prompt(active_slot, selected_room_name, state.tenant_room_inventory)
+        active_slot = requested_slot or (missing_required[0] if missing_required else None)
+        speech = (
+            _fallback_booking_prompt(active_slot, selected_room_name, state.tenant_room_inventory)
+            if active_slot
+            else _build_booking_modify_prompt()
+        )
     return _make_booking_response_precomputed(
         state,
         speech,
@@ -3029,7 +3370,7 @@ async def booking_logic(state: KioskState) -> dict:
                 decision_source="summary_modify_room_change",
             )
 
-        if state.current_ui_screen == "BOOKING_SUMMARY":
+        if state.current_ui_screen in {"BOOKING_SUMMARY", "BOOKING_COLLECT"}:
             return _booking_response(
                 state,
                 _handle_summary_modify_transition(state, extracted),
@@ -3075,6 +3416,22 @@ async def booking_logic(state: KioskState) -> dict:
     extracted = result.get("extracted_slots", {})
     speech = result.get("speech", "Let me note that down.")
     selected_room = state.selected_room
+    active_slot = _normalize_slot_name(state.active_slot)
+
+    if state.current_ui_screen in {"BOOKING_COLLECT", "BOOKING_SUMMARY"} and active_slot in {"children", "adults"}:
+        deterministic_counts = _extract_guest_counts_deterministically(state.latest_transcript)
+        if active_slot == "children":
+            extracted["guest_name"] = None
+            extracted["check_in_date"] = None
+            extracted["check_out_date"] = None
+            if "children" in deterministic_counts:
+                extracted["children"] = deterministic_counts["children"]
+        elif active_slot == "adults":
+            extracted["guest_name"] = None
+            if "adults" in deterministic_counts:
+                extracted["adults"] = deterministic_counts["adults"]
+            if "children" in deterministic_counts:
+                extracted["children"] = deterministic_counts["children"]
 
     # VALIDATION LAYER: tenant-aware room check using DB-backed room inventory.
     # FIX PERF-03 (continued): Reuse transcript_room_match computed above instead

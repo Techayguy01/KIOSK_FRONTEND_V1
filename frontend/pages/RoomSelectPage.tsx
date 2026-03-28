@@ -9,12 +9,28 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { VoiceRuntime } from '../voice/VoiceRuntime';
 import { TTSController } from '../voice/TTSController';
 import { PremiumAudioPlayer } from '../voice/premiumPlayer';
+import { AgentAdapter } from '../agent/adapter';
 import { getCurrentTenantLanguage } from '../services/tenantContext';
 import { buildRoomIntroQueue, ensureWarmNarration, ROOM_SELECT_POST_INTRO_PROMPT, warmRoomIntroQueue } from '../voice/roomIntroWarmup';
 
 type DisplayMode = "intro" | "browse" | "filter" | "compare";
 type IntroPhase = "fetching_rooms" | "preparing_first_room_audio" | "showing_room" | "intro_complete";
 const INTRO_SPEAK_DELAY_MS = 550;
+const ROOM_INTRO_SESSION_STORAGE_PREFIX = "siya-room-intro-completed";
+
+function getRoomIntroSessionKey(): string {
+  return `${ROOM_INTRO_SESSION_STORAGE_PREFIX}:${AgentAdapter.getCurrentSessionId()}`;
+}
+
+function hasCompletedRoomIntroForSession(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.sessionStorage.getItem(getRoomIntroSessionKey()) === "1";
+}
+
+function markRoomIntroCompletedForSession(): void {
+  if (typeof window === "undefined") return;
+  window.sessionStorage.setItem(getRoomIntroSessionKey(), "1");
+}
 
 function humanize(value: unknown): string {
   const raw = String(value || '').trim();
@@ -157,9 +173,13 @@ export const RoomSelectPage: React.FC = () => {
   const focusRoomIds: string[] = Array.isArray(data?.focusRoomIds) ? data.focusRoomIds : [];
   const backendIntroSequence: string[] = Array.isArray(data?.roomIntroSequence) ? data.roomIntroSequence : [];
   const backendSpeechQueue: string[] = Array.isArray((data as any)?.roomIntroSpeechQueue) ? (data as any).roomIntroSpeechQueue : [];
-  const compareRoomIds: string[] = Array.isArray((data as any)?.compareRoomIds) ? (data as any).compareRoomIds : [];
+  const compareRoomIds: string[] = Array.isArray((data as any)?.compareRoomIds)
+    ? ((data as any).compareRoomIds as string[]).slice(0, 2)
+    : [];
   const targetIntroIndex: number | null = typeof (data as any)?.targetIntroIndex === 'number' ? (data as any).targetIntroIndex : null;
-  const effectiveCompareRoomIds = isManualMode && manualCompareIds.length >= 2 ? manualCompareIds : compareRoomIds;
+  const effectiveCompareRoomIds = isManualMode && manualCompareIds.length >= 2
+    ? manualCompareIds
+    : compareRoomIds;
   const effectiveIntroSequence = localRoomDisplayMode === "intro" && localIntroSequence.length > 0
     ? localIntroSequence
     : backendIntroSequence;
@@ -170,9 +190,7 @@ export const RoomSelectPage: React.FC = () => {
     : backendSpeechQueue;
 
   useEffect(() => {
-    if (data?.selectedRoom?.id) {
-      setSelectedRoomId(data.selectedRoom.id);
-    }
+    setSelectedRoomId(data?.selectedRoom?.id ?? null);
   }, [data?.selectedRoom?.id]);
 
   useEffect(() => {
@@ -245,6 +263,14 @@ export const RoomSelectPage: React.FC = () => {
     if (rooms.length === 0) return;
     if (introInitializedRef.current !== "") return;
     if (roomDisplayModeFromBackend !== "browse") return;
+    if (hasCompletedRoomIntroForSession()) {
+      setIntroFinished(true);
+      setLocalRoomDisplayMode("browse");
+      setLocalIntroSequence([]);
+      setLocalSpeechQueue([]);
+      setIntroPhase("intro_complete");
+      return;
+    }
 
     const localSequence = rooms.map((r) => String((r as any)?.id || "")).filter(Boolean);
     if (localSequence.length === 0) return;
@@ -288,6 +314,16 @@ export const RoomSelectPage: React.FC = () => {
 
   useEffect(() => {
     if (effectiveIntroSequence.length === 0) return;
+    if (roomDisplayModeFromBackend === "intro" && hasCompletedRoomIntroForSession()) {
+      setIntroFinished(true);
+      setLocalRoomDisplayMode("browse");
+      setLocalIntroSequence([]);
+      setLocalSpeechQueue([]);
+      setVisibleIntroIndex(null);
+      setIntroPhase("intro_complete");
+      introInitializedRef.current = "";
+      return;
+    }
     const sequenceKey = effectiveIntroSequence.join(",");
     if (introInitializedRef.current === sequenceKey) return;
 
@@ -385,15 +421,13 @@ export const RoomSelectPage: React.FC = () => {
     const timer = window.setTimeout(() => {
       void (async () => {
         const language = getCurrentTenantLanguage();
-        const isFirstRoom = idx === 0 && visibleIntroIndex == null;
         const isReady = PremiumAudioPlayer.hasPrefetched(speech, language);
-        if (!isReady && isFirstRoom) {
-          setIntroPhase("preparing_first_room_audio");
+        const shouldShowLoader = visibleIntroIndex == null;
+        setIntroPhase(shouldShowLoader ? "preparing_first_room_audio" : "showing_room");
+        if (shouldShowLoader) {
           setVisibleIntroIndex(null);
-        } else {
-          setIntroPhase("showing_room");
         }
-        console.debug(`[RoomSelectPage] Intro prepare current=${idx} room=${roomId} ready=${isReady} first=${isFirstRoom}`);
+        console.debug(`[RoomSelectPage] Intro prepare current=${idx} room=${roomId} ready=${isReady} loader=${shouldShowLoader}`);
         await ensureWarmNarration(speech, language);
 
         if (introSpeakAttemptRef.current !== attemptId) return;
@@ -408,7 +442,9 @@ export const RoomSelectPage: React.FC = () => {
         const nextSpeech = queue[idx + 1];
         const nextRoomId = sequence[idx + 1] ?? effectiveIntroSequence[idx + 1];
         const nextWarmPromise = nextSpeech?.trim()
-          ? ensureWarmNarration(nextSpeech, language)
+          ? ensureWarmNarration(nextSpeech, language).catch((error) => {
+              console.warn(`[RoomSelectPage] Failed to warm next intro room=${nextRoomId ?? "unknown"}:`, error);
+            })
           : Promise.resolve();
         if (nextSpeech?.trim() && nextRoomId) {
           console.debug(`[RoomSelectPage] Next room prepare started current=${idx} next=${idx + 1} room=${nextRoomId}`);
@@ -421,27 +457,21 @@ export const RoomSelectPage: React.FC = () => {
         if (roomDisplayModeRef.current !== "intro") return;
         if (activeIntroIndexRef.current !== idx) return;
 
-        await nextWarmPromise;
-
-        if (introSpeakAttemptRef.current !== attemptId) return;
-        if (roomDisplayModeRef.current !== "intro") return;
-        if (activeIntroIndexRef.current !== idx) return;
-
         const nextIndex = idx + 1;
         console.debug(`[RoomSelectPage] Intro advance via speak current=${idx} next=${nextIndex} room=${roomId}`);
 
         if (nextIndex < sequence.length) {
+          void nextWarmPromise;
           activeIntroIndexRef.current = nextIndex;
           setActiveIntroIndex(nextIndex);
-          setVisibleIntroIndex(nextIndex);
           setIntroPhase("showing_room");
-          setActiveIntroVisualIndex(0);
           spokenIntroKeyRef.current = "";
           return;
         }
 
         setIntroFinished(true);
         setIntroPhase("intro_complete");
+        markRoomIntroCompletedForSession();
         setLocalRoomDisplayMode("browse");
         setVisibleIntroIndex(idx);
         spokenIntroKeyRef.current = "";
@@ -508,29 +538,35 @@ export const RoomSelectPage: React.FC = () => {
     return Array.from(new Set([...fromImages, ...fallbackUrls, ...(directImage ? [directImage] : [])]));
   };
 
-  const resolvedVisibleIntroIndex = visibleIntroIndex ?? activeIntroIndex;
-  const activeRoomId = introSequenceRef.current[resolvedVisibleIntroIndex] ?? effectiveIntroSequence[resolvedVisibleIntroIndex];
-  const activeIntroRoom = rooms.find((r: any) => String(r?.id) === String(activeRoomId)) ?? null;
-  const activeIntroImages = getRoomImageUrls(activeIntroRoom);
-  const activeIntroImage = activeIntroImages[activeIntroVisualIndex] || getPrimaryImageUrl(activeIntroRoom);
-  const activeIntroSpaces = buildRoomSpaces(activeIntroRoom);
-  const activeIntroComforts = buildComforts(activeIntroRoom);
-  const activeIntroPrompts = buildVoicePrompts(activeIntroRoom);
+  const loaderRoomId = introSequenceRef.current[activeIntroIndex] ?? effectiveIntroSequence[activeIntroIndex];
+  const loaderIntroRoom = rooms.find((r: any) => String(r?.id) === String(loaderRoomId)) ?? null;
+  const visibleRoomId =
+    visibleIntroIndex == null
+      ? null
+      : introSequenceRef.current[visibleIntroIndex] ?? effectiveIntroSequence[visibleIntroIndex] ?? null;
+  const visibleIntroRoom = visibleRoomId
+    ? rooms.find((r: any) => String(r?.id) === String(visibleRoomId)) ?? null
+    : null;
+  const visibleIntroImages = getRoomImageUrls(visibleIntroRoom);
+  const visibleIntroImage = visibleIntroImages[activeIntroVisualIndex] || getPrimaryImageUrl(visibleIntroRoom);
+  const visibleIntroSpaces = buildRoomSpaces(visibleIntroRoom);
+  const visibleIntroComforts = buildComforts(visibleIntroRoom);
+  const visibleIntroPrompts = buildVoicePrompts(visibleIntroRoom);
 
   useEffect(() => {
     setActiveIntroVisualIndex(0);
-  }, [activeIntroRoom?.id]);
+  }, [visibleIntroRoom?.id]);
 
   useEffect(() => {
     if (roomDisplayMode !== "intro") return;
-    if (activeIntroImages.length <= 1) return;
+    if (visibleIntroImages.length <= 1) return;
 
     const interval = window.setInterval(() => {
-      setActiveIntroVisualIndex((current) => (current + 1) % activeIntroImages.length);
+      setActiveIntroVisualIndex((current) => (current + 1) % visibleIntroImages.length);
     }, 2600);
 
     return () => window.clearInterval(interval);
-  }, [activeIntroImages.length, roomDisplayMode]);
+  }, [roomDisplayMode, visibleIntroImages.length]);
 
   const compareRooms: RoomDTO[] = (() => {
     if (roomDisplayMode !== "compare" || effectiveCompareRoomIds.length < 2) return [];
@@ -552,6 +588,7 @@ export const RoomSelectPage: React.FC = () => {
     TTSController.hardStop('state_change');
     setIntroFinished(true);
     setIntroPhase("intro_complete");
+    markRoomIntroCompletedForSession();
     setVisibleIntroIndex(null);
     setLocalRoomDisplayMode('browse');
     spokenIntroKeyRef.current = '';
@@ -779,7 +816,7 @@ export const RoomSelectPage: React.FC = () => {
                       </div>
                     )}
                     <AnimatePresence mode="wait">
-                      {introPhase === "preparing_first_room_audio" ? (
+                      {visibleIntroIndex == null ? (
                         <motion.div
                           key={`intro-loader-${activeIntroIndex}`}
                           initial={{ opacity: 0, scale: 0.985, y: 28 }}
@@ -794,7 +831,7 @@ export const RoomSelectPage: React.FC = () => {
                               <div>
                                 <p className="text-xs uppercase tracking-[0.28em] text-cyan-100/72">Preparing Siya Voice</p>
                                 <h3 className="mt-3 text-2xl md:text-4xl font-light tracking-[-0.04em] text-white">
-                                  {activeIntroRoom ? `Loading ${activeIntroRoom.name}` : "Preparing room introduction"}
+                                  {loaderIntroRoom ? `Loading ${loaderIntroRoom.name}` : "Preparing room introduction"}
                                 </h3>
                                 <p className="mt-3 max-w-xl text-sm md:text-base leading-7 text-white/70">
                                   Fetching the room details and waiting for Sarvam audio to be ready before showing this room.
@@ -803,9 +840,9 @@ export const RoomSelectPage: React.FC = () => {
                             </div>
                           </div>
                         </motion.div>
-                      ) : activeIntroRoom ? (
+                      ) : visibleIntroRoom ? (
                         <motion.div
-                          key={activeIntroRoom.id}
+                          key={visibleIntroRoom.id}
                           initial={{ opacity: 0, scale: 0.985, y: 28 }}
                           animate={{ opacity: 1, y: 0 }}
                           exit={{ opacity: 0, scale: 0.985, y: -28 }}
@@ -827,10 +864,10 @@ export const RoomSelectPage: React.FC = () => {
                         >
                           <div className="grid min-h-[68vh] overflow-hidden rounded-[2rem] border border-white/15 bg-slate-950/72 shadow-[0_35px_120px_rgba(15,23,42,0.55)] backdrop-blur-xl lg:grid-cols-[1.35fr_0.9fr]">
                             <div className="relative min-h-[340px] bg-slate-900/50">
-                              {activeIntroImage ? (
+                              {visibleIntroImage ? (
                                 <img
-                                  src={activeIntroImage}
-                                  alt={activeIntroRoom.name}
+                                  src={visibleIntroImage}
+                                  alt={visibleIntroRoom.name}
                                   className="h-full w-full object-cover"
                                 />
                               ) : (
@@ -842,11 +879,11 @@ export const RoomSelectPage: React.FC = () => {
                               <div className="absolute left-6 top-6 rounded-full border border-white/15 bg-slate-950/45 px-4 py-2 text-xs uppercase tracking-[0.28em] text-cyan-100/80">
                                 Room Introduction
                               </div>
-                              {activeIntroImages.length > 1 && (
+                              {visibleIntroImages.length > 1 && (
                                 <div className="absolute left-1/2 bottom-6 flex -translate-x-1/2 items-center gap-2 rounded-full border border-white/10 bg-slate-950/35 px-3 py-2 backdrop-blur-md">
-                                  {activeIntroImages.map((image, index) => (
+                                  {visibleIntroImages.map((image, index) => (
                                     <span
-                                      key={`${activeIntroRoom.id}-${image}-${index}`}
+                                      key={`${visibleIntroRoom.id}-${image}-${index}`}
                                       className={index === activeIntroVisualIndex ? "h-2 w-6 rounded-full bg-white" : "h-2 w-2 rounded-full bg-white/35"}
                                     />
                                   ))}
@@ -858,13 +895,13 @@ export const RoomSelectPage: React.FC = () => {
                               <div>
                                 <p className="text-xs uppercase tracking-[0.28em] text-cyan-100/72">Now Showing</p>
                                 <h2 className="mt-3 text-3xl md:text-5xl font-light tracking-[-0.05em] text-white leading-tight">
-                                  {activeIntroRoom.name}
+                                  {visibleIntroRoom.name}
                                 </h2>
                                 <p className="mt-4 text-lg md:text-2xl text-cyan-100">
-                                  {formatPrice(activeIntroRoom)} <span className="text-white/45 text-base md:text-lg">per night</span>
+                                  {formatPrice(visibleIntroRoom)} <span className="text-white/45 text-base md:text-lg">per night</span>
                                 </p>
                                 <p className="mt-5 max-w-2xl text-sm md:text-base leading-7 text-white/72">
-                                  {buildRoomNarrative(activeIntroRoom)}
+                                  {buildRoomNarrative(visibleIntroRoom)}
                                 </p>
                                 {currentSpeechText && (
                                   <div className="mt-6 rounded-[1.4rem] border border-cyan-200/20 bg-cyan-300/10 p-4 backdrop-blur-sm">
@@ -878,7 +915,7 @@ export const RoomSelectPage: React.FC = () => {
                                 <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.04] p-5">
                                   <p className="text-xs uppercase tracking-[0.3em] text-white/45">Inside the room</p>
                                   <div className="mt-4 flex flex-wrap gap-2.5">
-                                    {activeIntroSpaces.length > 0 ? activeIntroSpaces.map((space) => (
+                                    {visibleIntroSpaces.length > 0 ? visibleIntroSpaces.map((space) => (
                                       <span
                                         key={space}
                                         className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-slate-950/55 px-3 py-2 text-sm text-white/82"
@@ -897,13 +934,13 @@ export const RoomSelectPage: React.FC = () => {
                                     <div className="rounded-[1.1rem] border border-white/10 bg-slate-950/55 p-4">
                                       <p className="text-[11px] uppercase tracking-[0.26em] text-white/42">Included</p>
                                       <p className="mt-2 text-sm leading-6 text-white/78">
-                                        {activeIntroComforts.length > 0 ? activeIntroComforts.join(", ") : "Comfort details are still being prepared."}
+                                        {visibleIntroComforts.length > 0 ? visibleIntroComforts.join(", ") : "Comfort details are still being prepared."}
                                       </p>
                                     </div>
                                     <div className="rounded-[1.1rem] border border-white/10 bg-slate-950/55 p-4">
                                       <p className="text-[11px] uppercase tracking-[0.26em] text-white/42">Explore visually</p>
                                       <p className="mt-2 text-sm leading-6 text-white/78">
-                                        {activeIntroSpaces.length > 0 ? activeIntroSpaces.join(", ") : "Room visuals will appear here as the intro continues."}
+                                        {visibleIntroSpaces.length > 0 ? visibleIntroSpaces.join(", ") : "Room visuals will appear here as the intro continues."}
                                       </p>
                                     </div>
                                   </div>
@@ -912,7 +949,7 @@ export const RoomSelectPage: React.FC = () => {
                                 <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.04] p-5">
                                   <p className="text-xs uppercase tracking-[0.3em] text-white/45">Try saying</p>
                                   <div className="mt-4 space-y-2.5">
-                                    {activeIntroPrompts.map((prompt) => (
+                                    {visibleIntroPrompts.map((prompt) => (
                                       <p key={prompt} className="text-sm leading-6 text-white/74">
                                         "{prompt}"
                                       </p>
@@ -923,11 +960,11 @@ export const RoomSelectPage: React.FC = () => {
                                 <div className="grid grid-cols-2 gap-4 text-sm text-white/75">
                                   <div className="rounded-[1.25rem] border border-white/10 bg-white/[0.04] px-4 py-4">
                                     <p className="text-[11px] uppercase tracking-[0.24em] text-white/45">Adults</p>
-                                    <p className="mt-2 text-2xl text-white">{typeof (activeIntroRoom as any).maxAdults === "number" ? (activeIntroRoom as any).maxAdults : "-"}</p>
+                                    <p className="mt-2 text-2xl text-white">{typeof (visibleIntroRoom as any).maxAdults === "number" ? (visibleIntroRoom as any).maxAdults : "-"}</p>
                                   </div>
                                   <div className="rounded-[1.25rem] border border-white/10 bg-white/[0.04] px-4 py-4">
                                     <p className="text-[11px] uppercase tracking-[0.24em] text-white/45">Children</p>
-                                    <p className="mt-2 text-2xl text-white">{typeof (activeIntroRoom as any).maxChildren === "number" ? (activeIntroRoom as any).maxChildren : "-"}</p>
+                                    <p className="mt-2 text-2xl text-white">{typeof (visibleIntroRoom as any).maxChildren === "number" ? (visibleIntroRoom as any).maxChildren : "-"}</p>
                                   </div>
                                 </div>
                               </div>
