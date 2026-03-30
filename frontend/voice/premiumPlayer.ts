@@ -116,8 +116,20 @@ class PremiumAudioPlayerService {
         }, PREMIUM_TTS_TIMEOUT_MS);
 
         try {
-            // Check prefetch cache first
             const cacheKey = this.getCacheKey(text.trim(), language);
+            const inflightPrefetch = this.prefetchInflight.get(cacheKey);
+            if (inflightPrefetch) {
+                console.log(
+                    `[PremiumPlayer][${requestId}] Waiting for inflight prefetch elapsedMs=${Date.now() - startedAt}: "${text.trim().substring(0, 40)}..."`
+                );
+                try {
+                    await inflightPrefetch;
+                } catch {
+                    // Ignore and fall through to live fetch below.
+                }
+            }
+
+            // Check prefetch cache first
             let audioUrl: string;
             const cachedUrl = this.prefetchCache.get(cacheKey);
 

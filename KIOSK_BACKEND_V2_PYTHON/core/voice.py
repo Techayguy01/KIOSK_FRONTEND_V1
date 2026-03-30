@@ -11,6 +11,7 @@ import os
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 from time import perf_counter
 from dotenv import load_dotenv
@@ -83,6 +84,15 @@ SARVAM_LANGUAGE_CODES = {
 
 TTS_CACHE_TTL_SECONDS = max(0, int(os.getenv("TTS_CACHE_TTL_SECONDS", "3600") or "3600"))
 TTS_CACHE_MAX_SIZE = max(1, int(os.getenv("TTS_CACHE_MAX_SIZE", "200") or "200"))
+TTS_CACHE_VERSION = str(os.getenv("TTS_CACHE_VERSION", "v1") or "v1").strip() or "v1"
+TTS_PERSISTENT_CACHE_ENABLED = str(
+    os.getenv("TTS_PERSISTENT_CACHE_ENABLED", "true") or "true"
+).strip().lower() in {"1", "true", "yes", "on"}
+TTS_PERSISTENT_CACHE_DIR = Path(
+    os.getenv("TTS_PERSISTENT_CACHE_DIR", "") or (Path(__file__).resolve().parents[1] / ".tts_cache")
+)
+TTS_SARVAM_MODEL = str(os.getenv("SARVAM_TTS_MODEL", "bulbul:v3") or "bulbul:v3").strip() or "bulbul:v3"
+TTS_SARVAM_SPEAKER = str(os.getenv("SARVAM_TTS_SPEAKER", "ritu") or "ritu").strip() or "ritu"
 
 
 def normalize_language_code(lang: str) -> str:
@@ -133,11 +143,50 @@ _tts_cache_lock = threading.Lock()
 _tts_inflight: dict[str, threading.Event] = {}
 
 
-def _build_tts_cache_key(text: str, language: str) -> str:
+def _normalize_tenant_scope(tenant_scope: Optional[str]) -> str:
+    normalized = str(tenant_scope or "").strip().lower()
+    return normalized or "global"
+
+
+def _build_tts_cache_key(text: str, language: str, tenant_scope: Optional[str] = None) -> str:
     normalized_text = str(text or "").strip()
     normalized_language = normalize_language_code(language)
-    digest = hashlib.sha256(f"{normalized_text}|{normalized_language}".encode("utf-8")).hexdigest()
+    normalized_tenant = _normalize_tenant_scope(tenant_scope)
+    digest = hashlib.sha256(
+        (
+            f"{normalized_tenant}|{normalized_text}|{normalized_language}|"
+            f"{TTS_SARVAM_MODEL}|{TTS_SARVAM_SPEAKER}|{TTS_CACHE_VERSION}"
+        ).encode("utf-8")
+    ).hexdigest()
     return digest
+
+
+def _get_persistent_tts_path(cache_key: str) -> Path:
+    return TTS_PERSISTENT_CACHE_DIR / f"{cache_key}.wav"
+
+
+def _get_persisted_tts_audio(cache_key: str) -> bytes | None:
+    if not TTS_PERSISTENT_CACHE_ENABLED:
+        return None
+    cache_path = _get_persistent_tts_path(cache_key)
+    try:
+        if cache_path.is_file():
+            return cache_path.read_bytes()
+    except Exception as exc:
+        print(f"[Voice] Persistent cache read failed key={cache_key[:12]} error={exc}")
+    return None
+
+
+def _store_persisted_tts_audio(cache_key: str, audio_bytes: bytes) -> None:
+    if not TTS_PERSISTENT_CACHE_ENABLED or not audio_bytes:
+        return
+    cache_path = _get_persistent_tts_path(cache_key)
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        if not cache_path.exists():
+            cache_path.write_bytes(audio_bytes)
+    except Exception as exc:
+        print(f"[Voice] Persistent cache write failed key={cache_key[:12]} error={exc}")
 
 
 def _get_cached_tts_audio(cache_key: str) -> bytes | None:
@@ -193,8 +242,8 @@ def _run_sarvam_tts_request(text: str, language: str, request_id: Optional[str] 
     payload = {
         "text": text,
         "target_language_code": lang_code,
-        "speaker": "ritu",
-        "model": "bulbul:v3"
+        "speaker": TTS_SARVAM_SPEAKER,
+        "model": TTS_SARVAM_MODEL,
     }
 
     headers = {
@@ -294,7 +343,12 @@ class VoiceProvider:
         return transcript.strip()
 
     @staticmethod
-    def generate_speech(text: str, language: str = "hi", request_id: Optional[str] = None) -> TTSAudioResult:
+    def generate_speech(
+        text: str,
+        language: str = "hi",
+        request_id: Optional[str] = None,
+        tenant_scope: Optional[str] = None,
+    ) -> TTSAudioResult:
         """
         Converts text to speech using Sarvam TTS (Direct REST API).
         Returns the raw audio bytes (WAV format).
@@ -302,20 +356,34 @@ class VoiceProvider:
         """
         normalized_text = str(text or "").strip()
         normalized_language = normalize_language_code(language)
+        normalized_tenant = _normalize_tenant_scope(tenant_scope)
         if not normalized_text:
             raise ValueError("[Voice] No text provided for TTS generation")
 
         _purge_expired_tts_cache_entries()
-        cache_key = _build_tts_cache_key(normalized_text, normalized_language)
+        cache_key = _build_tts_cache_key(normalized_text, normalized_language, normalized_tenant)
         cached_audio = _get_cached_tts_audio(cache_key)
         if cached_audio is not None:
             print(
                 "[Voice] Cache HIT "
                 f"id={request_id or 'none'} "
+                f"tenant={normalized_tenant} "
                 f"lang={resolve_sarvam_language_code(normalized_language)} "
                 f"bytes={len(cached_audio)}"
             )
-            return TTSAudioResult(audio_bytes=cached_audio, cache_status="hit")
+            return TTSAudioResult(audio_bytes=cached_audio, cache_status="hit_memory")
+
+        persisted_audio = _get_persisted_tts_audio(cache_key)
+        if persisted_audio is not None:
+            _store_cached_tts_audio(cache_key, persisted_audio)
+            print(
+                "[Voice] Cache HIT_PERSISTENT "
+                f"id={request_id or 'none'} "
+                f"tenant={normalized_tenant} "
+                f"lang={resolve_sarvam_language_code(normalized_language)} "
+                f"bytes={len(persisted_audio)}"
+            )
+            return TTSAudioResult(audio_bytes=persisted_audio, cache_status="hit_persistent")
 
         wait_event: threading.Event | None = None
         should_generate = False
@@ -332,6 +400,7 @@ class VoiceProvider:
             print(
                 "[Voice] Cache WAIT "
                 f"id={request_id or 'none'} "
+                f"tenant={normalized_tenant} "
                 f"waitingFor={cache_key[:12]}"
             )
             wait_event.wait(timeout=20)
@@ -340,13 +409,25 @@ class VoiceProvider:
                 print(
                     "[Voice] Cache HIT_AFTER_WAIT "
                     f"id={request_id or 'none'} "
+                    f"tenant={normalized_tenant} "
                     f"bytes={len(cached_after_wait)}"
                 )
-                return TTSAudioResult(audio_bytes=cached_after_wait, cache_status="hit")
+                return TTSAudioResult(audio_bytes=cached_after_wait, cache_status="hit_memory")
+            persisted_after_wait = _get_persisted_tts_audio(cache_key)
+            if persisted_after_wait is not None:
+                _store_cached_tts_audio(cache_key, persisted_after_wait)
+                print(
+                    "[Voice] Cache HIT_PERSISTENT_AFTER_WAIT "
+                    f"id={request_id or 'none'} "
+                    f"tenant={normalized_tenant} "
+                    f"bytes={len(persisted_after_wait)}"
+                )
+                return TTSAudioResult(audio_bytes=persisted_after_wait, cache_status="hit_persistent")
 
         print(
             "[Voice] Cache MISS "
             f"id={request_id or 'none'} "
+            f"tenant={normalized_tenant} "
             f"lang={resolve_sarvam_language_code(normalized_language)} "
             f"chars={len(normalized_text)}"
         )
@@ -358,6 +439,7 @@ class VoiceProvider:
                 request_id=request_id,
             )
             _store_cached_tts_audio(cache_key, audio_bytes)
+            _store_persisted_tts_audio(cache_key, audio_bytes)
             return TTSAudioResult(audio_bytes=audio_bytes, cache_status="miss")
         except Exception as e:
             print(

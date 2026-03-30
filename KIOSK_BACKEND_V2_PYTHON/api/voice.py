@@ -125,6 +125,7 @@ async def text_to_speech(
             text=req.text,
             language=effective_language,
             request_id=request_id,
+            tenant_scope=x_tenant_slug,
         )
         audio_bytes = tts_result.audio_bytes
         duration_ms = round((perf_counter() - started_at) * 1000, 1)

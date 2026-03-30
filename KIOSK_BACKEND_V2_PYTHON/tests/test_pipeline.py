@@ -128,6 +128,72 @@ class TestRoomSelectionPipeline:
         assert result["compareRoomIds"][:2] == ["r1", "r2"]
         assert "which one would you like to explore" in result["speech_response"].lower()
 
+    @pytest.mark.asyncio
+    async def test_compare_without_room_names_prompts_for_two_rooms(self):
+        rooms = [
+            RoomInventoryItem(id="r1", name="Budget Deluxe Room", code="BDR", price=220),
+            RoomInventoryItem(id="r2", name="Grand Luxury Suite", code="GLS", price=480),
+            RoomInventoryItem(id="r3", name="Ocean One View", code="OOV", price=320),
+            RoomInventoryItem(id="r4", name="Luxurious Suite", code="LS", price=530),
+        ]
+        result = await _route_then_book(
+            _make_state(
+                "compare any two rooms",
+                screen="ROOM_SELECT",
+                rooms=rooms,
+            )
+        )
+
+        assert result["next_ui_screen"] == "ROOM_SELECT"
+        assert result["roomDisplayMode"] == "browse"
+        assert result["compareRoomIds"] == []
+        assert result["focusRoomIds"] is None
+        assert "two room names" in result["speech_response"].lower()
+
+    @pytest.mark.asyncio
+    async def test_compare_with_one_room_name_asks_for_other_room(self):
+        rooms = [
+            RoomInventoryItem(id="r1", name="Budget Deluxe Room", code="BDR", price=220),
+            RoomInventoryItem(id="r2", name="Grand Luxury Suite", code="GLS", price=480),
+            RoomInventoryItem(id="r3", name="Ocean One View", code="OOV", price=320),
+            RoomInventoryItem(id="r4", name="Luxurious Suite", code="LS", price=530),
+        ]
+        result = await _route_then_book(
+            _make_state(
+                "compare ocean one view",
+                screen="ROOM_SELECT",
+                rooms=rooms,
+            )
+        )
+
+        assert result["next_ui_screen"] == "ROOM_SELECT"
+        assert result["roomDisplayMode"] == "browse"
+        assert result["compareRoomIds"] == []
+        assert result["focusRoomIds"] == ["r3"]
+        assert "which other room" in result["speech_response"].lower()
+        assert "ocean one view" in result["speech_response"].lower()
+
+    @pytest.mark.asyncio
+    async def test_room_select_named_amenity_question_returns_room_details(self):
+        rooms = [
+            RoomInventoryItem(id="r1", name="Budget Deluxe Room", code="BDR", price=220, features=["WiFi", "TV"]),
+            RoomInventoryItem(id="r2", name="Grand Luxury Suite", code="GLS", price=480, features=["Bathtub"]),
+        ]
+        with patch("agent.nodes.get_llm_response") as mock_llm:
+            mock_llm.side_effect = [_mock_router_response("GENERAL_QUERY", 0.9)]
+            result = await _route_then_book(
+                _make_state(
+                    "what are the amenities of budget deluxe room",
+                    screen="ROOM_SELECT",
+                    rooms=rooms,
+                )
+            )
+
+        assert result["next_ui_screen"] == "ROOM_SELECT"
+        assert result["roomDisplayMode"] == "browse"
+        assert result["focusRoomIds"] == ["r1"]
+        assert "budget deluxe room" in result["speech_response"].lower()
+
 
 class TestFullBookingFlow:
     @pytest.mark.asyncio

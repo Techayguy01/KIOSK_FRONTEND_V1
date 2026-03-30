@@ -144,14 +144,25 @@ def _response_language_instruction(language: str) -> str:
     if code == "hi":
         return (
             "Respond in conversational Indian Hindi with natural hotel terms. "
-            "Light Hinglish is allowed. Avoid overly formal or literary Hindi."
+            "Light Hinglish is allowed. Avoid overly formal or literary Hindi. "
+            "Do not switch back to English unless a room name or fixed product term is best kept in English."
         )
     if code == "mr":
         return (
             "Respond in conversational Marathi with natural hotel vocabulary. "
-            "Keep the tone local, clear, and not overly formal."
+            "Keep the tone local, clear, and not overly formal. "
+            "Do not switch back to English unless a room name or fixed product term is best kept in English."
         )
     return f"Respond in {language_name} (language code: {code})."
+
+
+def _pick_language_text(language: str, *, en: str, hi: str, mr: str) -> str:
+    code = (language or "en").strip().lower()
+    if code == "hi":
+        return hi
+    if code == "mr":
+        return mr
+    return en
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -360,14 +371,34 @@ def _resolve_room_filter(
     return matched_ids, best_label
 
 
-def _build_room_confirmation(room: RoomInventoryItem) -> str:
-    parts = [f"Great choice. {room.name}"]
+def _build_room_confirmation(room: RoomInventoryItem, language: str = "en") -> str:
+    parts = [_pick_language_text(
+        language,
+        en=f"Great choice. {room.name}",
+        hi=f"बहुत बढ़िया choice. {room.name}",
+        mr=f"छान निवड. {room.name}",
+    )]
     price_text = _format_price_for_speech(room.price, room.currency)
     if price_text:
-        parts[-1] += f" is available at {price_text} per night"
+        parts[-1] += _pick_language_text(
+            language,
+            en=f" is available at {price_text} per night",
+            hi=f" {price_text} प्रति रात पर उपलब्ध है",
+            mr=f" {price_text} प्रति रात उपलब्ध आहे",
+        )
     if room.max_adults:
-        parts[-1] += f" for up to {room.max_adults} adult{'s' if room.max_adults != 1 else ''}"
-    parts.append("How many adults will be staying?")
+        parts[-1] += _pick_language_text(
+            language,
+            en=f" for up to {room.max_adults} adult{'s' if room.max_adults != 1 else ''}",
+            hi=f" और {room.max_adults} adults तक के लिए उपयुक्त है",
+            mr=f" आणि {room.max_adults} adults पर्यंत योग्य आहे",
+        )
+    parts.append(_pick_language_text(
+        language,
+        en="How many adults will be staying?",
+        hi="कितने adults stay करेंगे?",
+        mr="किती adults stay करणार आहेत?",
+    ))
     return ". ".join(parts)
 
 
@@ -378,19 +409,49 @@ def _build_room_feature_summary(room: RoomInventoryItem, limit: int = 3) -> str:
     return _join_spoken_list(features[:limit])
 
 
-def _build_room_preview_intro(room: RoomInventoryItem) -> str:
-    parts = [f"Here is the {room.name}"]
+def _build_room_preview_intro(room: RoomInventoryItem, language: str = "en") -> str:
+    parts = [_pick_language_text(
+        language,
+        en=f"Here is the {room.name}",
+        hi=f"यह {room.name} है",
+        mr=f"ही {room.name} आहे",
+    )]
     price_text = _format_price_for_speech(room.price, room.currency)
     if price_text:
-        parts[-1] += f", available at {price_text} per night"
+        parts[-1] += _pick_language_text(
+            language,
+            en=f", available at {price_text} per night",
+            hi=f", {price_text} प्रति रात पर उपलब्ध",
+            mr=f", {price_text} प्रति रात उपलब्ध",
+        )
     if room.max_adults:
-        parts[-1] += f" for up to {room.max_adults} adult{'s' if room.max_adults != 1 else ''}"
+        parts[-1] += _pick_language_text(
+            language,
+            en=f" for up to {room.max_adults} adult{'s' if room.max_adults != 1 else ''}",
+            hi=f", {room.max_adults} adults तक के लिए उपयुक्त",
+            mr=f", {room.max_adults} adults पर्यंत योग्य",
+        )
     if room.max_children:
-        parts[-1] += f" and {room.max_children} child{'ren' if room.max_children != 1 else ''}"
+        parts[-1] += _pick_language_text(
+            language,
+            en=f" and {room.max_children} child{'ren' if room.max_children != 1 else ''}",
+            hi=f" और {room.max_children} children के लिए भी",
+            mr=f" आणि {room.max_children} children साठीही",
+        )
     feature_summary = _build_room_feature_summary(room)
     if feature_summary:
-        parts.append(f"It includes {feature_summary}.")
-    parts.append("Take a look and let me know if you'd like more details, want to compare it, book it, or see another option.")
+        parts.append(_pick_language_text(
+            language,
+            en=f"It includes {feature_summary}.",
+            hi=f"इसमें {feature_summary} शामिल हैं।",
+            mr=f"यात {feature_summary} आहेत.",
+        ))
+    parts.append(_pick_language_text(
+        language,
+        en="Take a look and let me know if you'd like more details, want to compare it, book it, or see another option.",
+        hi="इसे देख लीजिए और बताइए कि आप इसके बारे में और जानकारी चाहते हैं, तुलना करना चाहते हैं, इसे बुक करना चाहते हैं, या कोई दूसरा विकल्प देखना चाहते हैं।",
+        mr="हे पाहा आणि सांगा की तुम्हाला याबद्दल अधिक माहिती हवी आहे, तुलना करायची आहे, हे बुक करायचे आहे, की दुसरा पर्याय पाहायचा आहे.",
+    ))
     return ". ".join(parts)
 
 
@@ -398,21 +459,43 @@ def _build_room_select_exploratory_reply(
     room: RoomInventoryItem,
     transcript: str,
     room_inventory: list[RoomInventoryItem],
+    language: str = "en",
 ) -> str:
     text = (transcript or "").strip().lower()
     if _looks_like_budget_room_request(text):
         price_text = _format_price_for_speech(room.price, room.currency) or "our current rate"
-        return (
-            f"The most affordable option right now is {room.name}, available at {price_text}. "
-            "Would you like more details about it, compare it with another room, or proceed with this option?"
+        return _pick_language_text(
+            language,
+            en=(
+                f"The most affordable option right now is {room.name}, available at {price_text}. "
+                "Would you like more details about it, compare it with another room, or proceed with this option?"
+            ),
+            hi=(
+                f"अभी सबसे किफायती विकल्प {room.name} है, जो {price_text} पर उपलब्ध है। "
+                "क्या आप इसके बारे में और जानकारी चाहते हैं, किसी दूसरे room से तुलना करना चाहते हैं, या इसी विकल्प के साथ आगे बढ़ना चाहते हैं?"
+            ),
+            mr=(
+                f"आत्ता सर्वात परवडणारा पर्याय {room.name} आहे, जो {price_text} मध्ये उपलब्ध आहे. "
+                "तुम्हाला याबद्दल अधिक माहिती हवी आहे, दुसऱ्या room बरोबर तुलना करायची आहे, की याच पर्यायासोबत पुढे जायचे आहे?"
+            ),
         )
     if re.search(r"\b(price|cost|rate|tariff)\b", text):
         price_text = _format_price_for_speech(room.price, room.currency)
         if price_text:
-            return f"{room.name} is available at {price_text} per night."
-        return f"I do not have the exact price for {room.name} right now."
+            return _pick_language_text(
+                language,
+                en=f"{room.name} is available at {price_text} per night.",
+                hi=f"{room.name} {price_text} प्रति रात पर उपलब्ध है।",
+                mr=f"{room.name} {price_text} प्रति रात उपलब्ध आहे.",
+            )
+        return _pick_language_text(
+            language,
+            en=f"I do not have the exact price for {room.name} right now.",
+            hi=f"अभी मेरे पास {room.name} की सटीक कीमत उपलब्ध नहीं है।",
+            mr=f"आत्ता माझ्याकडे {room.name} ची अचूक किंमत उपलब्ध नाही.",
+        )
     if _looks_like_room_comparison_request(text):
-        return _build_room_preview_intro(room)
+        return _build_room_preview_intro(room, language)
     detail_speech = _build_unknown_room_detail_reply(room, transcript)
     if detail_speech:
         return detail_speech
@@ -420,32 +503,77 @@ def _build_room_select_exploratory_reply(
         price_text = _format_price_for_speech(room.price, room.currency)
         feature_summary = _build_room_feature_summary(room)
         if price_text and feature_summary:
-            return f"{room.name} is available at {price_text} per night and includes {feature_summary}."
+            return _pick_language_text(
+                language,
+                en=f"{room.name} is available at {price_text} per night and includes {feature_summary}.",
+                hi=f"{room.name} {price_text} प्रति रात पर उपलब्ध है और इसमें {feature_summary} शामिल हैं।",
+                mr=f"{room.name} {price_text} प्रति रात उपलब्ध आहे आणि यात {feature_summary} आहेत.",
+            )
         if price_text:
-            return f"{room.name} is available at {price_text} per night."
+            return _pick_language_text(
+                language,
+                en=f"{room.name} is available at {price_text} per night.",
+                hi=f"{room.name} {price_text} प्रति रात पर उपलब्ध है।",
+                mr=f"{room.name} {price_text} प्रति रात उपलब्ध आहे.",
+            )
         if feature_summary:
-            return f"{room.name} includes {feature_summary}."
-    return _build_room_preview_intro(room)
+            return _pick_language_text(
+                language,
+                en=f"{room.name} includes {feature_summary}.",
+                hi=f"{room.name} में {feature_summary} शामिल हैं।",
+                mr=f"{room.name} मध्ये {feature_summary} आहेत.",
+            )
+    return _build_room_preview_intro(room, language)
 
 
-def _build_room_select_multi_room_clarifier(rooms: list[RoomInventoryItem]) -> str:
+def _build_room_select_multi_room_clarifier(rooms: list[RoomInventoryItem], language: str = "en") -> str:
     room_names = [room.name for room in rooms if room and room.name][:3]
     mentioned = _join_spoken_list(room_names)
     if not mentioned:
-        return "I heard more than one room mentioned. Would you like me to compare them, or would you like details about one specific room?"
-    return (
-        f"I heard {mentioned}. I will not pick one yet. "
-        "Would you like me to compare them, or would you like details about one specific room?"
+        return _pick_language_text(
+            language,
+            en="I heard more than one room mentioned. Would you like me to compare them, or would you like details about one specific room?",
+            hi="मैंने एक से ज़्यादा rooms सुने हैं। क्या आप चाहते हैं कि मैं उनकी तुलना करूँ, या किसी एक specific room की जानकारी दूँ?",
+            mr="मला एकापेक्षा जास्त rooms ऐकू आले. तुम्हाला त्यांची तुलना हवी आहे का, की एका specific room ची माहिती हवी आहे?",
+        )
+    return _pick_language_text(
+        language,
+        en=(
+            f"I heard {mentioned}. I will not pick one yet. "
+            "Would you like me to compare them, or would you like details about one specific room?"
+        ),
+        hi=(
+            f"मैंने {mentioned} सुना है। मैं अभी कोई एक room नहीं चुनूँगी। "
+            "क्या आप चाहते हैं कि मैं उनकी तुलना करूँ, या किसी एक specific room की जानकारी दूँ?"
+        ),
+        mr=(
+            f"मी {mentioned} ऐकले आहे. मी आत्ता कोणताही एक room निवडणार नाही. "
+            "तुम्हाला त्यांची तुलना हवी आहे का, की एका specific room ची माहिती हवी आहे?"
+        ),
     )
 
 
-def _build_room_intro_speech_single(room: RoomInventoryItem) -> str:
+def _build_room_intro_speech_single(room: RoomInventoryItem, language: str = "en") -> str:
     price = f"INR {int(room.price):,}" if room.price else "price on request"
     features = room.features[:3] if room.features else []
     feature_text = ", ".join(features) if features else "comfortable amenities"
-    capacity = f"for up to {room.max_adults} adults" if room.max_adults else ""
+    capacity = (
+        _pick_language_text(
+            language,
+            en=f"for up to {room.max_adults} adults",
+            hi=f"{room.max_adults} adults तक के लिए",
+            mr=f"{room.max_adults} adults पर्यंत",
+        )
+        if room.max_adults
+        else ""
+    )
     capacity = f" {capacity}" if capacity else ""
-    return f"{room.name} — available at {price} per night{capacity}. It features {feature_text}."
+    return _pick_language_text(
+        language,
+        en=f"{room.name} — available at {price} per night{capacity}. It features {feature_text}.",
+        hi=f"{room.name} {price} प्रति रात पर उपलब्ध है{capacity}. इसमें {feature_text} हैं।",
+        mr=f"{room.name} {price} प्रति रात उपलब्ध आहे{capacity}. यात {feature_text} आहेत.",
+    )
 
 
 def _levenshtein_distance(a: str, b: str) -> int:
@@ -567,12 +695,25 @@ def _build_unknown_room_detail_reply(room: RoomInventoryItem, transcript: str) -
     )
 
 
-def _build_room_recommendation_prompt(room_inventory: list[RoomInventoryItem]) -> str:
+def _build_room_recommendation_prompt(room_inventory: list[RoomInventoryItem], language: str = "en") -> str:
     if not room_inventory:
-        return (
-            "Certainly. I can help you with a room booking. "
-            "If you already have a room in mind, please say the room name, "
-            "or I can guide you through the available options."
+        return _pick_language_text(
+            language,
+            en=(
+                "Certainly. I can help you with a room booking. "
+                "If you already have a room in mind, please say the room name, "
+                "or I can guide you through the available options."
+            ),
+            hi=(
+                "ज़रूर। मैं room booking में आपकी मदद कर सकती हूँ। "
+                "अगर आपके मन में कोई room है, तो उसका नाम बताइए, "
+                "या मैं आपको available options दिखा सकती हूँ।"
+            ),
+            mr=(
+                "नक्की. मी room booking मध्ये तुमची मदत करू शकते. "
+                "तुमच्या मनात एखादा room असेल तर त्याचे नाव सांगा, "
+                "किंवा मी तुम्हाला available options दाखवू शकते."
+            ),
         )
 
     room_count = len(room_inventory)
@@ -581,33 +722,64 @@ def _build_room_recommendation_prompt(room_inventory: list[RoomInventoryItem]) -
         room_name = room.name or "This room"
         price_text = _format_price_for_speech(room.price, room.currency)
         occupancy_text = (
-            f"for up to {room.max_adults} adult{'s' if room.max_adults != 1 else ''}"
+            _pick_language_text(
+                language,
+                en=f"for up to {room.max_adults} adult{'s' if room.max_adults != 1 else ''}",
+                hi=f"{room.max_adults} adults तक के लिए",
+                mr=f"{room.max_adults} adults पर्यंत",
+            )
             if room.max_adults
-            else "for a comfortable stay"
+            else _pick_language_text(
+                language,
+                en="for a comfortable stay",
+                hi="आरामदायक stay के लिए",
+                mr="आरामदायक stay साठी",
+            )
         )
         if price_text:
             described_rooms.append(
-                f"{room_name} is available for {price_text} and is suited {occupancy_text}."
+                _pick_language_text(
+                    language,
+                    en=f"{room_name} is available for {price_text} and is suited {occupancy_text}.",
+                    hi=f"{room_name} {price_text} में उपलब्ध है और {room.max_adults or 'आरामदायक'} stay के लिए उपयुक्त है।",
+                    mr=f"{room_name} {price_text} मध्ये उपलब्ध आहे आणि {room.max_adults or 'आरामदायक'} stay साठी योग्य आहे.",
+                )
             )
         else:
             described_rooms.append(
-                f"{room_name} is available now and is suited {occupancy_text}."
+                _pick_language_text(
+                    language,
+                    en=f"{room_name} is available now and is suited {occupancy_text}.",
+                    hi=f"{room_name} अभी उपलब्ध है और {room.max_adults or 'आरामदायक'} stay के लिए उपयुक्त है।",
+                    mr=f"{room_name} आत्ता उपलब्ध आहे आणि {room.max_adults or 'आरामदायक'} stay साठी योग्य आहे.",
+                )
             )
 
     remaining_count = room_count - len(described_rooms)
     follow_up = (
-        f"I also have {remaining_count} more option{'s' if remaining_count != 1 else ''} available if you'd like to compare further."
+        _pick_language_text(
+            language,
+            en=f"I also have {remaining_count} more option{'s' if remaining_count != 1 else ''} available if you'd like to compare further.",
+            hi=f"अगर आप चाहें, तो मेरे पास तुलना के लिए {remaining_count} और option भी available हैं।",
+            mr=f"तुम्हाला हवे असेल तर माझ्याकडे तुलना करण्यासाठी अजून {remaining_count} options available आहेत.",
+        )
         if remaining_count > 0
-        else "If you'd like, I can walk you through either room in more detail."
+        else _pick_language_text(
+            language,
+            en="If you'd like, I can walk you through either room in more detail.",
+            hi="अगर आप चाहें, तो मैं इन rooms में से किसी के बारे में और detail दे सकती हूँ।",
+            mr="तुम्हाला हवे असेल तर मी या rooms पैकी कोणत्याही room बद्दल अधिक detail देऊ शकते.",
+        )
     )
 
-    return " ".join(
-        [
-            f"Certainly. We currently have {room_count} room option{'s' if room_count != 1 else ''} available, each with different amenities and room details.",
-            *described_rooms,
-            follow_up,
-        ]
-    ).strip()
+    opening = _pick_language_text(
+        language,
+        en=f"Certainly. We currently have {room_count} room option{'s' if room_count != 1 else ''} available, each with different amenities and room details.",
+        hi=f"ज़रूर। इस समय हमारे पास {room_count} room options उपलब्ध हैं, और हर room की amenities और details अलग हैं।",
+        mr=f"नक्की. सध्या आमच्याकडे {room_count} room options उपलब्ध आहेत, आणि प्रत्येक room च्या amenities आणि details वेगळ्या आहेत.",
+    )
+
+    return " ".join([opening, *described_rooms, follow_up]).strip()
 
 
 def _rooms_mentioned_in_transcript(
@@ -702,32 +874,68 @@ def _rooms_mentioned_in_transcript(
     return ordered_matches
 
 
-def _build_room_comparison_prompt(compared_rooms: list[RoomInventoryItem]) -> str:
+def _build_room_comparison_prompt(compared_rooms: list[RoomInventoryItem], language: str = "en") -> str:
     if len(compared_rooms) < 2:
-        return _build_room_recommendation_prompt(compared_rooms)
+        return _build_room_recommendation_prompt(compared_rooms, language)
 
     described_rooms: list[str] = []
     for room in compared_rooms[:2]:
         room_name = room.name or "This room"
         price_text = _format_price_for_speech(room.price, room.currency)
         occupancy_text = (
-            f"up to {room.max_adults} adult{'s' if room.max_adults != 1 else ''}"
+            _pick_language_text(
+                language,
+                en=f"up to {room.max_adults} adult{'s' if room.max_adults != 1 else ''}",
+                hi=f"{room.max_adults} adults तक",
+                mr=f"{room.max_adults} adults पर्यंत",
+            )
             if room.max_adults
-            else "a comfortable stay"
+            else _pick_language_text(
+                language,
+                en="a comfortable stay",
+                hi="आरामदायक stay",
+                mr="आरामदायक stay",
+            )
         )
         feature_summary = _build_room_feature_summary(room, limit=2)
         description = (
-            f"{room_name} is available for {price_text} and suits {occupancy_text}"
+            _pick_language_text(
+                language,
+                en=f"{room_name} is available for {price_text} and suits {occupancy_text}",
+                hi=f"{room_name} {price_text} में उपलब्ध है और {occupancy_text} के लिए उपयुक्त है",
+                mr=f"{room_name} {price_text} मध्ये उपलब्ध आहे आणि {occupancy_text} साठी योग्य आहे",
+            )
             if price_text
-            else f"{room_name} suits {occupancy_text}"
+            else _pick_language_text(
+                language,
+                en=f"{room_name} suits {occupancy_text}",
+                hi=f"{room_name} {occupancy_text} के लिए उपयुक्त है",
+                mr=f"{room_name} {occupancy_text} साठी योग्य आहे",
+            )
         )
         if feature_summary:
-            description += f", with {feature_summary}"
+            description += _pick_language_text(
+                language,
+                en=f", with {feature_summary}",
+                hi=f", जिसमें {feature_summary} हैं",
+                mr=f", ज्यात {feature_summary} आहेत",
+            )
         described_rooms.append(description)
 
-    return (
-        f"{described_rooms[0]}. {described_rooms[1]}. "
-        "Which one would you like to explore in more detail?"
+    return _pick_language_text(
+        language,
+        en=(
+            f"{described_rooms[0]}. {described_rooms[1]}. "
+            "Which one would you like to explore in more detail?"
+        ),
+        hi=(
+            f"{described_rooms[0]}. {described_rooms[1]}. "
+            "आप इनमें से किस room को और detail में देखना चाहेंगे?"
+        ),
+        mr=(
+            f"{described_rooms[0]}. {described_rooms[1]}. "
+            "यापैकी कोणता room तुम्हाला अधिक detail मध्ये पाहायचा आहे?"
+        ),
     )
 
 
@@ -739,6 +947,48 @@ def _build_room_comparison_prompt(compared_rooms: list[RoomInventoryItem]) -> st
 # None-guarded expressions, but the type hint previously claimed plain str).
 def _normalize_text(value: Optional[str]) -> str:
     text = (value or "").strip().lower()
+    transliterations = (
+        ("बजट", "budget"),
+        ("डिलक्स", "deluxe"),
+        ("डीलक्स", "deluxe"),
+        ("रूम", "room"),
+        ("खोली", "room"),
+        ("ग्रैंड", "grand"),
+        ("ग्रँड", "grand"),
+        ("लग्ज़री", "luxury"),
+        ("लग्जरी", "luxury"),
+        ("लक्झरी", "luxury"),
+        ("लग्ज़ूरियस", "luxurious"),
+        ("लग्जूरियस", "luxurious"),
+        ("लक्झुरियस", "luxurious"),
+        ("लक्शुरियस", "luxurious"),
+        ("लक्षुरियस", "luxurious"),
+        ("सूट", "suite"),
+        ("सूटची", "suite chi"),
+        ("स्वीट", "suite"),
+        ("ओशन", "ocean"),
+        ("वन", "one"),
+        ("व्यू", "view"),
+        ("की", " ki "),
+        ("ची", " chi "),
+        ("करो", " karo "),
+        ("कर", " kar "),
+        ("और", " and "),
+        ("आणि", " and "),
+        ("तुलना", " compare "),
+        ("फरक", " difference "),
+        ("मुकाबला", " compare "),
+    )
+    for source, target in transliterations:
+        text = text.replace(source, target)
+    regex_transliterations = (
+        (r"बज[^\s]*ट", "budget"),
+        (r"ड[^\s]*लक्स", "deluxe"),
+        (r"लग[^\s]*रियस", "luxurious"),
+        (r"लक[^\s]*रियस", "luxurious"),
+    )
+    for pattern, replacement in regex_transliterations:
+        text = re.sub(pattern, replacement, text)
     replacements = (
         (r"\bsweets\b", "suites"),
         (r"\bsweet\b", "suite"),
@@ -798,23 +1048,59 @@ def _fallback_booking_prompt(
     next_slot: Optional[str],
     selected_room_name: Optional[str],
     room_inventory: Optional[list[RoomInventoryItem]] = None,
+    language: str = "en",
 ) -> str:
     slot = _normalize_slot_name(next_slot)
     if slot == "room_type":
-        return _build_room_recommendation_prompt(room_inventory or [])
+        return _build_room_recommendation_prompt(room_inventory or [], language)
     if slot == "adults":
         if selected_room_name:
-            return f"Certainly. {selected_room_name} is a lovely choice. How many adults will be staying?"
-        return "Certainly. How many adults will be staying?"
+            return _pick_language_text(
+                language,
+                en=f"Certainly. {selected_room_name} is a lovely choice. How many adults will be staying?",
+                hi=f"ज़रूर। {selected_room_name} बहुत अच्छा विकल्प है। कितने adults stay करेंगे?",
+                mr=f"नक्की. {selected_room_name} खूप छान पर्याय आहे. किती adults stay करणार आहेत?",
+            )
+        return _pick_language_text(
+            language,
+            en="Certainly. How many adults will be staying?",
+            hi="ज़रूर। कितने adults stay करेंगे?",
+            mr="नक्की. किती adults stay करणार आहेत?",
+        )
     if slot == "children":
-        return "And how many children will be staying?"
+        return _pick_language_text(
+            language,
+            en="And how many children will be staying?",
+            hi="और कितने children stay करेंगे?",
+            mr="आणि किती children stay करणार आहेत?",
+        )
     if slot == "check_in_date":
-        return "Certainly. What is your check in date?"
+        return _pick_language_text(
+            language,
+            en="Certainly. What is your check in date?",
+            hi="ज़रूर। आपकी check in date क्या है?",
+            mr="नक्की. तुमची check in date काय आहे?",
+        )
     if slot == "check_out_date":
-        return "And what is your check out date?"
+        return _pick_language_text(
+            language,
+            en="And what is your check out date?",
+            hi="और आपकी check out date क्या है?",
+            mr="आणि तुमची check out date काय आहे?",
+        )
     if slot == "guest_name":
-        return "May I have the name for this booking?"
-    return "Whenever you're ready, please share the next booking detail."
+        return _pick_language_text(
+            language,
+            en="May I have the name for this booking?",
+            hi="इस booking के लिए मैं कौन सा नाम उपयोग करूँ?",
+            mr="या booking साठी मी कोणते नाव वापरू?",
+        )
+    return _pick_language_text(
+        language,
+        en="Whenever you're ready, please share the next booking detail.",
+        hi="जब आप तैयार हों, booking की अगली detail बताइए।",
+        mr="तुम्ही तयार झाल्यावर booking ची पुढची detail सांगा.",
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1631,8 +1917,10 @@ def _looks_like_room_comparison_request(transcript: str) -> bool:
             r"which\s+one|"
             r"better\s+for|"
             r"best\s+for|"
-            r"versus|vs\.?"
-            r")\b",
+            r"versus|vs\.?|"
+            r"tulna|farak|mukabla"
+            r")\b|"
+            r"(?:तुलना|फरक|मुकाबला)",
             text,
         )
     )
@@ -2610,18 +2898,35 @@ def _comparison_partner_for_implicit_request(
     )
 
 
+def _strip_comparison_request_prefix(text: str) -> str:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return ""
+    normalized = re.sub(
+        r"^(?:(?:can|could|would|will)\s+you\s+|please\s+|i\s+want\s+to\s+|i\s+would\s+like\s+to\s+|lets\s+|let\s+me\s+)?compare\s+",
+        "",
+        normalized,
+    ).strip()
+    normalized = re.sub(
+        r"^(?:(?:can|could|would|will)\s+you\s+|please\s+)?(?:give\s+me\s+)?a\s+comparison\s+of\s+",
+        "",
+        normalized,
+    ).strip()
+    return normalized
+
+
 def _extract_primary_room_candidate_from_comparison(transcript: str) -> str:
-    text = _normalize_text(transcript)
+    text = _strip_comparison_request_prefix(transcript)
     if not text:
         return ""
-    text = re.sub(r"^(?:i\s+want\s+to\s+)?compare\s+", "", text).strip()
+    text = re.sub(r"\b(?:ki|chi)?\s*(?:compare|comparison|tulna|farak|mukabla)\s*(?:karo|kar)?\b$", "", text).strip()
     text = re.sub(
-        r"\s+(?:with|and|versus|vs\.?)\s+(?:another|other|different)\s+(?:room|suite|one|option)\b.*$",
+        r"\s+(?:with|and|versus|vs\.?|aur|ani)\s+(?:another|other|different)\s+(?:room|suite|one|option)\b.*$",
         "",
         text,
     ).strip()
     text = re.sub(
-        r"\s+(?:with|and|versus|vs\.?)\s+(?:this|that|it|current)\s+(?:room|suite|one)\b.*$",
+        r"\s+(?:with|and|versus|vs\.?|aur|ani)\s+(?:this|that|it|current)\s+(?:room|suite|one)\b.*$",
         "",
         text,
     ).strip()
@@ -2629,15 +2934,15 @@ def _extract_primary_room_candidate_from_comparison(transcript: str) -> str:
 
 
 def _extract_comparison_segments(transcript: str) -> list[str]:
-    text = _normalize_text(transcript)
+    text = _strip_comparison_request_prefix(transcript)
     if not text:
         return []
-    stripped = re.sub(r"^(?:i\s+want\s+to\s+)?compare\s+", "", text).strip()
-    if not stripped:
+    text = re.sub(r"\b(?:ki|chi)?\s*(?:compare|comparison|tulna|farak|mukabla)\s*(?:karo|kar)?\b$", "", text).strip()
+    if not text:
         return []
     segments = [
         re.sub(r"\b\d+\b$", "", segment).strip(" .?!,-")
-        for segment in re.split(r"\b(?:with|and|versus|vs\.?)\b", stripped)
+        for segment in re.split(r"\b(?:with|and|versus|vs\.?|aur|ani)\b", text)
     ]
     return [segment for segment in segments if segment]
 
@@ -2717,7 +3022,7 @@ def _resolve_rooms_for_comparison_request(
 ) -> list[RoomInventoryItem]:
     comparison_segments = _extract_comparison_segments(state.latest_transcript)
     explicit_rooms = _resolve_explicit_rooms_from_comparison_segments(state.latest_transcript, room_inventory)
-    if len(comparison_segments) >= 2:
+    if len(comparison_segments) >= 2 and len(explicit_rooms) >= 2:
         return explicit_rooms[:2]
 
     compared_rooms = _rooms_mentioned_in_transcript(state.latest_transcript, room_inventory)
@@ -2748,6 +3053,42 @@ def _resolve_rooms_for_comparison_request(
         if implicit_partner:
             compared_rooms = [compared_rooms[0], implicit_partner]
     return compared_rooms
+
+
+def _build_room_comparison_clarifier_response(
+    state: KioskState,
+    compared_rooms: list[RoomInventoryItem],
+    *,
+    ambiguous_multiple_rooms: bool = False,
+) -> dict:
+    focus_room_ids: list[str] = []
+    if ambiguous_multiple_rooms:
+        speech = (
+            "I caught more than one room in your comparison request, but I could not "
+            "confidently identify both of them. Please say the two room names again "
+            "so I can compare them correctly."
+        )
+    elif len(compared_rooms) == 1:
+        room_name = compared_rooms[0].name or "that room"
+        room_id = str(compared_rooms[0].id or "").strip()
+        if room_id:
+            focus_room_ids = [room_id]
+        speech = f"I can compare {room_name}. Which other room would you like me to compare it with?"
+    else:
+        speech = "Sure, I can compare rooms for you. Please say the two room names you would like me to compare."
+
+    return _make_booking_response(
+        state,
+        speech,
+        "ROOM_SELECT",
+        active_slot="room_type",
+        clear_room_selection=True,
+    ) | {
+        "roomDisplayMode": "browse",
+        "compareRoomIds": [],
+        "focusRoomIds": focus_room_ids or None,
+        "roomIntroSequence": [],
+    }
 
 
 def _handle_room_request_transition(
@@ -2809,10 +3150,21 @@ def _handle_room_request_transition(
     if state.resolved_intent == "COMPARE_ROOMS":
         comparison_segments = _extract_comparison_segments(state.latest_transcript)
         compared = _resolve_rooms_for_comparison_request(state, room_inventory)
+        if len(compared) < 2:
+            return _build_room_comparison_clarifier_response(
+                state,
+                compared,
+                ambiguous_multiple_rooms=len(comparison_segments) >= 2,
+            )
         if len(comparison_segments) >= 2 and len(compared) < 2:
             return _make_booking_response(
                 state,
-                "I caught more than one room in your comparison request, but I could not confidently identify both of them. Please say the two room names again so I can compare them correctly.",
+                _pick_language_text(
+                    state.language,
+                    en="I caught more than one room in your comparison request, but I could not confidently identify both of them. Please say the two room names again so I can compare them correctly.",
+                    hi="मैंने आपकी comparison request में एक से ज़्यादा rooms सुने, लेकिन मैं दोनों rooms को भरोसे के साथ पहचान नहीं पाई। कृपया दोनों room names फिर से बताइए ताकि मैं सही comparison कर सकूँ।",
+                    mr="तुमच्या comparison request मध्ये मला एकापेक्षा जास्त rooms ऐकू आले, पण मी दोन्ही rooms खात्रीने ओळखू शकले नाही. कृपया दोन्ही room names पुन्हा सांगा, म्हणजे मी योग्य comparison करू शकेन.",
+                ),
                 "ROOM_SELECT",
                 active_slot="room_type",
                 clear_room_selection=True,
@@ -2825,7 +3177,7 @@ def _handle_room_request_transition(
         if len(compared) >= 2:
             compared_subset = compared[:2]
             ids = [r.id for r in compared_subset]
-            speech = _build_room_comparison_prompt(compared_subset[:2])
+            speech = _build_room_comparison_prompt(compared_subset[:2], state.language)
             return _make_booking_response(state, speech, "ROOM_SELECT", active_slot="room_type") | {
                 "roomDisplayMode": "compare",
                 "compareRoomIds": ids,
@@ -2836,10 +3188,21 @@ def _handle_room_request_transition(
     if state.current_ui_screen in {"WELCOME", "IDLE", "AI_CHAT", "MANUAL_MENU", "ROOM_SELECT", "ROOM_PREVIEW"} and _looks_like_room_comparison_request(state.latest_transcript):
         comparison_segments = _extract_comparison_segments(state.latest_transcript)
         compared_rooms = _resolve_rooms_for_comparison_request(state, room_inventory)
+        if len(compared_rooms) < 2:
+            return _build_room_comparison_clarifier_response(
+                state,
+                compared_rooms,
+                ambiguous_multiple_rooms=len(comparison_segments) >= 2,
+            )
         if len(comparison_segments) >= 2 and len(compared_rooms) < 2:
             return _make_booking_response(
                 state,
-                "I caught more than one room in your comparison request, but I could not confidently identify both of them. Please say the two room names again so I can compare them correctly.",
+                _pick_language_text(
+                    state.language,
+                    en="I caught more than one room in your comparison request, but I could not confidently identify both of them. Please say the two room names again so I can compare them correctly.",
+                    hi="मैंने आपकी comparison request में एक से ज़्यादा rooms सुने, लेकिन मैं दोनों rooms को भरोसे के साथ पहचान नहीं पाई। कृपया दोनों room names फिर से बताइए ताकि मैं सही comparison कर सकूँ।",
+                    mr="तुमच्या comparison request मध्ये मला एकापेक्षा जास्त rooms ऐकू आले, पण मी दोन्ही rooms खात्रीने ओळखू शकले नाही. कृपया दोन्ही room names पुन्हा सांगा, म्हणजे मी योग्य comparison करू शकेन.",
+                ),
                 "ROOM_SELECT",
                 active_slot="room_type",
                 clear_room_selection=True,
@@ -2852,7 +3215,7 @@ def _handle_room_request_transition(
         if len(compared_rooms) >= 2:
             compared_subset = compared_rooms[:2]
             ids = [r.id for r in compared_subset]
-            comparison_prompt = _build_room_comparison_prompt(compared_subset[:2])
+            comparison_prompt = _build_room_comparison_prompt(compared_subset[:2], state.language)
             return _make_booking_response(
                 state,
                 comparison_prompt,
@@ -2871,13 +3234,13 @@ def _handle_room_request_transition(
         if len(mentioned_rooms) >= 2:
             return _make_booking_response(
                 state,
-                _build_room_select_multi_room_clarifier(mentioned_rooms[:3]),
+                _build_room_select_multi_room_clarifier(mentioned_rooms[:3], state.language),
                 "ROOM_SELECT",
                 active_slot="room_type",
                 clear_room_selection=True,
             ) | {
                 "roomDisplayMode": "browse",
-                "focusRoomIds": None,
+                "focusRoomIds": [room.id] if room.id else None,
                 "roomIntroSequence": [],
             }
 
@@ -2889,10 +3252,10 @@ def _handle_room_request_transition(
         and room_inventory
     ):
         target_room = room_inventory[target_intro_index]
-        speech_queue = [_build_room_intro_speech_single(room) for room in room_inventory]
+        speech_queue = [_build_room_intro_speech_single(room, state.language) for room in room_inventory]
         return _make_booking_response(
             state,
-            _build_room_intro_speech_single(target_room),
+            _build_room_intro_speech_single(target_room, state.language),
             "ROOM_SELECT",
             active_slot="room_type",
             clear_room_selection=True,
@@ -2918,7 +3281,7 @@ def _handle_room_request_transition(
         extracted = dict(extracted_slots)
         extracted["room_type"] = room.name
         if state.current_ui_screen == "ROOM_SELECT" and not _looks_like_explicit_room_selection_request(state.latest_transcript, room_inventory):
-            detail_speech = _build_room_select_exploratory_reply(room, state.latest_transcript, room_inventory)
+            detail_speech = _build_room_select_exploratory_reply(room, state.latest_transcript, room_inventory, state.language)
             return _make_booking_response(
                 state,
                 detail_speech,
@@ -2927,7 +3290,7 @@ def _handle_room_request_transition(
                 clear_room_selection=True,
             ) | {
                 "roomDisplayMode": "browse",
-                "focusRoomIds": None,
+                "focusRoomIds": [room.id] if room.id else None,
                 "roomIntroSequence": [],
             }
         if (
@@ -2936,7 +3299,7 @@ def _handle_room_request_transition(
         ):
             return _make_booking_response(
                 state,
-                _build_room_confirmation(room),
+                _build_room_confirmation(room, state.language),
                 "BOOKING_COLLECT",
                 active_slot="adults",
                 extracted_slots=extracted,
@@ -2947,9 +3310,14 @@ def _handle_room_request_transition(
             and state.current_ui_screen == "ROOM_SELECT"
         )
         preview_speech = (
-            "Would you like any information about this room, or shall I proceed with your booking?"
+            _pick_language_text(
+                state.language,
+                en="Would you like any information about this room, or shall I proceed with your booking?",
+                hi="क्या आप इस room के बारे में कोई जानकारी चाहते हैं, या मैं आपकी booking के साथ आगे बढ़ूँ?",
+                mr="तुम्हाला या room बद्दल काही माहिती हवी आहे का, की मी booking सोबत पुढे जाऊ?",
+            )
             if is_fresh_preview_entry
-            else _build_room_preview_intro(room)
+            else _build_room_preview_intro(room, state.language)
         )
         return _make_booking_response(
             state,
@@ -2982,8 +3350,8 @@ def _handle_room_request_transition(
             }
         if is_initial_presentation and not extracted_slots.get("room_type"):
             first_room = room_inventory[0]
-            speech = _build_room_intro_speech_single(first_room)
-            speech_queue = [_build_room_intro_speech_single(room) for room in room_inventory]
+            speech = _build_room_intro_speech_single(first_room, state.language)
+            speech_queue = [_build_room_intro_speech_single(room, state.language) for room in room_inventory]
             return _make_booking_response(
                 state,
                 speech,
@@ -3001,7 +3369,12 @@ def _handle_room_request_transition(
         if state.current_ui_screen == "ROOM_SELECT":
             return _make_booking_response(
                 state,
-                "Please select a room, or do you have any questions regarding the rooms?",
+                _pick_language_text(
+                    state.language,
+                    en="Please select a room, or do you have any questions regarding the rooms?",
+                    hi="कृपया कोई room चुनिए, या rooms के बारे में कोई सवाल पूछिए।",
+                    mr="कृपया एखादा room निवडा, किंवा rooms बद्दल काही प्रश्न विचारा.",
+                ),
                 "ROOM_SELECT",
                 active_slot="room_type",
                 clear_room_selection=True,
@@ -3061,7 +3434,7 @@ def _handle_booking_detail_transition(
         next_slot = _infer_booking_follow_up_slot(state.latest_transcript, extracted_slots) or missing_required[0]
         return _make_booking_response_precomputed(
             state,
-            _fallback_booking_prompt(next_slot, selected_room_name, room_inventory),
+            _fallback_booking_prompt(next_slot, selected_room_name, room_inventory, state.language),
             "BOOKING_COLLECT",
             preview_slots,
             preview_room,
@@ -3087,7 +3460,7 @@ def _handle_booking_detail_transition(
     next_slot = missing_required[0]
     return _make_booking_response_precomputed(
         state,
-        _fallback_booking_prompt(next_slot, selected_room_name, room_inventory),
+        _fallback_booking_prompt(next_slot, selected_room_name, room_inventory, state.language),
         "BOOKING_COLLECT",
         preview_slots,
         preview_room,
@@ -3116,7 +3489,7 @@ def _handle_summary_modify_transition(state: KioskState, extracted_slots: dict) 
     else:
         active_slot = requested_slot or (missing_required[0] if missing_required else None)
         speech = (
-            _fallback_booking_prompt(active_slot, selected_room_name, state.tenant_room_inventory)
+            _fallback_booking_prompt(active_slot, selected_room_name, state.tenant_room_inventory, state.language)
             if active_slot
             else _build_booking_modify_prompt()
         )
@@ -3157,6 +3530,12 @@ def _deterministic_booking_response(
 
     if intent in {"BOOK_ROOM", "FILTER_ROOMS"}:
         return _handle_room_request_transition(state, extracted_slots, room_inventory)
+    if state.current_ui_screen == "ROOM_SELECT" and _looks_like_room_information_request(state.latest_transcript):
+        info_room = _find_room_from_inventory(room_inventory, state.latest_transcript)
+        if info_room:
+            exploratory_slots = dict(extracted_slots)
+            exploratory_slots["room_type"] = info_room.name
+            return _handle_room_request_transition(state, exploratory_slots, room_inventory)
 
     booking_detail_transition = _handle_booking_detail_transition(
         state,
@@ -3326,7 +3705,7 @@ async def booking_logic(state: KioskState) -> dict:
             )
         if missing_required:
             next_slot = missing_required[0]
-            speech = _fallback_booking_prompt(next_slot, selected_room_name, state.tenant_room_inventory)
+            speech = _fallback_booking_prompt(next_slot, selected_room_name, state.tenant_room_inventory, state.language)
             updated_history = state.history + [
                 ConversationTurn(role="user", content=state.latest_transcript),
                 ConversationTurn(role="assistant", content=speech),
@@ -3488,7 +3867,7 @@ async def booking_logic(state: KioskState) -> dict:
         is_complete = False
         next_slot = "room_type"
         if not str(speech or "").strip():
-            speech = _fallback_booking_prompt("room_type", None, room_inventory)
+            speech = _fallback_booking_prompt("room_type", None, room_inventory, state.language)
 
     missing_required = updated_slots.missing_required_slots()
     stay_in_room_preview = _should_stay_in_room_preview(state, selected_room, updated_slots.room_type)
@@ -3509,6 +3888,7 @@ async def booking_logic(state: KioskState) -> dict:
                 next_slot,
                 selected_room.name if selected_room else updated_slots.room_type,
                 room_inventory,
+                state.language,
             )
 
     next_screen = _determine_next_screen(updated_slots, is_complete, stay_in_room_preview)
