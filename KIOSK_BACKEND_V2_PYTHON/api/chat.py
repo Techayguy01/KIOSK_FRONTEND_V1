@@ -11,7 +11,9 @@ from __future__ import annotations
 import difflib
 import re
 import traceback
+from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Optional, get_args
 from urllib.parse import urlparse
 from uuid import UUID
@@ -721,6 +723,41 @@ def _resolve_room_type_uuid(
     return None
 
 
+def _coerce_positive_decimal(raw_value: object) -> Optional[Decimal]:
+    if raw_value is None:
+        return None
+    try:
+        parsed = Decimal(str(raw_value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _resolve_booking_total_price(
+    selected_room_payload: Optional[dict],
+    room_type_slot_value: Optional[str],
+    room_inventory: list[dict],
+    nights: int,
+    fallback_total_price: Optional[object] = None,
+) -> Optional[Decimal]:
+    if nights < 1:
+        return None
+
+    resolved_room = resolve_effective_room_payload(
+        selected_room_payload,
+        {"room_type": room_type_slot_value},
+        room_inventory,
+    )
+    room_price = _coerce_positive_decimal((resolved_room or {}).get("price"))
+    if room_price is not None:
+        return (room_price * Decimal(nights)).quantize(Decimal("0.01"))
+
+    fallback_price = _coerce_positive_decimal(fallback_total_price)
+    if fallback_price is None:
+        return None
+    return fallback_price.quantize(Decimal("0.01"))
+
+
 # ---------------------------------------------------------------------------
 # Session / slot merging
 # ---------------------------------------------------------------------------
@@ -800,6 +837,42 @@ def _database_target_hint() -> str:
     return f"{parsed.scheme}://{host}:{port}/{db_name}"
 
 
+@dataclass(frozen=True)
+class AssignableRoomRecord:
+    id: UUID
+    room_number: str
+
+
+def _extract_row_value(row: object, key: str, index: int = 0) -> object:
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None and key in mapping:
+        return mapping[key]
+    try:
+        return row[index]
+    except Exception:
+        return getattr(row, key, None)
+
+
+def _coerce_bool_sql_value(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in {"1", "t", "true", "y", "yes"}
+
+
+def _parse_booking_date(raw_value: object) -> Optional[date]:
+    raw_text = str(raw_value or "").strip()
+    if not raw_text:
+        return None
+    try:
+        return datetime.strptime(raw_text, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
 async def _acquire_room_type_allocation_lock(
     session: AsyncSession,
     tenant_id: UUID,
@@ -811,7 +884,64 @@ async def _acquire_room_type_allocation_lock(
     )
 
 
-async def _load_room_instances(
+async def _table_exists(
+    session: AsyncSession,
+    table_name: str,
+    schema_name: str = "public",
+) -> bool:
+    result = await session.exec(
+        text(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM information_schema.tables
+                WHERE table_schema = :schema_name
+                  AND table_name = :table_name
+            )
+            """
+        ),
+        params={"schema_name": schema_name, "table_name": table_name},
+    )
+    return _coerce_bool_sql_value(_extract_row_value(result.first(), "exists", 0))
+
+
+async def _resolve_physical_room_inventory_source(session: AsyncSession) -> Optional[str]:
+    if await _table_exists(session, "rooms"):
+        return "rooms"
+    if await _table_exists(session, "room_instances"):
+        return "room_instances"
+    return None
+
+
+async def _load_active_rooms(
+    session: AsyncSession,
+    tenant_id: UUID,
+    room_type_id: UUID,
+) -> list[AssignableRoomRecord]:
+    result = await session.exec(
+        text(
+            """
+            SELECT id, room_number
+            FROM public.rooms
+            WHERE tenant_id = CAST(:tenant_id AS uuid)
+              AND room_type_id = CAST(:room_type_id AS uuid)
+              AND COALESCE(NULLIF(LOWER(BTRIM(operational_status)), ''), 'active') = 'active'
+            ORDER BY COALESCE(NULLIF(BTRIM(floor_label), ''), ''), BTRIM(room_number), id
+            """
+        ),
+        params={"tenant_id": str(tenant_id), "room_type_id": str(room_type_id)},
+    )
+
+    rooms: list[AssignableRoomRecord] = []
+    for row in result.all():
+        room_id = _parse_uuid(_extract_row_value(row, "id", 0))
+        room_number = str(_extract_row_value(row, "room_number", 1) or "").strip()
+        if room_id and room_number:
+            rooms.append(AssignableRoomRecord(id=room_id, room_number=room_number))
+    return rooms
+
+
+async def _load_legacy_room_instances(
     session: AsyncSession,
     tenant_id: UUID,
     room_type_id: UUID,
@@ -846,13 +976,13 @@ def _build_fallback_room_number(room_type_id: UUID, room_inventory: list[dict]) 
     return f"ROOM-{room_type_id_str[:6].upper()}"
 
 
-async def _ensure_room_instance_exists(
+async def _ensure_legacy_room_instance_exists(
     session: AsyncSession,
     tenant_id: UUID,
     room_type_id: UUID,
     room_inventory: list[dict],
 ) -> list[RoomInstance]:
-    instances = await _load_room_instances(session, tenant_id, room_type_id)
+    instances = await _load_legacy_room_instances(session, tenant_id, room_type_id)
     if instances:
         return instances
 
@@ -870,6 +1000,25 @@ async def _ensure_room_instance_exists(
         f"tenant_id={tenant_id} room_type_id={room_type_id} room_number={fallback_number}"
     )
     return [fallback]
+
+
+async def _load_candidate_assignable_rooms(
+    session: AsyncSession,
+    tenant_id: UUID,
+    room_type_id: UUID,
+    room_inventory: list[dict],
+) -> tuple[Optional[str], list[AssignableRoomRecord]]:
+    source = await _resolve_physical_room_inventory_source(session)
+    if source == "rooms":
+        return source, await _load_active_rooms(session, tenant_id, room_type_id)
+    if source == "room_instances":
+        instances = await _ensure_legacy_room_instance_exists(session, tenant_id, room_type_id, room_inventory)
+        return source, [
+            AssignableRoomRecord(id=instance.id, room_number=instance.room_number)
+            for instance in instances
+            if instance.id and instance.room_number
+        ]
+    return None, []
 
 
 async def _find_overlapping_bookings_for_room_type(
@@ -891,6 +1040,44 @@ async def _find_overlapping_bookings_for_room_type(
     return result.all()
 
 
+async def _pick_available_assignable_room(
+    session: AsyncSession,
+    tenant_id: UUID,
+    room_type_id: UUID,
+    check_in: date,
+    check_out: date,
+    room_inventory: list[dict],
+) -> tuple[Optional[AssignableRoomRecord], Optional[str]]:
+    source, instances = await _load_candidate_assignable_rooms(session, tenant_id, room_type_id, room_inventory)
+    if not source:
+        return None, None
+
+    overlapping = await _find_overlapping_bookings_for_room_type(session, tenant_id, room_type_id, check_in, check_out)
+    occupied_ids = {b.assigned_room_id for b in overlapping if b.assigned_room_id}
+    available = [room for room in instances if room.id not in occupied_ids]
+    legacy_unassigned = sum(1 for b in overlapping if not b.assigned_room_id)
+
+    if legacy_unassigned >= len(available):
+        return None, source
+    return available[legacy_unassigned], source
+
+
+async def _has_physical_room_availability(
+    session: AsyncSession,
+    tenant_id: UUID,
+    room_type_id: UUID,
+    check_in: date,
+    check_out: date,
+    room_inventory: list[dict],
+) -> Optional[bool]:
+    available_room, source = await _pick_available_assignable_room(
+        session, tenant_id, room_type_id, check_in, check_out, room_inventory,
+    )
+    if not source:
+        return None
+    return available_room is not None
+
+
 async def _allocate_available_room_instance(
     session: AsyncSession,
     tenant_id: UUID,
@@ -898,17 +1085,11 @@ async def _allocate_available_room_instance(
     check_in: date,
     check_out: date,
     room_inventory: list[dict],
-) -> Optional[RoomInstance]:
-    instances = await _ensure_room_instance_exists(session, tenant_id, room_type_id, room_inventory)
-    overlapping = await _find_overlapping_bookings_for_room_type(session, tenant_id, room_type_id, check_in, check_out)
-
-    occupied_ids = {b.assigned_room_id for b in overlapping if b.assigned_room_id}
-    available = [i for i in instances if i.id not in occupied_ids]
-    legacy_unassigned = sum(1 for b in overlapping if not b.assigned_room_id)
-
-    if legacy_unassigned >= len(available):
-        return None
-    return available[legacy_unassigned]
+) -> Optional[AssignableRoomRecord]:
+    available_room, _ = await _pick_available_assignable_room(
+        session, tenant_id, room_type_id, check_in, check_out, room_inventory,
+    )
+    return available_room
 
 
 async def _resolve_tenant_id(
@@ -1452,6 +1633,7 @@ async def chat(
         missing_slots = [_to_contract_slot_name(s) for s in updated_state.booking_slots.missing_required_slots()]
         next_slot_to_ask = _to_contract_slot_name(updated_state.active_slot)
 
+        availability_error: Optional[str] = None
         persistence_error: Optional[str] = None
         persistence_error_detail: Optional[str] = None
 
@@ -1512,10 +1694,47 @@ async def chat(
             )
 
         # ------------------------------------------------------------------
+        # Physical room availability precheck
+        # ------------------------------------------------------------------
+        should_precheck_availability = (
+            not constraint_error
+            and normalized_ui_screen == "BOOKING_COLLECT"
+            and response_next_screen == "BOOKING_SUMMARY"
+            and is_complete
+        )
+        if should_precheck_availability:
+            tenant_uuid = _parse_uuid(resolved_tenant_id or updated_state.tenant_id or req.tenant_id)
+            room_type_uuid = _resolve_room_type_uuid(
+                selected_room_payload, slots_dict.get("room_type"), room_inventory,
+            )
+            check_in = _parse_booking_date(slots_dict.get("check_in_date"))
+            check_out = _parse_booking_date(slots_dict.get("check_out_date"))
+
+            if tenant_uuid and room_type_uuid and check_in and check_out:
+                has_inventory = await _has_physical_room_availability(
+                    session, tenant_uuid, room_type_uuid, check_in, check_out, room_inventory,
+                )
+                if has_inventory is False:
+                    availability_error = (
+                        "No physical room is available for the selected dates. "
+                        "Please choose another room type or change your stay dates."
+                    )
+                    response_next_screen = "BOOKING_COLLECT"
+                    response_speech = availability_error
+                    updated_state.next_ui_screen = "BOOKING_COLLECT"
+                    updated_state.active_slot = None
+                    next_slot_to_ask = None
+                    print(
+                        f"[ChatAPI][RoomAvailability] unavailable session={req.session_id} "
+                        f"room_type_id={room_type_uuid} check_in={check_in} check_out={check_out}"
+                    )
+
+        # ------------------------------------------------------------------
         # Booking persistence
         # ------------------------------------------------------------------
         should_persist_booking = (
             not constraint_error
+            and not availability_error
             and normalized_ui_screen == "BOOKING_SUMMARY"
             and updated_state.resolved_intent == "CONFIRM_BOOKING"
             and is_complete
@@ -1544,9 +1763,18 @@ async def chat(
                     if not room_type_uuid:
                         raise ValueError("Could not resolve a valid room_type_id UUID for booking persistence.")
 
-                    check_in = datetime.strptime(slots_dict["check_in_date"], "%Y-%m-%d").date()
-                    check_out = datetime.strptime(slots_dict["check_out_date"], "%Y-%m-%d").date()
-                    nights_value = slots_dict.get("nights") or max(1, (check_out - check_in).days)
+                    check_in = _parse_booking_date(slots_dict["check_in_date"])
+                    check_out = _parse_booking_date(slots_dict["check_out_date"])
+                    if not check_in or not check_out:
+                        raise ValueError("Booking dates must be present before room allocation.")
+                    nights_value = int(slots_dict.get("nights") or max(1, (check_out - check_in).days))
+                    total_price_value = _resolve_booking_total_price(
+                        selected_room_payload=selected_room_payload,
+                        room_type_slot_value=slots_dict.get("room_type"),
+                        room_inventory=room_inventory,
+                        nights=nights_value,
+                        fallback_total_price=slots_dict.get("total_price"),
+                    )
 
                     await _acquire_room_type_allocation_lock(session, tenant_uuid, room_type_uuid)
                     assigned_room = await _allocate_available_room_instance(
@@ -1569,6 +1797,7 @@ async def chat(
                         adults=slots_dict.get("adults", 1) or 1,
                         children=slots_dict.get("children", 0) or 0,
                         nights=nights_value,
+                        total_price=total_price_value,
                         status="CONFIRMED",
                     )
                     session.add(new_booking)
@@ -1622,6 +1851,7 @@ async def chat(
                 updated_state.resolved_intent == "GENERAL_QUERY"
                 and response_next_screen in {"ROOM_PREVIEW", "BOOKING_COLLECT"}
                 and not constraint_error
+                and not availability_error
                 and not persistence_error
             )
             if is_general_preview:
@@ -1664,6 +1894,7 @@ async def chat(
             and updated_state.resolved_intent == "GENERAL_QUERY"
             and response_next_screen in {"ROOM_PREVIEW", "BOOKING_COLLECT"}
             and not constraint_error
+            and not availability_error
             and not persistence_error
         ):
             response_speech = room_overview_reply
@@ -1675,6 +1906,7 @@ async def chat(
             and updated_state.resolved_intent == "GENERAL_QUERY"
             and response_next_screen in {"WELCOME", "IDLE"}
             and not constraint_error
+            and not availability_error
             and not persistence_error
         ):
             print(f"[ChatAPI] Preventing regressive preview transition session={req.session_id} from={response_next_screen} -> ROOM_PREVIEW")
@@ -1721,7 +1953,7 @@ async def chat(
             persistedBookingId=persisted_booking_id,
             assignedRoomId=assigned_room_id,
             assignedRoomNumber=assigned_room_number,
-            error=constraint_error or persistence_error,
+            error=constraint_error or availability_error or persistence_error,
             answerSource="LLM",
             faqId=None,
             sessionId=req.session_id,

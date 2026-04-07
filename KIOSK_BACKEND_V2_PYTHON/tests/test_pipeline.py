@@ -106,6 +106,40 @@ class TestRoomSelectionPipeline:
         assert "take a look" in result["speech_response"].lower()
 
     @pytest.mark.asyncio
+    async def test_explicit_preview_request_for_named_room_goes_to_room_preview(self):
+        rooms = [
+            RoomInventoryItem(id="r1", name="Budget Deluxe Room", code="BDR", price=220),
+            RoomInventoryItem(id="r2", name="Ocean One View", code="OOV", price=320),
+        ]
+        with patch("agent.nodes.get_llm_response") as mock_llm:
+            mock_llm.side_effect = [_mock_router_response("BOOK_ROOM", 0.95)]
+
+            result = await _route_then_book(
+                _make_state("I want to see Ocean One View", screen="ROOM_SELECT", rooms=rooms)
+            )
+
+        assert result["resolved_intent"] == "BOOK_ROOM"
+        assert result["next_ui_screen"] == "ROOM_PREVIEW"
+        assert result["booking_slots"].room_type == "Ocean One View"
+        assert "book this room" in result["speech_response"].lower()
+
+    @pytest.mark.asyncio
+    async def test_random_preview_speech_does_not_advance_to_booking_collect(self):
+        with patch("agent.nodes.get_llm_response") as mock_llm:
+            mock_llm.side_effect = [_mock_router_response("BOOK_ROOM", 0.92)]
+            state = _make_state("purple ladder static maybe later", screen="ROOM_PREVIEW")
+            state.selected_room = RoomInventoryItem(
+                id="r2", name="Executive Suite", code="ES", price=450
+            )
+            state.booking_slots = BookingSlots(room_type="Executive Suite")
+
+            result = await _route_then_book(state)
+
+        assert result["next_ui_screen"] == "ROOM_PREVIEW"
+        assert result["active_slot"] is None
+        assert result["booking_slots"].room_type == "Executive Suite"
+
+    @pytest.mark.asyncio
     async def test_compare_named_room_with_another_room_stays_in_compare_mode(self):
         rooms = [
             RoomInventoryItem(id="r1", name="Budget Deluxe Room", code="BDR", price=220),
@@ -315,6 +349,25 @@ class TestFullBookingFlow:
             )
             result = await _route_then_book(state)
 
+        assert result["next_ui_screen"] == "BOOKING_COLLECT"
+        assert result["active_slot"] == "adults"
+        assert result["booking_slots"].room_type == "Executive Suite"
+
+    @pytest.mark.asyncio
+    async def test_continue_from_preview_starts_booking_collect(self):
+        with patch("agent.nodes.get_llm_response") as mock_llm:
+            state = _make_state(
+                "continue",
+                screen="ROOM_PREVIEW",
+                booking_slots=BookingSlots(),
+            )
+            state.selected_room = RoomInventoryItem(
+                id="r2", name="Executive Suite", code="ES", price=450
+            )
+            result = await _route_then_book(state)
+
+        mock_llm.assert_not_called()
+        assert result["resolved_intent"] == "CONFIRM_BOOKING"
         assert result["next_ui_screen"] == "BOOKING_COLLECT"
         assert result["active_slot"] == "adults"
         assert result["booking_slots"].room_type == "Executive Suite"

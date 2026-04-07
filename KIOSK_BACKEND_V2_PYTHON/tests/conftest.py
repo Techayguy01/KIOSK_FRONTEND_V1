@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 import pytest
 
 from agent.state import RoomInventoryItem
@@ -53,12 +55,14 @@ def family_suite_room(room_inventory_items: list[RoomInventoryItem]) -> RoomInve
 
 @pytest.fixture
 def booking_summary_filled_slots() -> dict:
+    check_in = date.today() + timedelta(days=21)
+    check_out = check_in + timedelta(days=2)
     return {
         "roomType": "Family Suite",
         "adults": 2,
         "children": 1,
-        "checkInDate": "2026-03-21",
-        "checkOutDate": "2026-03-23",
+        "checkInDate": check_in.isoformat(),
+        "checkOutDate": check_out.isoformat(),
         "guestName": "John Carter",
     }
 

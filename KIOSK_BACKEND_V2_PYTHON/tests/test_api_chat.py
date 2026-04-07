@@ -5,8 +5,11 @@ Uses httpx ASGI transport so no live server is required.
 
 import json
 import time
+from datetime import date, timedelta
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -765,6 +768,142 @@ class TestChatEndpointWithMocks:
         assert data["intent"] == "CONFIRM_BOOKING"
         assert data["nextUiScreen"] == "PAYMENT"
         assert data["selectedRoom"]["name"] == "Family Suite"
+
+    @pytest.mark.asyncio
+    async def test_chat_booking_summary_confirm_persists_total_price(
+        self,
+        override_session,
+    ):
+        check_in = date.today() + timedelta(days=30)
+        check_out = check_in + timedelta(days=3)
+        tenant_id = "11111111-1111-1111-1111-111111111111"
+        room_type_id = "22222222-2222-2222-2222-222222222222"
+        assigned_room_id = UUID("33333333-3333-3333-3333-333333333333")
+        room_catalog = [
+            {
+                "id": room_type_id,
+                "name": "Family Suite",
+                "code": "FAM-S",
+                "price": 450.25,
+                "currency": "INR",
+                "maxAdults": 4,
+                "maxChildren": 2,
+                "maxTotalGuests": 6,
+            },
+        ]
+        override_session.add = MagicMock()
+
+        transport = ASGITransport(app=app)
+        with patch(
+            "api.chat.route_intent",
+            new=AsyncMock(return_value={"resolved_intent": "CONFIRM_BOOKING"}),
+        ), patch(
+            "api.chat.booking_logic",
+            new=AsyncMock(
+                return_value={
+                    "speech_response": "Your booking is confirmed. Taking you to payment now.",
+                    "next_ui_screen": "BOOKING_SUMMARY",
+                }
+            ),
+        ), patch(
+            "api.chat._acquire_room_type_allocation_lock",
+            new=AsyncMock(),
+        ), patch(
+            "api.chat._allocate_available_room_instance",
+            new=AsyncMock(return_value=SimpleNamespace(id=assigned_room_id, room_number="FAM-101")),
+        ):
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    "/api/chat",
+                    json={
+                        "sessionId": "persist-total-price",
+                        "tenantId": tenant_id,
+                        "transcript": "Yes, confirm this booking and proceed to payment.",
+                        "currentState": "BOOKING_SUMMARY",
+                        "roomCatalog": room_catalog,
+                        "filledSlots": {
+                            "roomType": "Family Suite",
+                            "adults": 2,
+                            "children": 1,
+                            "checkInDate": check_in.isoformat(),
+                            "checkOutDate": check_out.isoformat(),
+                            "guestName": "John Carter",
+                        },
+                    },
+                )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["nextUiScreen"] == "PAYMENT"
+        created_booking = override_session.add.call_args.args[0]
+        assert created_booking.nights == 3
+        assert created_booking.total_price == Decimal("1350.75")
+
+    @pytest.mark.asyncio
+    async def test_chat_booking_collect_stays_put_when_no_physical_room_is_available(
+        self,
+        override_session,
+    ):
+        check_in = date.today() + timedelta(days=30)
+        check_out = check_in + timedelta(days=2)
+        tenant_id = "11111111-1111-1111-1111-111111111111"
+        room_type_id = "22222222-2222-2222-2222-222222222222"
+        room_catalog = [
+            {
+                "id": room_type_id,
+                "name": "Family Suite",
+                "code": "FAM-S",
+                "price": 450.25,
+                "currency": "INR",
+                "maxAdults": 4,
+                "maxChildren": 2,
+                "maxTotalGuests": 6,
+            },
+        ]
+
+        transport = ASGITransport(app=app)
+        with patch(
+            "api.chat.route_intent",
+            new=AsyncMock(return_value={"resolved_intent": "PROVIDE_NAME"}),
+        ), patch(
+            "api.chat.booking_logic",
+            new=AsyncMock(
+                return_value={
+                    "speech_response": "Thank you, John Carter. Let me pull up your booking summary.",
+                    "next_ui_screen": "BOOKING_SUMMARY",
+                }
+            ),
+        ), patch(
+            "api.chat._has_physical_room_availability",
+            new=AsyncMock(return_value=False),
+        ):
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    "/api/chat",
+                    json={
+                        "sessionId": "booking-collect-no-availability",
+                        "tenantId": tenant_id,
+                        "transcript": "John Carter",
+                        "currentState": "BOOKING_COLLECT",
+                        "roomCatalog": room_catalog,
+                        "selectedRoom": room_catalog[0],
+                        "filledSlots": {
+                            "roomType": "Family Suite",
+                            "adults": 2,
+                            "children": 1,
+                            "checkInDate": check_in.isoformat(),
+                            "checkOutDate": check_out.isoformat(),
+                            "guestName": "John Carter",
+                        },
+                    },
+                )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["nextUiScreen"] == "BOOKING_COLLECT"
+        assert "No physical room is available" in data["speech"]
+        assert "No physical room is available" in data["error"]
+        assert data["persistedBookingId"] is None
 
     @pytest.mark.asyncio
     async def test_chat_booking_summary_modify_routes_to_booking_collect(

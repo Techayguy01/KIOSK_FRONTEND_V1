@@ -103,8 +103,8 @@ const PATTERN = {
     SHOW_ANOTHER:           /\bshow me another room\b/,
     AFFIRMATIVE:            /\b(yes|yeah|yep|confirm|sure|ok|okay|proceed|cancel it|do it|haan|han|ji|correct)\b/,
     NEGATIVE:               /\b(no|nope|dont|don't|not now|continue|resume|go on|nah|nahi|mat)\b/,
-    CONFIRM_PREVIEW:        /^\s*(yes|yeah|yep|sure|ok|okay|haan|han|ji|correct|looks good|sounds good|that works|go ahead|proceed)(?:\s+please)?\s*[.!?]*\s*$/,
-    CONFIRM_PREVIEW_VERB:   /\b(book (?:this|it)|book this room|i(?: would|'d)? like (?:this|it)|i want (?:this|it)(?: room)?|take (?:this|it)|confirm(?: the)? booking|proceed with (?:this|it)|continue with (?:this|it))\b/,
+    CONFIRM_PREVIEW:        /^\s*(?:yes\s+)?(?:continue|proceed|go ahead)(?:\s+please)?\s*[.!?]*\s*$/,
+    CONFIRM_PREVIEW_VERB:   /\b(book (?:this|it|this room)|reserve (?:this|it|this room)|select (?:this|it|this room)|choose (?:this|it|this room)|i(?: would|'d)? like to book (?:this|it|this room)|i want to book (?:this|it|this room)|i want (?:this|it)(?: room)?|take (?:this|it)|confirm(?: the)? booking|proceed with (?:this room|this|it)|continue with (?:this room|this|it)|go ahead with (?:this room|this|it))\b/,
     GENERIC_FALLBACK_SPEECH: /i'?m not sure how to help with that|please use the touch screen|system issue|i could not confirm/i,
     ESCALATION_URGENT:      /manager|human|supervisor|emergency|shutup|shut up/,
     ESCALATION_FRUSTRATED:  /stupid|hate|broken|doesn't work|confused|ridiculous|slow|shit|damn|useless|wrong/,
@@ -924,6 +924,29 @@ class AgentAdapterService {
         });
     }
 
+    private looksLikeRoomPreviewAttempt(raw: string): boolean {
+        const normalized = this.normalizeRoomHintText(raw);
+        if (!normalized || this.isRoomInfoQuery(raw) || this.isRoomComparisonQuery(raw) || this.isExplicitRoomChangeRequest(raw)) return false;
+        const previewPrefix = normalized.match(
+            /^(?:i\s+want\s+to|i\s+would\s+like\s+to|would\s+like\s+to|please|can\s+i|could\s+you|let\s+me)?\s*(?:show|see|view|open|preview|explore|look\s+at|take\s+me\s+to)\s+(.+)$/
+        );
+        if (!previewPrefix) return false;
+        const rooms = Array.isArray(this.viewData.rooms) ? this.viewData.rooms : [];
+        if (rooms.length === 0) return false;
+        const IGNORED = new Set(["room","rooms","suite","type","please","show","see","view","open","preview","explore","look","take","want","need","for","the","and","with","a","an","would","like","option","me","to"]);
+        const candidateText = previewPrefix[1] || "";
+        if (/\b(compare|with|versus|vs\.?|and|aur|ani|tulna|farak|mukabla)\b|(?:à¤¤à¥à¤²à¤¨à¤¾|à¤«à¤°à¤•|à¤®à¥à¤•à¤¾à¤¬à¤²à¤¾|à¤”à¤°|à¤†à¤£à¤¿)/.test(candidateText)) return false;
+        const tokens = candidateText.split(/[^a-z0-9]+/g).map(t => t.trim()).filter(t => t.length >= 3 && !IGNORED.has(t));
+        if (tokens.length === 0) return false;
+        return rooms.some((r: any) => {
+            const text = this.normalizeRoomHintText(`${String(r?.name || "")} ${String(r?.code || "")}`);
+            const aliasTokens = text.split(/[^a-z0-9]+/g).map(t => t.trim()).filter(t => t.length >= 3 && !IGNORED.has(t));
+            const overlap = tokens.filter(t => aliasTokens.includes(t)).length;
+            const threshold = Math.max(1, Math.min(2, aliasTokens.length));
+            return overlap >= threshold;
+        });
+    }
+
     private isExplicitRoomChangeRequest(raw: string): boolean {
         const t = this.normalizeRoomHintText(raw);
         if (!t) return false;
@@ -1167,7 +1190,7 @@ class AgentAdapterService {
         const featureLine = Array.isArray(room?.features) && room.features.length > 0
             ? `Key features include ${room.features.slice(0, 4).join(", ")}.` : "";
         return [`This is our ${name}.`, detailLine, capLine, childLine, priceLine, featureLine,
-            "Would you like more details about this room, would you like to compare it, or shall I continue with this option?",
+            "Would you like more details about this room, would you like to compare it, or would you like to say continue or book this room?",
         ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
     }
 
@@ -1348,7 +1371,7 @@ class AgentAdapterService {
                 return { delayMs: 6500, prompt: this.pickLocalizedText({ en: prompt, hi: "आराम से चुनिए। तैयार होने पर room का नाम बोलिए।", mr: "निवांत निवडा. तयार झाल्यावर room चे नाव सांगा." }) };
             }
             case "ROOM_PREVIEW":
-                return { delayMs: 7000, prompt: this.pickLocalizedText({ en: this.buildRoomPreviewPrompt(this.viewData?.selectedRoom), hi: "Aap features ke baare mein pooch sakte hain, ya yes bolkar is room ke saath aage badh sakte hain.", mr: "Tumhi features babat vicharu shakta, kiwa yes mhunun ya room sobat pudhe jau shakta." }) };
+                return { delayMs: 7000, prompt: this.pickLocalizedText({ en: this.buildRoomPreviewPrompt(this.viewData?.selectedRoom), hi: "Aap features ke baare mein pooch sakte hain, ya aage badhne ke liye book this room keh sakte hain.", mr: "Tumhi features babat vicharu shakta, kiwa pudhe jaanayasathi book this room mhanu shakta." }) };
             case "BOOKING_COLLECT":
                 return { delayMs: 8000, prompt: this.pickLocalizedText({ en: "When you're ready, tell me the next booking detail.", hi: "जब आप तैयार हों, booking की अगली detail बताइए।", mr: "तयार झाल्यावर booking ची पुढची detail सांगा." }) };
             case "BOOKING_SUMMARY":
@@ -2216,10 +2239,12 @@ class AgentAdapterService {
             const resolvedRoomHint   = this.resolveRoomFromHint(slotRoomHint);
             const isComparisonQuery  = requestState === "ROOM_SELECT" && this.isRoomComparisonQuery(transcript);
             const isRoomInfoTurn     = requestState === "ROOM_SELECT" && this.isRoomInfoQuery(transcript);
+            const explicitRoomPreviewAttempt =
+                requestState === "ROOM_SELECT" && this.looksLikeRoomPreviewAttempt(transcript);
             const transcriptResolved = (this.state === "ROOM_SELECT" || this.state === "ROOM_PREVIEW")
                 && !isComparisonQuery
-                && !isRoomInfoTurn
-                && this.looksLikeRoomSelectionAttempt(transcript)
+                && (!isRoomInfoTurn || explicitRoomPreviewAttempt)
+                && (this.looksLikeRoomSelectionAttempt(transcript) || explicitRoomPreviewAttempt)
                 ? this.resolveRoomFromHint(transcript) : null;
             let inferredRoom = (this.state === "ROOM_SELECT" || this.state === "ROOM_PREVIEW")
                 ? backendRoom || resolvedRoomHint || transcriptResolved || null : null;
@@ -2276,6 +2301,7 @@ class AgentAdapterService {
             }
             const shouldBlockImplicitRoomAdvance =
                 requestState === "ROOM_SELECT"
+                && !explicitRoomPreviewAttempt
                 && !explicitRoomSelectionAttempt
                 && (serverState === "ROOM_PREVIEW" || serverState === "BOOKING_COLLECT");
             if (shouldBlockImplicitRoomAdvance) {
@@ -2294,6 +2320,11 @@ class AgentAdapterService {
 
             if (requestState === "ROOM_SELECT" && inferredRoom && serverState === "BOOKING_COLLECT"
                 && ["ROOM_SELECTED","BOOK_ROOM_SELECTED","GENERAL_QUERY"].includes(strictEvent)) serverState = "ROOM_PREVIEW";
+            if (requestState === "ROOM_SELECT" && inferredRoom && explicitRoomPreviewAttempt
+                && (serverState === "ROOM_SELECT" || serverState === null || serverState === "WELCOME")) {
+                strictEvent = "ROOM_SELECTED";
+                serverState = "ROOM_PREVIEW";
+            }
             if (previewStaysExploratory && serverState === "BOOKING_COLLECT") serverState = "ROOM_PREVIEW";
             if (previewStaysExploratory && (serverState === "WELCOME" || serverState === "IDLE" || serverState === null)) {
                 console.warn(`[AgentAdapter] Blocking regressive preview: ${requestState} -> ${serverState}`);

@@ -15,7 +15,8 @@ import { buildRoomIntroQueue, ensureWarmNarration, ROOM_SELECT_POST_INTRO_PROMPT
 
 type DisplayMode = "intro" | "browse" | "filter" | "compare";
 type IntroPhase = "fetching_rooms" | "preparing_first_room_audio" | "showing_room" | "intro_complete";
-const INTRO_SPEAK_DELAY_MS = 550;
+const INTRO_PREPARE_DELAY_MS = 700;
+const INTRO_VISUAL_SETTLE_DELAY_MS = 800;
 const ROOM_INTRO_SESSION_STORAGE_PREFIX = "siya-room-intro-completed";
 
 function getRoomIntroSessionKey(): string {
@@ -439,6 +440,13 @@ export const RoomSelectPage: React.FC = () => {
         setIntroPhase("showing_room");
         console.debug(`[RoomSelectPage] Intro ready current=${idx} room=${roomId}`);
 
+        await new Promise((resolve) => window.setTimeout(resolve, INTRO_VISUAL_SETTLE_DELAY_MS));
+
+        if (introSpeakAttemptRef.current !== attemptId) return;
+        if (roomDisplayModeRef.current !== "intro") return;
+        if (activeIntroIndexRef.current !== idx) return;
+        if (spokenIntroKeyRef.current !== speakKey) return;
+
         const nextSpeech = queue[idx + 1];
         const nextRoomId = sequence[idx + 1] ?? effectiveIntroSequence[idx + 1];
         const nextWarmPromise = nextSpeech?.trim()
@@ -476,7 +484,7 @@ export const RoomSelectPage: React.FC = () => {
         setVisibleIntroIndex(idx);
         spokenIntroKeyRef.current = "";
       })();
-    }, INTRO_SPEAK_DELAY_MS);
+    }, INTRO_PREPARE_DELAY_MS);
 
     return () => {
       window.clearTimeout(timer);

@@ -11,10 +11,11 @@ from agent.nodes import (
     _is_room_change_request,
     _is_summary_confirmation_transcript,
     _is_summary_modify_transcript,
+    _looks_like_explicit_room_preview_request,
     _looks_like_check_in_request,
     route_intent,
 )
-from agent.state import BookingSlots, KioskState
+from agent.state import BookingSlots, KioskState, RoomInventoryItem
 
 try:
     from agent.nodes import _looks_like_room_browsing_request
@@ -158,6 +159,35 @@ class TestRoomChangeRequest:
     )
     def test_negative_room_change(self, transcript):
         assert _is_room_change_request(transcript) is False
+
+
+class TestExplicitRoomPreviewRequest:
+    rooms = [
+        RoomInventoryItem(id="r1", name="Ocean One View", code="OOV", price=320),
+        RoomInventoryItem(id="r2", name="Budget Deluxe Room", code="BDR", price=220),
+    ]
+
+    @pytest.mark.parametrize(
+        "transcript",
+        [
+            "I want to see Ocean One View",
+            "Please show me Ocean One View",
+            "Open Ocean One View",
+        ],
+    )
+    def test_positive_preview_requests(self, transcript):
+        assert _looks_like_explicit_room_preview_request(transcript, self.rooms) is True
+
+    @pytest.mark.parametrize(
+        "transcript",
+        [
+            "Tell me about Ocean One View",
+            "Compare Ocean One View and Budget Deluxe Room",
+            "Show me another room",
+        ],
+    )
+    def test_negative_preview_requests(self, transcript):
+        assert _looks_like_explicit_room_preview_request(transcript, self.rooms) is False
 
 
 @pytest.mark.skipif(not HAS_ROOM_BROWSING, reason="Room browsing pre-check not yet implemented")
@@ -401,6 +431,23 @@ class TestRouteIntentModule4:
         result = await route_intent(state)
 
         assert result["resolved_intent"] == "GENERAL_QUERY"
+        assert result["confidence"] >= 0.9
+
+    @pytest.mark.asyncio
+    async def test_room_preview_continue_routes_to_confirm_booking(self):
+        state = KioskState(
+            session_id="router-preview-continue",
+            tenant_id="default",
+            current_ui_screen="ROOM_PREVIEW",
+            latest_transcript="continue",
+        )
+        state.selected_room = RoomInventoryItem(
+            id="r2", name="Executive Suite", code="ES", price=450
+        )
+
+        result = await route_intent(state)
+
+        assert result["resolved_intent"] == "CONFIRM_BOOKING"
         assert result["confidence"] >= 0.9
 
     @pytest.mark.asyncio

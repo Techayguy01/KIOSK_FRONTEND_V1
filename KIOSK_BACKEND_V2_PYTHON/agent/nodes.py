@@ -1677,7 +1677,7 @@ def _looks_like_room_information_request(transcript: str) -> bool:
             r"price|cost|rate|tariff|"
             r"amenit(?:y|ies)|"
             r"feature|features|"
-            r"wifi|tv|balcony|bath(?:room| tub)|bathtub|view|"
+            r"wifi|tv|balcony|bath(?:room| tub)|bathtub|"
             r"occupancy|capacity|"
             r"does\s+(?:it|this\s+room)|"
             r"what\s+does|"
@@ -1749,6 +1749,66 @@ def _looks_like_explicit_room_selection_request(
     return False
 
 
+def _looks_like_explicit_room_preview_request(
+    transcript: str,
+    room_inventory: Optional[list[RoomInventoryItem]] = None,
+) -> bool:
+    text = (transcript or "").strip().lower()
+    if not text:
+        return False
+    if (
+        _looks_like_room_information_request(text)
+        or _looks_like_room_comparison_request(text)
+        or _is_room_change_request(text)
+        or _looks_like_explicit_preview_booking_request(text)
+    ):
+        return False
+
+    if re.search(r"\b(this|that|current)\s+(room|suite|one)\b", text):
+        return bool(re.search(r"\b(show|see|view|open|preview|look\s+at|take\s+me\s+to|explore)\b", text))
+
+    prefix_match = re.match(
+        r"^(?:i\s+want\s+to|i(?:'d|\s+would)?\s+like\s+to|can\s+i|could\s+you|please|let\s+me)?\s*"
+        r"(?:show|see|view|open|preview|explore|look\s+at|take\s+me\s+to)\s+(.+)$",
+        text,
+    )
+    if not prefix_match:
+        return False
+
+    candidate = prefix_match.group(1).strip()
+    if not candidate or re.search(r"\b(compare|with|versus|vs\.?|and)\b", candidate):
+        return False
+    if room_inventory is None:
+        return True
+
+    ignored = {
+        "room", "rooms", "suite", "type", "please", "show", "see", "view",
+        "open", "preview", "explore", "look", "take", "want", "need", "for",
+        "the", "and", "with", "a", "an", "would", "like", "option", "me", "to",
+    }
+    candidate_tokens = [
+        token
+        for token in re.split(r"[^a-z0-9]+", _normalize_text(candidate))
+        if len(token) >= 3 and token not in ignored
+    ]
+    if not candidate_tokens:
+        return False
+
+    for room in room_inventory:
+        alias_tokens = [
+            token
+            for token in re.split(r"[^a-z0-9]+", _normalize_text(f"{room.name or ''} {room.code or ''}"))
+            if len(token) >= 3 and token not in ignored
+        ]
+        if not alias_tokens:
+            continue
+        overlap = sum(1 for token in candidate_tokens if token in alias_tokens)
+        threshold = max(1, min(2, len(alias_tokens)))
+        if overlap >= threshold:
+            return True
+    return False
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # TRANSCRIPT PATTERN MATCHERS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1769,6 +1829,24 @@ def _looks_like_explicit_preview_booking_request(transcript: str) -> bool:
             r"proceed\s+with\s+(?:this|it|the\s+room)|"
             r"confirm\s+(?:this|it|the\s+room)"
             r")\b",
+            text,
+        )
+    )
+
+
+def _looks_like_preview_continue_request(transcript: str) -> bool:
+    text = (transcript or "").strip().lower()
+    if not text:
+        return False
+    if (
+        _is_room_change_request(text)
+        or _looks_like_room_preview_detail_request(text)
+        or _looks_like_room_comparison_request(text)
+    ):
+        return False
+    return bool(
+        re.fullmatch(
+            r"(?:yes\s+)?(?:continue|proceed|go\s+ahead)(?:\s+please)?",
             text,
         )
     )
@@ -2067,6 +2145,22 @@ def _route_preview_context_override(state: KioskState, transcript_text: str) -> 
             "GENERAL_QUERY",
             0.97,
             intent_source="preview_detail_guard",
+        )
+
+    if (
+        current_screen == "ROOM_PREVIEW"
+        and state.selected_room
+        and _looks_like_preview_continue_request(transcript_text)
+    ):
+        print(
+            f"[Router] Preview continue guard on {current_screen}: "
+            f"'{state.latest_transcript}' -> CONFIRM_BOOKING"
+        )
+        return _router_result(
+            state,
+            "CONFIRM_BOOKING",
+            0.97,
+            intent_source="preview_continue_guard",
         )
 
     if current_screen in ("ROOM_PREVIEW", "BOOKING_COLLECT"):
@@ -2693,7 +2787,10 @@ def _extract_slots_deterministically(state: KioskState) -> dict:
         elif (
             state.current_ui_screen == "ROOM_PREVIEW"
             and state.selected_room
-            and _looks_like_explicit_preview_booking_request(text)
+            and (
+                _looks_like_explicit_preview_booking_request(text)
+                or _looks_like_preview_continue_request(text)
+            )
         ):
             slots["room_type"] = state.selected_room.name
 
@@ -2853,7 +2950,7 @@ def _booking_response(
 
 def _build_preview_booking_gate_response(state: KioskState) -> dict:
     speech = (
-        f"Whenever you're ready, say book this room and I'll continue the reservation for {state.selected_room.name}."
+        f"Whenever you're ready, say continue or book this room and I'll continue the reservation for {state.selected_room.name}."
     )
     updated_history = state.history + [
         ConversationTurn(role="user", content=state.latest_transcript),
@@ -2867,6 +2964,28 @@ def _build_preview_booking_gate_response(state: KioskState) -> dict:
         "history": updated_history,
         "next_ui_screen": "ROOM_PREVIEW",
     }
+
+
+def _build_preview_booking_start_response(
+    state: KioskState,
+    room: RoomInventoryItem,
+    *,
+    extracted_slots: Optional[dict] = None,
+) -> dict:
+    preview_slots, preview_room = _prepare_booking_state_update(
+        state,
+        extracted_slots=extracted_slots,
+        selected_room=room,
+    )
+    missing_required = preview_slots.missing_required_slots()
+    return _make_booking_response_precomputed(
+        state,
+        _build_room_confirmation(room, state.language),
+        "BOOKING_COLLECT",
+        preview_slots,
+        preview_room,
+        active_slot=(missing_required[0] if missing_required else None),
+    )
 
 
 def _comparison_partner_for_implicit_request(
@@ -3229,7 +3348,10 @@ def _handle_room_request_transition(
                 "roomIntroSequence": [],
             }
 
-    if state.current_ui_screen == "ROOM_SELECT" and not _looks_like_explicit_room_selection_request(state.latest_transcript, room_inventory):
+    explicit_room_selection = _looks_like_explicit_room_selection_request(state.latest_transcript, room_inventory)
+    explicit_room_preview = _looks_like_explicit_room_preview_request(state.latest_transcript, room_inventory)
+
+    if state.current_ui_screen == "ROOM_SELECT" and not (explicit_room_selection or explicit_room_preview):
         mentioned_rooms = _rooms_mentioned_in_transcript(state.latest_transcript, room_inventory)
         if len(mentioned_rooms) >= 2:
             return _make_booking_response(
@@ -3240,7 +3362,7 @@ def _handle_room_request_transition(
                 clear_room_selection=True,
             ) | {
                 "roomDisplayMode": "browse",
-                "focusRoomIds": [room.id] if room.id else None,
+                "focusRoomIds": None,
                 "roomIntroSequence": [],
             }
 
@@ -3280,7 +3402,7 @@ def _handle_room_request_transition(
     if room:
         extracted = dict(extracted_slots)
         extracted["room_type"] = room.name
-        if state.current_ui_screen == "ROOM_SELECT" and not _looks_like_explicit_room_selection_request(state.latest_transcript, room_inventory):
+        if state.current_ui_screen == "ROOM_SELECT" and not (explicit_room_selection or explicit_room_preview):
             detail_speech = _build_room_select_exploratory_reply(room, state.latest_transcript, room_inventory, state.language)
             return _make_booking_response(
                 state,
@@ -3295,15 +3417,15 @@ def _handle_room_request_transition(
             }
         if (
             state.current_ui_screen == "ROOM_PREVIEW"
-            and _looks_like_explicit_preview_booking_request(state.latest_transcript)
+            and (
+                _looks_like_explicit_preview_booking_request(state.latest_transcript)
+                or _looks_like_preview_continue_request(state.latest_transcript)
+            )
         ):
-            return _make_booking_response(
+            return _build_preview_booking_start_response(
                 state,
-                _build_room_confirmation(room, state.language),
-                "BOOKING_COLLECT",
-                active_slot="adults",
+                room,
                 extracted_slots=extracted,
-                selected_room=room,
             )
         is_fresh_preview_entry = (
             state.current_ui_screen != "ROOM_PREVIEW"
@@ -3312,7 +3434,7 @@ def _handle_room_request_transition(
         preview_speech = (
             _pick_language_text(
                 state.language,
-                en="Would you like any information about this room, or shall I proceed with your booking?",
+                en="Would you like any information about this room? When you're ready to continue, please say continue or book this room.",
                 hi="क्या आप इस room के बारे में कोई जानकारी चाहते हैं, या मैं आपकी booking के साथ आगे बढ़ूँ?",
                 mr="तुम्हाला या room बद्दल काही माहिती हवी आहे का, की मी booking सोबत पुढे जाऊ?",
             )
@@ -3518,6 +3640,22 @@ def _deterministic_booking_response(
             active_slot=None,
             reset_booking=True,
             clear_room_selection=True,
+        )
+
+    if (
+        state.current_ui_screen == "ROOM_PREVIEW"
+        and state.selected_room
+        and (
+            intent == "CONFIRM_BOOKING"
+            or _looks_like_preview_continue_request(state.latest_transcript)
+        )
+    ):
+        preview_extracted = dict(extracted_slots)
+        preview_extracted.setdefault("room_type", state.selected_room.name)
+        return _build_preview_booking_start_response(
+            state,
+            state.selected_room,
+            extracted_slots=preview_extracted,
         )
 
     if (
