@@ -30,3 +30,4 @@ backend/.env
 *.njsproj
 *.sln
 *.sw?
+repomix-output.xml
